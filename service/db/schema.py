@@ -76,6 +76,7 @@ class TrackFile(Base):
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
     provider_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    file_mtime: Mapped[float | None] = mapped_column(Float, nullable=True)
     layout_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
