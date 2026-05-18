@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import subprocess
+import sys
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -22,7 +28,32 @@ from service.core.models import (
 from service.db.schema import AcquisitionJobRow, Artist, Track
 from service.db.session import get_session
 
-app = FastAPI(title="audioreap", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+_ALEMBIC_INI = Path(__file__).parent.parent / "alembic.ini"
+
+
+def _run_migrations() -> None:
+    """Run alembic upgrade head synchronously (called in a thread on startup)."""
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(_ALEMBIC_INI), "upgrade", "head"],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).parent.parent),
+    )
+    if result.returncode != 0:
+        logger.error("Migration failed:\n%s", result.stderr)
+    else:
+        logger.info("Migrations OK: %s", result.stdout.strip() or "up to date")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    await asyncio.to_thread(_run_migrations)
+    yield
+
+
+app = FastAPI(title="audioreap", version="0.1.0", lifespan=lifespan)
 
 # ── Static files ──────────────────────────────────────────────────────────
 _STATIC_DIR = Path(__file__).parent / "static"
