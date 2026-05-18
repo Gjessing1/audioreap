@@ -2,8 +2,26 @@
 {% block title %}Library — audioreap{% endblock %}
 
 {% block content %}
-<h2 style="font-size:18px;margin-bottom:16px">Library overview</h2>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+  <h2 style="font-size:18px">Library overview</h2>
+  <button class="btn"
+          hx-post="/api/scan"
+          hx-swap="none"
+          hx-on::after-request="this.textContent='Scanning…'; setTimeout(() => { this.textContent='Scan library'; window.location.reload(); }, 8000)">
+    Scan library
+  </button>
+</div>
 
+{% if stats.tracks == 0 %}
+<div class="card" style="flex-direction:column;align-items:flex-start;gap:8px;padding:20px">
+  <div class="card-title">No tracks indexed</div>
+  <div class="card-sub">
+    Click <strong>Scan library</strong> to index your music from
+    <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">{{ settings_music_dir }}</code>.
+    This runs in the background — refresh this page after a few seconds.
+  </div>
+</div>
+{% else %}
 <div class="stats">
   <div class="stat">
     <div class="stat-val">{{ stats.tracks }}</div>
@@ -18,7 +36,9 @@
     <div class="stat-label">Artists</div>
   </div>
 </div>
+{% endif %}
 
+{% if recent %}
 <div class="section-title">Recent additions</div>
 {% for t in recent %}
 <div class="card">
@@ -29,7 +49,6 @@
     <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
   </div>
 </div>
-{% else %}
-<p class="empty">No tracks indexed yet. Run a scan first.</p>
 {% endfor %}
+{% endif %}
 {% endblock %}

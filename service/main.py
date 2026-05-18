@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import aiofiles
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -226,6 +226,26 @@ async def search(
         ))
 
     return SearchResult(tracks=tracks, albums=[], artists=[], query_echo=q)
+
+
+# ── Scan ─────────────────────────────────────────────────────────────────
+
+@app.post("/api/scan")
+async def trigger_scan_endpoint(background_tasks: BackgroundTasks) -> dict[str, str]:
+    """Trigger a full library rescan in the background."""
+    from service.db.session import AsyncSessionLocal
+    from service.index.scanner import scan as run_scan
+
+    async def _do_scan() -> None:
+        async with AsyncSessionLocal() as session, session.begin():
+            result = await run_scan(session, settings.music_dir)
+            logger.info(
+                "UI-triggered scan done: added=%d updated=%d removed=%d errors=%d",
+                result.added, result.updated, result.removed, result.errors,
+            )
+
+    background_tasks.add_task(_do_scan)
+    return {"status": "scan started"}
 
 
 # ── Acquire ───────────────────────────────────────────────────────────────

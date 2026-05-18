@@ -12,7 +12,7 @@
     <div class="card-title">{{ t.title }}</div>
     <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}
       {% if t.quality %}
-        · <span style="color: var(--muted)">{{ t.quality.codec }}{% if t.quality.bitrate_kbps %} {{ t.quality.bitrate_kbps }}kbps{% endif %}</span>
+        · <span style="color:var(--muted)">{{ t.quality.codec }}{% if t.quality.bitrate_kbps %} {{ t.quality.bitrate_kbps }}kbps{% endif %}</span>
       {% endif %}
     </div>
   </div>
@@ -21,6 +21,9 @@
   </div>
 </div>
 {% endfor %}
-{% else %}
-<p class="empty">No local results for "{{ q }}".</p>
+{% elif q %}
+<p class="empty" style="padding:20px 0">
+  No local results for "{{ q }}".<br>
+  <span style="font-size:13px;color:var(--muted)">Try searching YouTube below to acquire it.</span>
+</p>
 {% endif %}

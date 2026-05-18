@@ -7,32 +7,37 @@
       hx-trigger="input changed delay:400ms from:#q, submit"
       hx-target="#local-results"
       hx-include="#q">
-  <input id="q" name="q" type="search" placeholder="Search your library…"
+  <input id="q" name="q" type="search" placeholder="Search your library or YouTube…"
          value="{{ q|default('') }}"
          inputmode="search" enterkeyhint="search" autocomplete="off"
          autofocus>
   <button type="submit">Search</button>
 </form>
 
-<!-- Local results -->
+<!-- Local results (HTMX-updated) -->
 <div id="local-results">
-  {% if q %}{% include "partials/local_results.html" %}{% else %}
-  <p class="empty">Start typing to search your library.</p>
+  {% if q %}
+    {% include "partials/local_results.html" %}
+  {% else %}
+    <p class="empty">Type a track or artist name to search your library.</p>
   {% endif %}
 </div>
 
-<!-- Cloud search -->
-{% if q %}
-<div class="section-title">Online (YouTube)</div>
+<!-- YouTube search — always visible so it works after HTMX updates -->
+<div class="section-title" style="margin-top:24px">Search YouTube</div>
 <div id="cloud-results">
-  <button class="btn-ghost"
-          hx-get="/search/cloud"
-          hx-include="#q"
-          hx-target="#cloud-results"
-          hx-indicator="#cloud-spinner">
-    Search YouTube for "{{ q }}"
-    <span id="cloud-spinner" class="htmx-indicator"><span class="spinner"></span></span>
-  </button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn-ghost"
+            hx-get="/search/cloud"
+            hx-include="#q"
+            hx-target="#cloud-results"
+            hx-indicator="#cloud-spinner">
+      Search YouTube
+      <span id="cloud-spinner" class="htmx-indicator" style="margin-left:6px">
+        <span class="spinner"></span>
+      </span>
+    </button>
+    <span style="color:var(--muted);font-size:13px">— find and acquire tracks not in your library</span>
+  </div>
 </div>
-{% endif %}
 {% endblock %}

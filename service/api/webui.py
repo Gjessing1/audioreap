@@ -221,6 +221,7 @@ async def library_page(
             "active": "library",
             "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count},
             "recent": [_track_to_ref(r) for r in recent_rows],
+            "settings_music_dir": str(settings.music_dir),
         },
     )
 
