@@ -255,8 +255,7 @@ async def acquire(
         row = await session.get(AcquisitionJobRow, job_id)
         if row:
             return tmpl.TemplateResponse(
-                "partials/job_card.html",
-                {"request": request, "job": _job_row_to_model(row)},
+                request, "partials/job_card.html", {"job": _job_row_to_model(row)}
             )
     return AcquireResponse(job_id=job_id)
 

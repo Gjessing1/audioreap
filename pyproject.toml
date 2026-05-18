@@ -64,10 +64,10 @@ disable_error_code = ["no-untyped-call", "attr-defined", "index", "no-any-return
 module = "service.metadata.musicbrainz"
 disable_error_code = ["no-any-return", "call-overload", "unused-ignore"]
 
-# Jinja2Templates stubs are outdated + redis.asyncio is untyped
+# redis.asyncio is untyped; streaming generators return object
 [[tool.mypy.overrides]]
 module = ["service.api.webui", "service.main"]
-disable_error_code = ["arg-type", "return-value", "no-untyped-call", "unused-ignore"]
+disable_error_code = ["no-untyped-call", "return-value", "unused-ignore", "arg-type"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

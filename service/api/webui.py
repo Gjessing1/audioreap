@@ -60,8 +60,9 @@ async def root() -> RedirectResponse:
 
 @router.get("/search", response_class=HTMLResponse)
 async def search_page(request: Request, q: str = "") -> HTMLResponse:
-    ctx: dict[str, object] = {"request": request, "active": "search", "q": q, "tracks": []}
-    return templates.TemplateResponse("search.html", ctx)
+    return templates.TemplateResponse(
+        request, "search.html", {"active": "search", "q": q, "tracks": []}
+    )
 
 
 @router.get("/search/results", response_class=HTMLResponse)
@@ -87,8 +88,7 @@ async def search_results(
         tracks = [_track_to_ref(r) for r in rows]
 
     return templates.TemplateResponse(
-        "partials/local_results.html",
-        {"request": request, "tracks": tracks, "q": q},
+        request, "partials/local_results.html", {"tracks": tracks, "q": q}
     )
 
 
@@ -108,8 +108,7 @@ async def cloud_search(request: Request, q: str = "") -> HTMLResponse:
             logger.warning("Cloud search failed: %s", exc)
 
     return templates.TemplateResponse(
-        "partials/cloud_results.html",
-        {"request": request, "candidates": candidates, "q": q},
+        request, "partials/cloud_results.html", {"candidates": candidates, "q": q}
     )
 
 
@@ -124,9 +123,7 @@ async def jobs_page(
         )
     ).scalars().all()
     jobs = [_job_to_model(r) for r in rows]
-    return templates.TemplateResponse(
-        "jobs.html", {"request": request, "active": "jobs", "jobs": jobs}
-    )
+    return templates.TemplateResponse(request, "jobs.html", {"active": "jobs", "jobs": jobs})
 
 
 @router.get("/jobs/list", response_class=HTMLResponse)
@@ -140,9 +137,7 @@ async def jobs_list_partial(
         )
     ).scalars().all()
     jobs = [_job_to_model(r) for r in rows]
-    return templates.TemplateResponse(
-        "partials/job_list.html", {"request": request, "jobs": jobs}
-    )
+    return templates.TemplateResponse(request, "partials/job_list.html", {"jobs": jobs})
 
 
 @router.get("/jobs/status/{job_id}", response_class=HTMLResponse)
@@ -155,7 +150,7 @@ async def job_status_partial(
     if row is None:
         raise HTTPException(404)
     return templates.TemplateResponse(
-        "partials/job_card.html", {"request": request, "job": _job_to_model(row)}
+        request, "partials/job_card.html", {"job": _job_to_model(row)}
     )
 
 
@@ -194,7 +189,7 @@ async def retry_job(
         raise HTTPException(503, str(exc)) from exc
 
     return templates.TemplateResponse(
-        "partials/job_card.html", {"request": request, "job": _job_to_model(row)}
+        request, "partials/job_card.html", {"job": _job_to_model(row)}
     )
 
 
@@ -221,9 +216,8 @@ async def library_page(
     ).unique().scalars().all()
 
     return templates.TemplateResponse(
-        "library.html",
+        request, "library.html",
         {
-            "request": request,
             "active": "library",
             "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count},
             "recent": [_track_to_ref(r) for r in recent_rows],
@@ -238,36 +232,34 @@ async def health_page(
 ) -> HTMLResponse:
     import shutil as _shutil
 
-    # Disk free
     try:
         disk = _shutil.disk_usage(settings.music_dir)
         disk_free_gb = round(disk.free / 1024**3, 1)
     except Exception:
         disk_free_gb = -1
 
-    # Navidrome check
     navidrome_ok = False
     try:
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get(f"{settings.navidrome_url}/rest/ping.view",
-                            params={"u": "x", "p": "x", "v": "1.16.1", "c": "audioreap", "f": "json"})
+            r = await c.get(
+                f"{settings.navidrome_url}/rest/ping.view",
+                params={"u": "x", "p": "x", "v": "1.16.1", "c": "audioreap", "f": "json"},
+            )
             navidrome_ok = r.status_code < 500
     except Exception:
         pass
 
-    # Redis check
     redis_ok = False
     try:
         import redis.asyncio as aioredis
-        r = aioredis.from_url(settings.redis_url)
-        await r.ping()
-        await r.aclose()
+        rc = aioredis.from_url(settings.redis_url)
+        await rc.ping()
+        await rc.aclose()
         redis_ok = True
     except Exception:
         pass
 
-    # Active jobs
     active_jobs = (
         await session.execute(
             select(func.count(AcquisitionJobRow.id))
@@ -276,9 +268,8 @@ async def health_page(
     ).scalar_one()
 
     return templates.TemplateResponse(
-        "health.html",
+        request, "health.html",
         {
-            "request": request,
             "active": "health",
             "health": {
                 "navidrome_ok": navidrome_ok,
