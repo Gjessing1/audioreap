@@ -1,8 +1,9 @@
-const CACHE = "audioreap-shell-v1";
+const CACHE = "audioreap-shell-v2";
 const SHELL = [
   "/",
   "/static/app.css",
   "/static/app.js",
+  "/static/htmx.min.js",
   "/static/manifest.webmanifest",
   "/static/icon-192.png",
 ];
