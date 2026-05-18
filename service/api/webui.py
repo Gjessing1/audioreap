@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from service.config import settings
-from service.core.models import AcquisitionJob, TrackCandidate, TrackQuality, TrackRef
+from service.core.models import AcquisitionJob, TrackQuality, TrackRef
 from service.db.schema import AcquisitionJobRow, Album, Artist, Track, TrackFile
 from service.db.session import get_session
 
@@ -94,7 +94,9 @@ async def search_results(
 
 @router.get("/search/cloud", response_class=HTMLResponse)
 async def cloud_search(request: Request, q: str = "") -> HTMLResponse:
-    candidates: list[TrackCandidate] = []
+    # Each entry: plain dict with title/artist/duration/provider_ref + pre-serialized JSON
+    # so the template doesn't need to call tojson on a Pydantic object.
+    candidates: list[dict[str, object]] = []
     if q:
         try:
             import service.providers.ytdlp  # noqa: F401
@@ -103,7 +105,13 @@ async def cloud_search(request: Request, q: str = "") -> HTMLResponse:
 
             provider = get("ytdlp")()
             async for c in provider.search(SearchQuery(q=q, limit=5)):
-                candidates.append(c)
+                candidates.append({
+                    "title": c.title,
+                    "artist": c.artist,
+                    "duration_seconds": c.duration_seconds,
+                    "provider_ref": c.provider_ref,
+                    "candidate_json": c.model_dump_json(),
+                })
         except Exception as exc:
             logger.warning("Cloud search failed: %s", exc)
 
