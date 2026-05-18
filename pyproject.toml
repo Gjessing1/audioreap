@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "audioreap"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "pydantic-settings>=2.5",
+    "arq>=0.26",
+    "redis>=5.0",
+    "mutagen>=1.47",
+    "musicbrainzngs>=0.7",
+    "httpx>=0.27",
+    "yt-dlp>=2024.11.18",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "aiosqlite>=0.20",
+    "greenlet>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "anyio>=4.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+service = "service.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["service"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+exclude = ["alembic/", "tests/"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests requiring real external services",
+]
+testpaths = ["tests"]

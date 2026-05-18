@@ -1,0 +1,81 @@
+services:
+  api:
+    build:
+      context: .
+      target: api
+    image: ghcr.io/gjessing1/audioreap/api:latest
+    container_name: audioreap-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      AUDIOREAP_REDIS_URL: redis://redis:6379
+      AUDIOREAP_NAVIDROME_URL: http://navidrome:4533
+      AUDIOREAP_LOG_FORMAT: json
+    env_file:
+      - .env
+    volumes:
+      - /mnt/data/media/music:/music
+      - /mnt/data/media/tmp-acquire:/tmp-acquire
+      - audioreap-data:/data
+      - audioreap-cache:/cache
+    depends_on:
+      - redis
+    networks:
+      - audioreap
+
+  worker:
+    build:
+      context: .
+      target: worker
+    image: ghcr.io/gjessing1/audioreap/worker:latest
+    container_name: audioreap-worker
+    restart: unless-stopped
+    environment:
+      AUDIOREAP_REDIS_URL: redis://redis:6379
+      AUDIOREAP_NAVIDROME_URL: http://navidrome:4533
+      AUDIOREAP_LOG_FORMAT: json
+    env_file:
+      - .env
+    volumes:
+      - /mnt/data/media/music:/music
+      - /mnt/data/media/tmp-acquire:/tmp-acquire
+      - audioreap-data:/data
+      - audioreap-cache:/cache
+    depends_on:
+      - redis
+    networks:
+      - audioreap
+
+  redis:
+    image: redis:7-alpine
+    container_name: audioreap-redis
+    restart: unless-stopped
+    volumes:
+      - audioreap-redis:/data
+    networks:
+      - audioreap
+
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    user: "1000:1000"
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    environment:
+      ND_LOGLEVEL: info
+    volumes:
+      - /mnt/data/navidrome:/data
+      - /mnt/data/media/music:/music:ro
+    networks:
+      - audioreap
+
+volumes:
+  audioreap-data:
+  audioreap-cache:
+  audioreap-redis:
+
+networks:
+  audioreap:
+    driver: bridge
