@@ -83,6 +83,23 @@ class TrackFile(Base):
     track: Mapped["Track"] = relationship(back_populates="file")
 
 
+class AlbumAcquisitionJob(Base):
+    __tablename__ = "album_acquisition_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    album_ref: Mapped[str] = mapped_column(String, nullable=False)
+    album_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    album_artist: Mapped[str | None] = mapped_column(String, nullable=True)
+    track_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="queued")
+    policy: Mapped[str] = mapped_column(String, nullable=False, default="partial_ok")
+    query: Mapped[str | None] = mapped_column(String, nullable=True)
+    candidate_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class AcquisitionJobRow(Base):
     __tablename__ = "acquisition_jobs"
 
@@ -96,6 +113,10 @@ class AcquisitionJobRow(Base):
     progress: Mapped[float | None] = mapped_column(Float, nullable=True)
     query: Mapped[str | None] = mapped_column(String, nullable=True)
     candidate_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    album_job_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("album_acquisition_jobs.id"), nullable=True
+    )
+    track_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 

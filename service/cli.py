@@ -10,11 +10,12 @@ def _usage() -> None:
         "Usage: service <command>\n"
         "\n"
         "Commands:\n"
-        "  scan                     Full library rescan\n"
-        "  scan --incremental       Only process changed files\n"
-        "  acquire <query>          Search and acquire a track\n"
-        "  jobs list                List recent acquisition jobs\n"
-        "  jobs retry <job-id>      Re-enqueue a failed job\n",
+        "  scan                         Full library rescan\n"
+        "  scan --incremental           Only process changed files\n"
+        "  acquire <query>              Search and acquire a track\n"
+        "  acquire-album <playlist-url> Acquire all tracks in a playlist\n"
+        "  jobs list                    List recent acquisition jobs\n"
+        "  jobs retry <job-id>          Re-enqueue a failed job\n",
         file=sys.stderr,
     )
 
@@ -108,6 +109,58 @@ async def _run_acquire(query: str) -> None:
     print(f"Enqueued job {job_id}")
 
 
+# ── acquire-album ─────────────────────────────────────────────────────────
+
+async def _run_acquire_album(album_ref: str, policy: str = "partial_ok") -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import service.providers.ytdlp  # noqa: F401
+    from service.acquisition.album_pipeline import create_album_job
+    from service.config import settings
+    from service.db.schema import Base
+    from service.providers import get
+
+    engine = create_async_engine(settings.db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    provider = get("ytdlp")()
+    print(f"Fetching album info from {album_ref!r} …")
+    album_candidate = await provider.fetch_album(album_ref)
+    print(
+        f"  {album_candidate.album_artist} — {album_candidate.album_title}"
+        f" ({album_candidate.track_count} tracks)"
+    )
+
+    async with session_factory() as session, session.begin():
+        album_job_id = await create_album_job(
+            session,
+            provider_name="ytdlp",
+            album_ref=album_ref,
+            album_candidate=album_candidate,
+            policy=policy,
+        )
+
+    from arq import create_pool
+
+    redis = await create_pool(settings.redis_url)  # type: ignore[arg-type]
+    await redis.enqueue_job(
+        "acquire_album",
+        album_job_id=album_job_id,
+        provider_name="ytdlp",
+        album_ref=album_ref,
+        candidate_json=album_candidate.model_dump_json(),
+        music_dir=str(settings.music_dir),
+        tmp_acquire_dir=str(settings.tmp_acquire_dir),
+        policy=policy,
+        _job_id=f"album:{album_job_id}",
+    )
+    await redis.aclose()
+    await engine.dispose()
+    print(f"Enqueued album job {album_job_id} ({policy})")
+
+
 # ── jobs ──────────────────────────────────────────────────────────────────
 
 async def _jobs_list() -> None:
@@ -192,6 +245,11 @@ def main() -> None:
             print("Usage: service acquire <query>", file=sys.stderr)
             sys.exit(1)
         asyncio.run(_run_acquire(args[1]))
+    elif cmd == "acquire-album":
+        if len(args) < 2:
+            print("Usage: service acquire-album <playlist-url>", file=sys.stderr)
+            sys.exit(1)
+        asyncio.run(_run_acquire_album(args[1]))
     elif cmd == "jobs":
         sub = args[1] if len(args) > 1 else ""
         if sub == "list":

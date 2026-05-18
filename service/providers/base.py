@@ -4,7 +4,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from service.core.models import FetchResult, ProviderHealth, SearchQuery, TrackCandidate
+from service.core.models import (
+    AlbumCandidate,
+    FetchResult,
+    ProviderHealth,
+    SearchQuery,
+    TrackCandidate,
+)
 
 
 class ProviderCapabilities(BaseModel):
@@ -30,6 +36,14 @@ class Provider(ABC):
     @abstractmethod
     async def fetch(self, provider_ref: str, dest_dir: Path) -> FetchResult:
         """Download/confirm audio file into dest_dir. Returns provenance."""
+
+    async def fetch_album(self, album_ref: str) -> AlbumCandidate:
+        """Resolve album_ref to an ordered track list.
+
+        album_ref is typically a playlist URL. Providers without album support
+        should raise NotImplementedError (guarded by capabilities.supports_album_search).
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def health_check(self) -> ProviderHealth:

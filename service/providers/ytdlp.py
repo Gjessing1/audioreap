@@ -10,7 +10,13 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from service.core.models import FetchResult, ProviderHealth, SearchQuery, TrackCandidate
+from service.core.models import (
+    AlbumCandidate,
+    FetchResult,
+    ProviderHealth,
+    SearchQuery,
+    TrackCandidate,
+)
 from service.providers import register
 from service.providers.base import Provider, ProviderCapabilities
 
@@ -130,6 +136,53 @@ class YtdlpProvider(Provider):
             bitrate_kbps=int(bitrate) if bitrate else None,
             sample_rate_hz=int(sample_rate) if sample_rate else None,
             raw_metadata={k: v for k, v in info.items() if isinstance(v, (str, int, float, bool))},
+        )
+
+    async def fetch_album(self, album_ref: str) -> AlbumCandidate:
+        """Extract ordered track list from a playlist URL."""
+        import yt_dlp
+
+        opts = {
+            **_ydl_opts_base(),
+            "extract_flat": True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(album_ref, download=False)
+
+        if not info:
+            raise ValueError(f"yt-dlp returned no info for {album_ref!r}")
+
+        album_title = info.get("title") or "Unknown Album"
+        album_artist = info.get("uploader") or info.get("channel") or "Unknown Artist"
+        entries = info.get("entries") or []
+
+        tracks: list[TrackCandidate] = []
+        for entry in entries:
+            if not entry:
+                continue
+            video_id = entry.get("id") or ""
+            video_url = entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+            title = entry.get("title") or "Unknown"
+            duration = entry.get("duration")
+            tracks.append(TrackCandidate(
+                provider=self.name,
+                provider_ref=video_url,
+                title=title,
+                artist=album_artist,
+                album=album_title,
+                duration_seconds=int(duration) if duration else None,
+                thumbnail_url=entry.get("thumbnail"),
+                raw_metadata={k: v for k, v in entry.items()
+                              if isinstance(v, (str, int, float, bool))},
+            ))
+
+        return AlbumCandidate(
+            provider=self.name,
+            provider_ref=album_ref,
+            album_title=str(album_title),
+            album_artist=str(album_artist),
+            track_count=len(tracks),
+            tracks=tracks,
         )
 
     async def health_check(self) -> ProviderHealth:

@@ -109,5 +109,17 @@ class AcquisitionJob(BaseModel):
     updated_at: datetime
 
 
+class AlbumCandidate(BaseModel):
+    """An album resolved to an ordered track list (e.g. from a playlist URL)."""
+
+    provider: str
+    provider_ref: str          # playlist URL or other album identifier
+    album_title: str
+    album_artist: str
+    year: int | None = None
+    track_count: int | None = None
+    tracks: list[TrackCandidate] = []
+
+
 # Re-export the async generator type alias used by providers
 ProviderSearchStream = AsyncGenerator[TrackCandidate, None]

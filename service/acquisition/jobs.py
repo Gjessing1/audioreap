@@ -45,6 +45,43 @@ async def create_job(
     return job_id
 
 
+async def acquire_album(
+    ctx: dict[str, object],
+    *,
+    album_job_id: str,
+    provider_name: str,
+    album_ref: str,
+    candidate_json: str,
+    music_dir: str,
+    tmp_acquire_dir: str,
+    policy: str = "partial_ok",
+) -> None:
+    """arq job: orchestrate full album acquisition."""
+    from service.acquisition.album_pipeline import run_album_acquisition
+    from service.core.models import AlbumCandidate
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+    provider_registry: dict[str, Provider] = ctx["providers"]  # type: ignore[assignment]
+
+    provider = provider_registry.get(provider_name)
+    if provider is None:
+        logger.error("Unknown provider %r for album job %s", provider_name, album_job_id)
+        return
+
+    album_candidate = AlbumCandidate.model_validate_json(candidate_json)
+
+    async with session_factory() as session, session.begin():
+        await run_album_acquisition(
+            album_job_id=album_job_id,
+            provider=provider,
+            album_candidate=album_candidate,
+            music_dir=Path(music_dir),
+            tmp_acquire_dir=Path(tmp_acquire_dir),
+            session=session,
+            policy=policy,
+        )
+
+
 async def acquire_track(
     ctx: dict[str, object],
     *,

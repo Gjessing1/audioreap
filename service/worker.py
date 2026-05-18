@@ -31,7 +31,10 @@ async def shutdown(ctx: dict[str, object]) -> None:
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = ["service.acquisition.jobs.acquire_track"]
+    functions = [
+        "service.acquisition.jobs.acquire_track",
+        "service.acquisition.jobs.acquire_album",
+    ]
     max_jobs = settings.worker_concurrency
     on_startup = startup
     on_shutdown = shutdown
