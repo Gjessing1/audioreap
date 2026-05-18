@@ -13,10 +13,8 @@
   <div class="card-actions">
     <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Preview ↗</a>
     <button class="btn btn-sm"
-            hx-post="/api/acquire"
-            hx-vals='js:{"provider_name":"ytdlp","provider_ref":this.dataset.ref,"candidate_json":this.dataset.json,"query":this.dataset.query}'
-            hx-target="#cloud-{{ loop.index }}"
-            hx-swap="outerHTML"
+            onclick="acquireTrack(this)"
+            data-target="cloud-{{ loop.index }}"
             data-ref="{{ c.provider_ref|e }}"
             data-json="{{ c.candidate_json|e }}"
             data-query="{{ q|e }}">

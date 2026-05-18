@@ -64,6 +64,38 @@ function updatePlayBtns() {
 /* Re-attach after HTMX swaps */
 document.body.addEventListener("htmx:afterSwap", () => updatePlayBtns());
 
+/* ── Acquire (bypass hx-vals JSON-in-JSON problem) ───────────────────────── */
+window.acquireTrack = async function(btn) {
+  const targetId = btn.dataset.target;
+  const target = document.getElementById(targetId);
+  if (!target) return;
+
+  btn.disabled = true;
+  btn.textContent = "Queuing…";
+
+  try {
+    const resp = await fetch("/api/acquire", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "HX-Request": "true",          // tell server to return HTML card
+      },
+      body: JSON.stringify({
+        provider_name: "ytdlp",
+        provider_ref: btn.dataset.ref,
+        candidate_json: btn.dataset.json,
+        query: btn.dataset.query || "",
+      }),
+    });
+    const html = await resp.text();
+    target.outerHTML = html;
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "Acquire";
+    console.error("Acquire failed:", err);
+  }
+};
+
 /* ── Service worker registration ─────────────────────────────────────────── */
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/static/sw.js").catch(() => {});
