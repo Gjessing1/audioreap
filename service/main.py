@@ -280,7 +280,8 @@ async def acquire(
 
     try:
         from arq import create_pool
-        redis = await create_pool(settings.redis_url)  # type: ignore[arg-type]
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
         await redis.enqueue_job(
             "acquire_track",
             job_id=job_id,

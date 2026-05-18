@@ -92,8 +92,9 @@ async def _run_acquire(query: str) -> None:
         )
 
     from arq import create_pool
+    from arq.connections import RedisSettings
 
-    redis = await create_pool(settings.redis_url)  # type: ignore[arg-type]
+    redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     await redis.enqueue_job(
         "acquire_track",
         job_id=job_id,
@@ -143,8 +144,9 @@ async def _run_acquire_album(album_ref: str, policy: str = "partial_ok") -> None
         )
 
     from arq import create_pool
+    from arq.connections import RedisSettings
 
-    redis = await create_pool(settings.redis_url)  # type: ignore[arg-type]
+    redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     await redis.enqueue_job(
         "acquire_album",
         album_job_id=album_job_id,
@@ -213,8 +215,9 @@ async def _jobs_retry(job_id: str) -> None:
         sys.exit(1)
 
     from arq import create_pool
+    from arq.connections import RedisSettings
 
-    redis = await create_pool(settings.redis_url)  # type: ignore[arg-type]
+    redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     await redis.enqueue_job(
         "acquire_track",
         job_id=job_id,
