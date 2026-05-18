@@ -23,7 +23,7 @@ from service.providers.base import Provider, ProviderCapabilities
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SEARCH_LIMIT = 5
-_SEARCH_PREFIX = "ytsearch"
+_SEARCH_PREFIX = "ytsearchmusic"
 
 
 def _ydl_opts_base() -> dict[str, object]:
@@ -71,15 +71,24 @@ class YtdlpProvider(Provider):
                 continue
             video_id = entry.get("id") or entry.get("url", "")
             video_url = entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
-            title = entry.get("title") or "Unknown"
-            uploader = entry.get("uploader") or entry.get("channel") or "Unknown"
+            # YouTube Music returns structured artist/track fields; fall back to
+            # uploader/title for regular YouTube results.
+            title = entry.get("track") or entry.get("title") or "Unknown"
+            artist = (
+                entry.get("artist")
+                or entry.get("uploader")
+                or entry.get("channel")
+                or "Unknown"
+            )
+            album = entry.get("album")
             duration = entry.get("duration")
 
             yield TrackCandidate(
                 provider=self.name,
                 provider_ref=video_url,
                 title=title,
-                artist=uploader,
+                artist=artist,
+                album=album,
                 duration_seconds=int(duration) if duration else None,
                 thumbnail_url=entry.get("thumbnail"),
                 raw_metadata={k: v for k, v in entry.items() if isinstance(v, (str, int, float, bool))},
@@ -190,7 +199,7 @@ class YtdlpProvider(Provider):
 
         try:
             with yt_dlp.YoutubeDL({**_ydl_opts_base(), "extract_flat": True}) as ydl:
-                ydl.extract_info("ytsearch1:test", download=False)
+                ydl.extract_info("ytsearchmusic1:test", download=False)
             return ProviderHealth(healthy=True, checked_at=datetime.now(UTC))
         except Exception as exc:
             return ProviderHealth(

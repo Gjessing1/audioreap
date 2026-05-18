@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -210,6 +211,18 @@ async def cancel_job(
     )
 
 
+_EXPLICIT_RE = re.compile(r"\b(explicit|explicit version)\b", re.IGNORECASE)
+_CLEAN_RE = re.compile(r"\b(clean|clean version|radio edit|censored|edited)\b", re.IGNORECASE)
+
+
+def _explicit_score(title: str) -> int:
+    if _EXPLICIT_RE.search(title):
+        return 1
+    if _CLEAN_RE.search(title):
+        return -1
+    return 0
+
+
 @router.get("/search/cloud", response_class=HTMLResponse)
 async def cloud_search_page(
     request: Request,
@@ -217,6 +230,7 @@ async def cloud_search_page(
     offset: int = 0,
 ) -> HTMLResponse:
     candidates: list[dict[str, object]] = []
+    PAGE = 5
     if q:
         try:
             import service.providers.ytdlp  # noqa: F401
@@ -224,29 +238,31 @@ async def cloud_search_page(
             from service.providers import get
 
             provider = get("ytdlp")()
-            limit = 5
-            count = 0
-            skip = offset
-            async for c in provider.search(SearchQuery(q=q, limit=limit + skip)):
-                if skip > 0:
-                    skip -= 1
-                    continue
-                candidates.append({
+            # Fetch enough for this page + ranking headroom
+            fetch_limit = offset + PAGE * 2
+            raw: list[dict[str, object]] = []
+            async for c in provider.search(SearchQuery(q=q, limit=fetch_limit)):
+                raw.append({
                     "title": c.title,
                     "artist": c.artist,
                     "duration_seconds": c.duration_seconds,
                     "provider_ref": c.provider_ref,
                     "candidate_json": c.model_dump_json(),
+                    "_score": _explicit_score(c.title),
                 })
-                count += 1
-                if count >= limit:
-                    break
+
+            # Sort: explicit first, clean last; stable so original order wins ties
+            raw.sort(key=lambda x: -int(x["_score"]))  # type: ignore[arg-type]
+            for item in raw:
+                del item["_score"]
+
+            candidates = raw[offset: offset + PAGE]
         except Exception as exc:
             logger.warning("Cloud search failed: %s", exc)
 
     return templates.TemplateResponse(
         request, "partials/cloud_results.html",
-        {"candidates": candidates, "q": q, "offset": offset, "limit": 5},
+        {"candidates": candidates, "q": q, "offset": offset, "limit": PAGE},
     )
 
 
