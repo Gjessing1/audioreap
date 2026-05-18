@@ -94,6 +94,8 @@ class AcquisitionJobRow(Base):
     failure_class: Mapped[str | None] = mapped_column(String, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    query: Mapped[str | None] = mapped_column(String, nullable=True)
+    candidate_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 

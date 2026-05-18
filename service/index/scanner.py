@@ -117,6 +117,11 @@ async def _upsert_track_file(
     return True
 
 
+async def index_file(session: AsyncSession, path: Path) -> str:
+    """Index a single newly-placed file. Convenience wrapper for the pipeline."""
+    return await _process_file(session, path, incremental=False)
+
+
 async def _process_file(
     session: AsyncSession,
     path: Path,

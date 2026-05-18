@@ -19,7 +19,3 @@ uv run pytest -m "not e2e"
 uv run ruff check .
 uv run mypy service/
 ```
-
-## Architecture
-
-See `CLAUDE.md` (local only, not committed) for full design doc, phasing, and conventions.
