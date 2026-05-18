@@ -16,12 +16,13 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from service.acquisition.states import classify_failure
+from service.config import settings
 from service.core.identity import make_id
 from service.core.models import TrackCandidate
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
 from service.library.layout import track_path
-from service.library.tagger import read_tags
+from service.library.tagger import read_tags, write_tags
 from service.library.writer import atomic_place
 from service.providers.base import Provider
 
@@ -76,6 +77,38 @@ async def _remux_to_ogg(src: Path, dest_dir: Path) -> Path:
     return out
 
 
+async def _find_local_match(
+    session: AsyncSession,
+    candidate: TrackCandidate,
+) -> str | None:
+    """Return the internal_id of a local track that confidently matches candidate."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import joinedload
+
+    from service.core.normalize import normalize
+    from service.db.schema import Track
+    from service.search.matcher import is_confident_match
+
+    # Normalize the candidate title to strip noise before searching the DB
+    norm_title = normalize(candidate.title)
+    first_word = norm_title.split()[0] if norm_title.split() else norm_title
+    stmt = (
+        select(Track)
+        .join(Track.artist)
+        .options(joinedload(Track.artist), joinedload(Track.file))
+        .where(Track.title.ilike(f"%{first_word}%"))
+    )
+    rows = (await session.execute(stmt)).unique().scalars().all()
+
+    for row in rows:
+        if is_confident_match(
+            candidate.title, candidate.artist, candidate.duration_seconds,
+            row.title, row.artist.name, row.duration_seconds,
+        ):
+            return row.id
+    return None
+
+
 async def run_acquisition(
     *,
     job_id: str,
@@ -97,6 +130,18 @@ async def run_acquisition(
         scan_trigger = trigger_scan
 
     tmp_acquire_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 0. Dedup check — skip if confident local match exists ──────────────
+    try:
+        local_match = await _find_local_match(session, candidate)
+        if local_match is not None:
+            logger.info(
+                "Dedup: skipping acquisition — local match exists: %s", local_match
+            )
+            await _set_state(session, job_id, "done", track_id=local_match)
+            return
+    except Exception as dedup_exc:
+        logger.debug("Dedup check failed (continuing): %s", dedup_exc)
 
     with tempfile.TemporaryDirectory(dir=tmp_acquire_dir) as tmp_str:
         tmp_dir = Path(tmp_str)
@@ -134,6 +179,44 @@ async def run_acquisition(
         disc_number = (tagged.disc_number if tagged else None)
         duration = (tagged.duration_seconds if tagged else None) or candidate.duration_seconds
 
+        # ── 3a. MusicBrainz lookup + re-tag ───────────────────────────────
+        mb_recording_id: str | None = None
+        artwork_bytes: bytes | None = None
+        try:
+            from service.metadata.musicbrainz import lookup_recording
+            mb = lookup_recording(
+                title, artist, duration,
+                cache_dir=settings.cache_dir,
+            )
+            if mb is not None:
+                mb_recording_id = mb.recording_id
+                title = mb.title or title
+                artist = mb.artist or artist
+                album = mb.album or album
+                year = mb.year or year
+                track_number = mb.track_number or track_number
+                # Re-tag the file with canonical MB data
+                write_tags(
+                    audio_path,
+                    title=title,
+                    artist=artist,
+                    album=album,
+                    year=year,
+                    track_number=track_number,
+                )
+                # Fetch artwork
+                try:
+                    from service.metadata.artwork import fetch_artwork
+                    artwork_bytes = await fetch_artwork(
+                        release_mbid=None,
+                        thumbnail_url=candidate.thumbnail_url,
+                        cache_dir=settings.cache_dir,
+                    )
+                except Exception as art_exc:
+                    logger.debug("Artwork fetch failed: %s", art_exc)
+        except Exception as mb_exc:
+            logger.debug("MB lookup skipped: %s", mb_exc)
+
         ext = audio_path.suffix.lstrip(".")
         dest = track_path(
             music_dir,
@@ -162,6 +245,13 @@ async def run_acquisition(
             logger.error("Placement failed %s: %s", job_id, exc)
             return
 
+        # ── 5b. Embed artwork after placement ──────────────────────────────
+        if artwork_bytes:
+            try:
+                write_tags(dest, artwork_bytes=artwork_bytes)
+            except Exception as art_exc:
+                logger.debug("Artwork embed failed: %s", art_exc)
+
         # ── 6. Index in DB ─────────────────────────────────────────────────
         try:
             await index_file(session, dest)
@@ -169,7 +259,12 @@ async def run_acquisition(
         except Exception as exc:
             logger.warning("DB index failed for %s: %s", dest, exc)
 
-        track_id = make_id(artist=artist, title=title, duration_seconds=duration)
+        track_id = make_id(
+            artist=artist,
+            title=title,
+            duration_seconds=duration,
+            musicbrainz_recording_id=mb_recording_id,
+        )
 
         # ── 7. Trigger Navidrome scan ──────────────────────────────────────
         try:

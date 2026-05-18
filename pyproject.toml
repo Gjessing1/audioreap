@@ -54,6 +54,15 @@ strict = true
 ignore_missing_imports = true
 exclude = ["alembic/", "tests/"]
 
+# mutagen has no type stubs — suppress all untyped-call and attr errors there
+[[tool.mypy.overrides]]
+module = "service.library.tagger"
+disable_error_code = ["no-untyped-call", "attr-defined", "index", "no-any-return", "unused-ignore"]
+
+[[tool.mypy.overrides]]
+module = "service.metadata.musicbrainz"
+disable_error_code = ["no-any-return", "call-overload", "unused-ignore"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [

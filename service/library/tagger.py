@@ -1,8 +1,10 @@
-"""Normalized tag reader over mutagen.
+"""Normalized tag reader/writer over mutagen.
 
 Nothing outside this module touches mutagen directly. All callers work with
-TaggedFile, which has consistent field names regardless of container format.
+TaggedFile for reads, and keyword arguments for writes.
 """
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,3 +165,123 @@ def read_tags(path: Path) -> TaggedFile | None:
         bitrate_kbps=bitrate,
         sample_rate_hz=sample_rate,
     )
+
+
+def write_tags(
+    path: Path,
+    *,
+    title: str | None = None,
+    artist: str | None = None,
+    albumartist: str | None = None,
+    album: str | None = None,
+    year: int | None = None,
+    track_number: int | None = None,
+    disc_number: int | None = None,
+    artwork_bytes: bytes | None = None,
+) -> None:
+    """Write normalized tags back to an audio file.
+
+    Only fields that are not None are written — existing tags for omitted
+    fields are left untouched.
+    """
+    audio = MutagenFile(path)
+    if audio is None:
+        return
+
+    tags = audio.tags
+
+    if isinstance(audio, MP4):
+        if tags is None:
+            audio.add_tags()
+            tags = audio.tags
+        if title is not None:
+            tags["©nam"] = [title]  # type: ignore[index]
+        if artist is not None:
+            tags["©ART"] = [artist]  # type: ignore[index]
+        if albumartist is not None:
+            tags["aART"] = [albumartist]  # type: ignore[index]
+        if album is not None:
+            tags["©alb"] = [album]  # type: ignore[index]
+        if year is not None:
+            tags["©day"] = [str(year)]  # type: ignore[index]
+        if track_number is not None:
+            tags["trkn"] = [(track_number, 0)]  # type: ignore[index]
+        if artwork_bytes is not None:
+            from mutagen.mp4 import MP4Cover
+            tags["covr"] = [MP4Cover(artwork_bytes, imageformat=MP4Cover.FORMAT_JPEG)]  # type: ignore[index]
+
+    elif isinstance(tags, ID3):
+        from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
+
+        if title is not None:
+            tags["TIT2"] = TIT2(encoding=3, text=[title])
+        if artist is not None:
+            tags["TPE1"] = TPE1(encoding=3, text=[artist])
+        if albumartist is not None:
+            tags["TPE2"] = TPE2(encoding=3, text=[albumartist])
+        if album is not None:
+            tags["TALB"] = TALB(encoding=3, text=[album])
+        if year is not None:
+            tags["TDRC"] = TDRC(encoding=3, text=[str(year)])
+        if track_number is not None:
+            tags["TRCK"] = TRCK(encoding=3, text=[str(track_number)])
+        if disc_number is not None:
+            tags["TPOS"] = TPOS(encoding=3, text=[str(disc_number)])
+        if artwork_bytes is not None:
+            tags["APIC"] = APIC(
+                encoding=3,
+                mime="image/jpeg",
+                type=3,
+                desc="Cover",
+                data=artwork_bytes,
+            )
+
+    else:
+        # Vorbis comment: FLAC, OGG, Opus
+        if tags is None:
+            audio.add_tags()
+            tags = audio.tags
+        if title is not None:
+            tags["title"] = [title]  # type: ignore[index]
+        if artist is not None:
+            tags["artist"] = [artist]  # type: ignore[index]
+        if albumartist is not None:
+            tags["albumartist"] = [albumartist]  # type: ignore[index]
+        if album is not None:
+            tags["album"] = [album]  # type: ignore[index]
+        if year is not None:
+            tags["date"] = [str(year)]  # type: ignore[index]
+        if track_number is not None:
+            tags["tracknumber"] = [str(track_number)]  # type: ignore[index]
+        if disc_number is not None:
+            tags["discnumber"] = [str(disc_number)]  # type: ignore[index]
+        if artwork_bytes is not None:
+            _embed_vorbis_art(audio, artwork_bytes)
+
+    audio.save()
+
+
+def _embed_vorbis_art(audio: object, data: bytes) -> None:
+    """Embed JPEG artwork into a Vorbis-comment-based file."""
+    import base64
+
+    from mutagen.flac import FLAC, Picture
+
+    if isinstance(audio, FLAC):
+        pic = Picture()
+        pic.type = 3
+        pic.mime = "image/jpeg"
+        pic.data = data
+        audio.clear_pictures()
+        audio.add_picture(pic)
+    else:
+        # OGG / Opus: METADATA_BLOCK_PICTURE tag
+        pic = Picture()
+        pic.type = 3
+        pic.mime = "image/jpeg"
+        pic.data = data
+        pic_data = pic.write()
+        encoded = base64.b64encode(pic_data).decode("ascii")
+        tags = getattr(audio, "tags", None)
+        if tags is not None:
+            tags["METADATA_BLOCK_PICTURE"] = [encoded]  # type: ignore[index]
