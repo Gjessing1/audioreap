@@ -22,6 +22,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "aiosqlite>=0.20",
     "greenlet>=3.0",
+    "aiofiles>=24.1",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +63,11 @@ disable_error_code = ["no-untyped-call", "attr-defined", "index", "no-any-return
 [[tool.mypy.overrides]]
 module = "service.metadata.musicbrainz"
 disable_error_code = ["no-any-return", "call-overload", "unused-ignore"]
+
+# Jinja2Templates stubs are outdated + redis.asyncio is untyped
+[[tool.mypy.overrides]]
+module = ["service.api.webui", "service.main"]
+disable_error_code = ["arg-type", "return-value", "no-untyped-call", "unused-ignore"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

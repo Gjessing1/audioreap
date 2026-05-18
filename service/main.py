@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+import aiofiles
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +24,15 @@ from service.db.session import get_session
 
 app = FastAPI(title="audioreap", version="0.1.0")
 
+# ── Static files ──────────────────────────────────────────────────────────
+_STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+# ── Web UI ────────────────────────────────────────────────────────────────
+from service.api.webui import router as webui_router  # noqa: E402
+
+app.include_router(webui_router)
+
 
 # ── Health ────────────────────────────────────────────────────────────────
 
@@ -32,6 +44,101 @@ async def health() -> dict[str, object]:
         "music_dir": str(settings.music_dir),
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+# ── Audio streaming ───────────────────────────────────────────────────────
+
+_MIME_MAP = {
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+}
+
+
+def _mime(path: Path) -> str:
+    return _MIME_MAP.get(path.suffix.lower(), "application/octet-stream")
+
+
+@app.get("/api/stream/{internal_id}")
+async def stream_track(
+    internal_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or row.file is None:
+        raise HTTPException(404, "Track not found")
+
+    file_path = Path(row.file.path)
+    if not file_path.exists():
+        raise HTTPException(404, "File not on disk")
+
+    file_size = file_path.stat().st_size
+    content_type = _mime(file_path)
+    range_header = request.headers.get("range")
+
+    if range_header:
+        # Parse "bytes=start-end"
+        try:
+            byte_range = range_header.strip().removeprefix("bytes=")
+            raw_start, raw_end = byte_range.split("-", 1)
+            start = int(raw_start) if raw_start else 0
+            end = int(raw_end) if raw_end else file_size - 1
+        except ValueError:
+            raise HTTPException(416, "Invalid Range header")
+
+        end = min(end, file_size - 1)
+        if start > end:
+            raise HTTPException(416, "Range not satisfiable")
+        length = end - start + 1
+
+        async def _gen(s: int, ln: int) -> object:
+            async with aiofiles.open(file_path, "rb") as f:
+                await f.seek(s)
+                remaining = ln
+                while remaining > 0:
+                    chunk = await f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            _gen(start, length),
+            status_code=206,
+            media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(length),
+                "Content-Disposition": f'inline; filename="{file_path.name}"',
+            },
+        )
+
+    # Full file
+    async def _full() -> object:
+        async with aiofiles.open(file_path, "rb") as f:
+            while chunk := await f.read(65536):
+                yield chunk
+
+    return StreamingResponse(
+        _full(),
+        media_type=content_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'inline; filename="{file_path.name}"',
+        },
+    )
 
 
 # ── Search ────────────────────────────────────────────────────────────────
@@ -103,11 +210,12 @@ class AcquireResponse(BaseModel):
     job_id: str
 
 
-@app.post("/api/acquire", response_model=AcquireResponse)
+@app.post("/api/acquire")
 async def acquire(
     req: AcquireRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
-) -> AcquireResponse:
+) -> Response:
     from service.acquisition.jobs import create_job
     from service.core.models import TrackCandidate
 
@@ -139,6 +247,17 @@ async def acquire(
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}") from exc
 
+    # Return job card HTML for HTMX callers, JSON for API callers
+    accept = request.headers.get("hx-request") or request.headers.get("accept", "")
+    if "hx-request" in request.headers or "text/html" in accept:
+        from fastapi.templating import Jinja2Templates
+        tmpl = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+        row = await session.get(AcquisitionJobRow, job_id)
+        if row:
+            return tmpl.TemplateResponse(
+                "partials/job_card.html",
+                {"request": request, "job": _job_row_to_model(row)},
+            )
     return AcquireResponse(job_id=job_id)
 
 

@@ -1,0 +1,22 @@
+{% if candidates %}
+{% for c in candidates %}
+<div class="card" id="cloud-{{ loop.index }}">
+  <div class="card-info">
+    <div class="card-title">{{ c.title }}</div>
+    <div class="card-sub">{{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}{% endif %}</div>
+  </div>
+  <div class="card-actions">
+    <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Preview</a>
+    <button class="btn btn-sm"
+            hx-post="/api/acquire"
+            hx-vals='{"provider_name":"ytdlp","provider_ref":"{{ c.provider_ref|e }}","candidate_json":"{{ c|tojson|e }}","query":"{{ q|e }}"}'
+            hx-target="#cloud-{{ loop.index }}"
+            hx-swap="outerHTML">
+      Acquire
+    </button>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="empty">No results found on YouTube.</p>
+{% endif %}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Jobs — audioreap{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+  <h2 style="font-size:18px">Acquisition jobs</h2>
+  <button class="btn btn-ghost btn-sm"
+          hx-get="/jobs/list"
+          hx-target="#job-list"
+          hx-indicator="#refresh-spinner">
+    Refresh <span id="refresh-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+
+<div id="job-list">
+  {% include "partials/job_list.html" %}
+</div>
+{% endblock %}

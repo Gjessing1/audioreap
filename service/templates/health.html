@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Health — audioreap{% endblock %}
+
+{% block content %}
+<h2 style="font-size:18px;margin-bottom:16px">System health</h2>
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-val" style="color:{% if health.navidrome_ok %}var(--success){% else %}var(--danger){% endif %}">
+      {% if health.navidrome_ok %}✓{% else %}✗{% endif %}
+    </div>
+    <div class="stat-label">Navidrome</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val" style="color:{% if health.redis_ok %}var(--success){% else %}var(--danger){% endif %}">
+      {% if health.redis_ok %}✓{% else %}✗{% endif %}
+    </div>
+    <div class="stat-label">Redis / Queue</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val">{{ health.disk_free_gb }}GB</div>
+    <div class="stat-label">Disk free</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val">{{ health.active_jobs }}</div>
+    <div class="stat-label">Active jobs</div>
+  </div>
+</div>
+
+<div class="section-title">Details</div>
+<div class="card">
+  <div class="card-info">
+    <div class="card-title">Version</div>
+    <div class="card-sub">{{ health.version }}</div>
+  </div>
+</div>
+<div class="card">
+  <div class="card-info">
+    <div class="card-title">Music directory</div>
+    <div class="card-sub">{{ health.music_dir }}</div>
+  </div>
+</div>
+{% endblock %}

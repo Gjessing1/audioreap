@@ -1,0 +1,205 @@
+/* ── Reset & Custom Properties ──────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0f1117;
+  --surface:   #1a1d2e;
+  --surface2:  #232740;
+  --border:    #2e3250;
+  --primary:   #7c3aed;
+  --primary-h: #6d28d9;
+  --success:   #10b981;
+  --warn:      #f59e0b;
+  --danger:    #ef4444;
+  --text:      #e2e8f0;
+  --muted:     #94a3b8;
+  --radius:    10px;
+  --player-h:  64px;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  padding-bottom: calc(var(--player-h) + env(safe-area-inset-bottom));
+}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+nav {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  height: 52px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  gap: 4px;
+}
+
+nav .brand { font-weight: 700; color: var(--primary); margin-right: auto; font-size: 17px; }
+
+nav a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: background .15s, color .15s;
+}
+nav a:hover, nav a.active { background: var(--surface2); color: var(--text); }
+
+main { max-width: 800px; margin: 0 auto; padding: 20px 16px; }
+
+/* ── Forms ───────────────────────────────────────────────────────────────── */
+.search-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+input[type="search"], input[type="text"] {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 16px;
+  padding: 12px 14px;
+  outline: none;
+  min-height: 44px;
+}
+input:focus { border-color: var(--primary); }
+
+button, .btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 16px;
+  cursor: pointer;
+  min-height: 44px;
+  min-width: 44px;
+  transition: background .15s;
+  white-space: nowrap;
+}
+button:hover, .btn:hover { background: var(--primary-h); }
+button:disabled { opacity: .5; cursor: default; }
+.btn-ghost { background: var(--surface2); color: var(--text); }
+.btn-ghost:hover { background: var(--border); }
+.btn-sm { font-size: 12px; padding: 6px 10px; min-height: 32px; }
+.btn-danger { background: var(--danger); }
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.card:last-child { margin-bottom: 0; }
+
+.card-info { flex: 1; min-width: 0; }
+.card-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-sub { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* ── Badges ──────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 99px;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.badge-local { background: #064e3b; color: var(--success); }
+.badge-cloud { background: #1e1b4b; color: #a5b4fc; }
+.badge-done  { background: #064e3b; color: var(--success); }
+.badge-fail  { background: #450a0a; color: #fca5a5; }
+.badge-busy  { background: #451a03; color: #fcd34d; }
+.badge-queued{ background: #1e293b; color: var(--muted); }
+
+/* ── Section headings ────────────────────────────────────────────────────── */
+.section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin: 20px 0 10px;
+}
+
+/* ── Play button ─────────────────────────────────────────────────────────── */
+.play-btn {
+  background: transparent;
+  border: 1.5px solid var(--border);
+  color: var(--text);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  min-width: 36px;
+  padding: 0;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.play-btn:hover { border-color: var(--primary); color: var(--primary); background: transparent; }
+.play-btn.playing { border-color: var(--primary); color: var(--primary); }
+
+/* ── Audio player (fixed bottom) ─────────────────────────────────────────── */
+#player-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: var(--player-h);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+  z-index: 200;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+#player-bar.hidden { display: none; }
+
+#player-title { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#player-controls { display: flex; align-items: center; gap: 8px; }
+#player-progress { flex: 1; min-width: 80px; max-width: 200px; accent-color: var(--primary); }
+
+/* ── Spinner / loading ───────────────────────────────────────────────────── */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator { display: inline; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+
+/* ── Stats grid ──────────────────────────────────────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+.stat-val { font-size: 24px; font-weight: 700; }
+.stat-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+.empty { text-align: center; color: var(--muted); padding: 40px 20px; }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+@media (min-width: 640px) {
+  nav { gap: 8px; }
+  nav a { font-size: 15px; }
+  #player-progress { max-width: 360px; }
+}

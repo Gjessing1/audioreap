@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#7c3aed">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <title>{% block title %}audioreap{% endblock %}</title>
+</head>
+<body>
+<nav>
+  <span class="brand">♪ audioreap</span>
+  <a href="/search" {% if active == 'search' %}class="active"{% endif %}>Search</a>
+  <a href="/jobs"   {% if active == 'jobs'   %}class="active"{% endif %}>Jobs</a>
+  <a href="/library"{% if active == 'library'%}class="active"{% endif %}>Library</a>
+  <a href="/health" {% if active == 'health' %}class="active"{% endif %}>Health</a>
+</nav>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+<!-- Fixed audio player -->
+<div id="player-bar" class="hidden">
+  <span id="player-title">—</span>
+  <div id="player-controls">
+    <button id="player-play" class="btn-ghost btn-sm">▶</button>
+    <input id="player-progress" type="range" min="0" max="100" value="0" step="0.1">
+  </div>
+</div>
+<audio id="audio-el" preload="none"></audio>
+
+<script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

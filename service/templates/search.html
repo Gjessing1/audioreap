@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Search — audioreap{% endblock %}
+
+{% block content %}
+<form class="search-bar"
+      hx-get="/search/results"
+      hx-trigger="input changed delay:400ms from:#q, submit"
+      hx-target="#local-results"
+      hx-include="#q">
+  <input id="q" name="q" type="search" placeholder="Search your library…"
+         value="{{ q|default('') }}"
+         inputmode="search" enterkeyhint="search" autocomplete="off"
+         autofocus>
+  <button type="submit">Search</button>
+</form>
+
+<!-- Local results -->
+<div id="local-results">
+  {% if q %}{% include "partials/local_results.html" %}{% else %}
+  <p class="empty">Start typing to search your library.</p>
+  {% endif %}
+</div>
+
+<!-- Cloud search -->
+{% if q %}
+<div class="section-title">Online (YouTube)</div>
+<div id="cloud-results">
+  <button class="btn-ghost"
+          hx-get="/search/cloud"
+          hx-include="#q"
+          hx-target="#cloud-results"
+          hx-indicator="#cloud-spinner">
+    Search YouTube for "{{ q }}"
+    <span id="cloud-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+{% endif %}
+{% endblock %}

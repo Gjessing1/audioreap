@@ -1,0 +1,7 @@
+{% if jobs %}
+{% for job in jobs %}
+{% include "partials/job_card.html" %}
+{% endfor %}
+{% else %}
+<p class="empty">No acquisition jobs yet.</p>
+{% endif %}

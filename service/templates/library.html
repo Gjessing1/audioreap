@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Library — audioreap{% endblock %}
+
+{% block content %}
+<h2 style="font-size:18px;margin-bottom:16px">Library overview</h2>
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-val">{{ stats.tracks }}</div>
+    <div class="stat-label">Tracks</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val">{{ stats.albums }}</div>
+    <div class="stat-label">Albums</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val">{{ stats.artists }}</div>
+    <div class="stat-label">Artists</div>
+  </div>
+</div>
+
+<div class="section-title">Recent additions</div>
+{% for t in recent %}
+<div class="card">
+  <button class="play-btn" data-id="{{ t.internal_id }}"
+          onclick="playTrack('{{ t.internal_id }}', '{{ t.title|e }}')">▶</button>
+  <div class="card-info">
+    <div class="card-title">{{ t.title }}</div>
+    <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
+  </div>
+</div>
+{% else %}
+<p class="empty">No tracks indexed yet. Run a scan first.</p>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,26 @@
+{% if tracks %}
+<div class="section-title">In your library ({{ tracks|length }})</div>
+{% for t in tracks %}
+<div class="card">
+  <button class="play-btn"
+          data-id="{{ t.internal_id }}"
+          onclick="playTrack('{{ t.internal_id }}', '{{ t.title|e }}')"
+          {% if t.status != 'available' %}disabled title="File not on disk"{% endif %}>
+    ▶
+  </button>
+  <div class="card-info">
+    <div class="card-title">{{ t.title }}</div>
+    <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}
+      {% if t.quality %}
+        · <span style="color: var(--muted)">{{ t.quality.codec }}{% if t.quality.bitrate_kbps %} {{ t.quality.bitrate_kbps }}kbps{% endif %}</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-actions">
+    <span class="badge badge-local">Local</span>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="empty">No local results for "{{ q }}".</p>
+{% endif %}
