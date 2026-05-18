@@ -223,6 +223,19 @@ def _explicit_score(title: str) -> int:
     return 0
 
 
+@router.delete("/jobs/dismiss/{job_id}", response_class=HTMLResponse)
+async def dismiss_job(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is not None and row.state in ("done", "failed", "cancelled"):
+        await session.delete(row)
+        await session.commit()
+    return HTMLResponse("")
+
+
 @router.get("/search/cloud", response_class=HTMLResponse)
 async def cloud_search_page(
     request: Request,

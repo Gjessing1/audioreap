@@ -23,7 +23,7 @@ from service.providers.base import Provider, ProviderCapabilities
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SEARCH_LIMIT = 5
-_SEARCH_PREFIX = "ytsearchmusic"
+_SEARCH_PREFIX = "ytsearch"
 
 
 def _ydl_opts_base() -> dict[str, object]:
@@ -199,7 +199,7 @@ class YtdlpProvider(Provider):
 
         try:
             with yt_dlp.YoutubeDL({**_ydl_opts_base(), "extract_flat": True}) as ydl:
-                ydl.extract_info("ytsearchmusic1:test", download=False)
+                ydl.extract_info("ytsearch1:test", download=False)
             return ProviderHealth(healthy=True, checked_at=datetime.now(UTC))
         except Exception as exc:
             return ProviderHealth(

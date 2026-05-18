@@ -11,7 +11,7 @@ from service.db.schema import AcquisitionJobRow
 
 logger = logging.getLogger(__name__)
 
-_STUCK_STATES = frozenset({"downloading", "processing", "tagging", "importing"})
+_STUCK_STATES = frozenset({"queued", "downloading", "processing", "tagging", "importing"})
 _STUCK_CUTOFF_MINUTES = 15
 
 

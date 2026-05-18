@@ -22,7 +22,7 @@
     <button class="play-btn" data-id="{{ job.track_ref.internal_id }}"
             onclick="playTrack('{{ job.track_ref.internal_id }}', '{{ job.track_ref.title|e }}')">▶</button>
     {% endif %}
-    {% if job.state == 'failed' %}
+    {% if job.state in ('failed', 'queued') %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/retry/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
@@ -34,6 +34,13 @@
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML"
             hx-confirm="Cancel this job?">Cancel</button>
+    {% endif %}
+    {% if job.state in ('done', 'failed', 'cancelled') %}
+    <button class="btn btn-sm btn-ghost"
+            hx-delete="/jobs/dismiss/{{ job.id }}"
+            hx-target="#job-{{ job.id }}"
+            hx-swap="outerHTML swap:0.3s"
+            style="color:var(--muted)">✕</button>
     {% endif %}
   </div>
 </div>
