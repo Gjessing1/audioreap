@@ -9,8 +9,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
+import secrets
+
 import aiofiles
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Query, Request, Response
+from fastapi.middleware import Middleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -54,6 +57,45 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="audioreap", version="0.1.0", lifespan=lifespan)
+
+
+# ── Basic auth middleware (optional) ──────────────────────────────────────
+
+_UNPROTECTED = frozenset({"/health", "/static"})
+
+
+@app.middleware("http")
+async def basic_auth_middleware(request: Request, call_next: object) -> Response:
+    from collections.abc import Callable
+    call_next_fn: Callable = call_next  # type: ignore[assignment]
+
+    if not settings.ui_password:
+        return await call_next_fn(request)
+
+    path = request.url.path
+    if path == "/health" or path.startswith("/static/"):
+        return await call_next_fn(request)
+
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("basic "):
+        try:
+            import base64
+            decoded = base64.b64decode(auth[6:]).decode()
+            username, _, password = decoded.partition(":")
+            user_ok = secrets.compare_digest(username, settings.ui_username or "audioreap")
+            pass_ok = secrets.compare_digest(password, settings.ui_password)
+            if user_ok and pass_ok:
+                return await call_next_fn(request)
+        except Exception:
+            pass
+
+    from fastapi.responses import Response as Resp
+    return Resp(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="audioreap"'},
+        content="Unauthorized",
+    )
+
 
 # ── Static files ──────────────────────────────────────────────────────────
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -388,3 +430,59 @@ async def get_job(
     if row is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return _job_row_to_model(row)
+
+
+# ── Subsonic capture proxy (Phase 6 prerequisite) ────────────────────────
+# Point Symfonium at this service instead of Navidrome to record traffic.
+# All requests are logged in full, then forwarded transparently.
+
+_subsonic_logger = logging.getLogger("subsonic.capture")
+
+
+@app.api_route(
+    "/rest/{path:path}",
+    methods=["GET", "POST"],
+    include_in_schema=False,
+)
+async def subsonic_capture_proxy(path: str, request: Request) -> Response:
+    """Transparent Subsonic proxy that logs every request for Phase 6 analysis."""
+    import httpx
+    from fastapi.responses import Response as Resp
+
+    params = dict(request.query_params)
+    body = await request.body()
+
+    _subsonic_logger.info(
+        "SUBSONIC %s /rest/%s params=%r body_len=%d",
+        request.method,
+        path,
+        {k: v for k, v in params.items() if k not in ("p", "t", "s")},
+        len(body),
+    )
+
+    target = f"{settings.navidrome_url}/rest/{path}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.request(
+                method=request.method,
+                url=target,
+                params=params,
+                content=body,
+                headers={k: v for k, v in request.headers.items()
+                         if k.lower() not in ("host", "content-length")},
+            )
+        except httpx.RequestError as exc:
+            raise HTTPException(502, f"Navidrome unreachable: {exc}") from exc
+
+    _subsonic_logger.info(
+        "SUBSONIC response %d len=%d",
+        resp.status_code,
+        len(resp.content),
+    )
+
+    return Resp(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers={k: v for k, v in resp.headers.items()
+                 if k.lower() not in ("transfer-encoding", "content-encoding")},
+    )

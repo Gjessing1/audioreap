@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Worker
     worker_concurrency: int = 2
 
+    # Auth (optional — leave empty to rely on a reverse proxy for auth)
+    ui_username: str = ""
+    ui_password: str = ""
+
     # Logging
     log_format: str = "pretty"  # "json" in prod
 
