@@ -12,14 +12,16 @@
   </div>
   <div class="card-actions">
     <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Preview ↗</a>
-    <button class="btn btn-sm"
-            onclick="acquireTrack(this)"
-            data-target="cloud-{{ loop.index }}"
-            data-ref="{{ c.provider_ref|e }}"
-            data-json="{{ c.candidate_json|e }}"
-            data-query="{{ q|e }}">
-      Acquire
-    </button>
+    <form hx-post="/api/acquire"
+          hx-target="#cloud-{{ loop.index }}"
+          hx-swap="outerHTML"
+          style="display:contents">
+      <input type="hidden" name="provider_name" value="ytdlp">
+      <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
+      <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
+      <input type="hidden" name="query" value="{{ q|e }}">
+      <button type="submit" class="btn btn-sm">Acquire</button>
+    </form>
   </div>
 </div>
 {% endfor %}

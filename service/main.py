@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import aiofiles
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -250,35 +250,32 @@ async def trigger_scan_endpoint(background_tasks: BackgroundTasks) -> dict[str, 
 
 # ── Acquire ───────────────────────────────────────────────────────────────
 
-class AcquireRequest(BaseModel):
-    provider_name: str = "ytdlp"
-    provider_ref: str
-    candidate_json: str
-    query: str | None = None
-
-
 class AcquireResponse(BaseModel):
     job_id: str
 
 
 @app.post("/api/acquire")
 async def acquire(
-    req: AcquireRequest,
     request: Request,
     session: AsyncSession = Depends(get_session),
+    provider_name: str = Form(default="ytdlp"),
+    provider_ref: str = Form(...),
+    candidate_json: str = Form(...),
+    query: str = Form(default=""),
 ) -> Response:
+    """Accept form data (from HTMX) and enqueue an acquisition job."""
     from service.acquisition.jobs import create_job
     from service.core.models import TrackCandidate
 
-    candidate = TrackCandidate.model_validate_json(req.candidate_json)
+    candidate = TrackCandidate.model_validate_json(candidate_json)
 
     async with session.begin():
         job_id = await create_job(
             session,
-            provider_name=req.provider_name,
-            provider_ref=req.provider_ref,
+            provider_name=provider_name,
+            provider_ref=provider_ref,
             candidate=candidate,
-            query=req.query,
+            query=query or None,
         )
 
     try:
@@ -287,9 +284,9 @@ async def acquire(
         await redis.enqueue_job(
             "acquire_track",
             job_id=job_id,
-            provider_name=req.provider_name,
-            provider_ref=req.provider_ref,
-            candidate_json=req.candidate_json,
+            provider_name=provider_name,
+            provider_ref=provider_ref,
+            candidate_json=candidate_json,
             music_dir=str(settings.music_dir),
             tmp_acquire_dir=str(settings.tmp_acquire_dir),
             _job_id=f"acquire:{job_id}",
@@ -298,16 +295,13 @@ async def acquire(
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}") from exc
 
-    # Return job card HTML for HTMX callers, JSON for API callers
-    accept = request.headers.get("hx-request") or request.headers.get("accept", "")
-    if "hx-request" in request.headers or "text/html" in accept:
-        from fastapi.templating import Jinja2Templates
-        tmpl = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-        row = await session.get(AcquisitionJobRow, job_id)
-        if row:
-            return tmpl.TemplateResponse(
-                request, "partials/job_card.html", {"job": _job_row_to_model(row)}
-            )
+    from fastapi.templating import Jinja2Templates
+    tmpl = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row:
+        return tmpl.TemplateResponse(
+            request, "partials/job_card.html", {"job": _job_row_to_model(row)}
+        )
     return AcquireResponse(job_id=job_id)
 
 
