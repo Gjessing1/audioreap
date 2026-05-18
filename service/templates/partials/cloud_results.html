@@ -11,12 +11,15 @@
     </div>
   </div>
   <div class="card-actions">
-    <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Preview</a>
+    <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Preview ↗</a>
     <button class="btn btn-sm"
             hx-post="/api/acquire"
-            hx-vals='{"provider_name":"ytdlp","provider_ref":"{{ c.provider_ref|e }}","candidate_json":"{{ c.candidate_json|e }}","query":"{{ q|e }}"}'
+            hx-vals='js:{"provider_name":"ytdlp","provider_ref":this.dataset.ref,"candidate_json":this.dataset.json,"query":this.dataset.query}'
             hx-target="#cloud-{{ loop.index }}"
-            hx-swap="outerHTML">
+            hx-swap="outerHTML"
+            data-ref="{{ c.provider_ref|e }}"
+            data-json="{{ c.candidate_json|e }}"
+            data-query="{{ q|e }}">
       Acquire
     </button>
   </div>
