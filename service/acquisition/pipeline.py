@@ -179,7 +179,7 @@ async def run_acquisition(
         disc_number = (tagged.disc_number if tagged else None)
         duration = (tagged.duration_seconds if tagged else None) or candidate.duration_seconds
 
-        # ── 3a. MusicBrainz lookup + re-tag ───────────────────────────────
+        # ── 3a. MusicBrainz lookup ────────────────────────────────────────────
         mb_recording_id: str | None = None
         artwork_bytes: bytes | None = None
         try:
@@ -195,16 +195,6 @@ async def run_acquisition(
                 album = mb.album or album
                 year = mb.year or year
                 track_number = mb.track_number or track_number
-                # Re-tag the file with canonical MB data
-                write_tags(
-                    audio_path,
-                    title=title,
-                    artist=artist,
-                    album=album,
-                    year=year,
-                    track_number=track_number,
-                )
-                # Fetch artwork
                 try:
                     from service.metadata.artwork import fetch_artwork
                     artwork_bytes = await fetch_artwork(
@@ -216,6 +206,19 @@ async def run_acquisition(
                     logger.debug("Artwork fetch failed: %s", art_exc)
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
+
+        # Always write the final resolved tags (candidate fallback or MB-enriched)
+        try:
+            write_tags(
+                audio_path,
+                title=title,
+                artist=artist,
+                album=album,
+                year=year,
+                track_number=track_number,
+            )
+        except Exception as tag_exc:
+            logger.warning("Tag write failed for %s: %s", audio_path, tag_exc)
 
         ext = audio_path.suffix.lstrip(".")
         dest = track_path(
