@@ -2,9 +2,10 @@
   'done': 'badge-done',
   'failed': 'badge-fail',
   'queued': 'badge-queued',
+  'cancelled': 'badge-fail',
 }.get(job.state, 'badge-busy') %}
 <div class="card" id="job-{{ job.id }}"
-     {% if job.state not in ('done', 'failed') %}
+     {% if job.state not in ('done', 'failed', 'cancelled') %}
      hx-get="/jobs/status/{{ job.id }}"
      hx-trigger="every 3s"
      hx-target="#job-{{ job.id }}"
@@ -26,6 +27,13 @@
             hx-post="/jobs/retry/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML">Retry</button>
+    {% endif %}
+    {% if job.state in ('queued', 'downloading', 'processing') %}
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/jobs/cancel/{{ job.id }}"
+            hx-target="#job-{{ job.id }}"
+            hx-swap="outerHTML"
+            hx-confirm="Cancel this job?">Cancel</button>
     {% endif %}
   </div>
 </div>

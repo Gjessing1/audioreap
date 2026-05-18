@@ -338,6 +338,32 @@ def _job_row_to_model(row: AcquisitionJobRow) -> AcquisitionJob:
     )
 
 
+@app.get("/api/preview")
+async def preview_audio(ref: str = Query(...)) -> Response:
+    """Return a redirect to the direct audio stream URL for a provider ref."""
+    from fastapi.responses import RedirectResponse
+
+    def _extract() -> str:
+        import yt_dlp
+
+        opts = {
+            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(ref, download=False)
+            return str(info.get("url") or info["webpage_url"])
+
+    try:
+        direct_url = await asyncio.to_thread(_extract)
+    except Exception as exc:
+        raise HTTPException(502, f"Preview extraction failed: {exc}") from exc
+
+    return RedirectResponse(direct_url, status_code=307)
+
+
 @app.get("/api/jobs", response_model=list[AcquisitionJob])
 async def list_jobs(
     limit: int = Query(50, ge=1, le=200),

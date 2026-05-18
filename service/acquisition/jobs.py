@@ -103,6 +103,12 @@ async def acquire_track(
 
     candidate = TrackCandidate.model_validate_json(candidate_json)
 
+    async with session_factory() as session:
+        row = await session.get(AcquisitionJobRow, job_id)
+        if row is not None and row.state == "cancelled":
+            logger.info("Job %s was cancelled before pickup; skipping", job_id)
+            return
+
     async with session_factory() as session, session.begin():
         await run_acquisition(
             job_id=job_id,

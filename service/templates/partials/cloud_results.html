@@ -1,6 +1,6 @@
 {% if candidates %}
 {% for c in candidates %}
-<div class="card" id="cloud-{{ loop.index }}">
+<div class="card" id="cloud-{{ (offset|default(0)) + loop.index }}">
   <div class="card-info">
     <div class="card-title">{{ c.title }}</div>
     <div class="card-sub">
@@ -11,9 +11,11 @@
     </div>
   </div>
   <div class="card-actions">
-    <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Preview ↗</a>
+    <button class="play-btn"
+            onclick="playPreview('{{ c.provider_ref|e }}', '{{ c.title|e }}')">▶</button>
+    <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" title="Open on YouTube">↗</a>
     <form hx-post="/api/acquire"
-          hx-target="#cloud-{{ loop.index }}"
+          hx-target="#cloud-{{ (offset|default(0)) + loop.index }}"
           hx-swap="outerHTML"
           style="display:contents">
       <input type="hidden" name="provider_name" value="ytdlp">
@@ -25,6 +27,18 @@
   </div>
 </div>
 {% endfor %}
+{% if candidates|length >= (limit|default(5)) %}
+<div id="cloud-load-more" style="text-align:center;margin-top:8px">
+  <button class="btn btn-ghost btn-sm"
+          hx-get="/search/cloud?q={{ q|urlencode }}&offset={{ (offset|default(0)) + (limit|default(5)) }}"
+          hx-target="#cloud-load-more"
+          hx-swap="outerHTML"
+          hx-indicator="#cloud-more-spinner">
+    Load more
+    <span id="cloud-more-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+{% endif %}
 {% elif q %}
 <p class="empty">No results found on YouTube for "{{ q }}".</p>
 {% endif %}

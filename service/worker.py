@@ -29,12 +29,12 @@ async def shutdown(ctx: dict[str, object]) -> None:
     logger.info("audioreap worker stopped")
 
 
+from service.acquisition.jobs import acquire_album, acquire_track  # noqa: E402
+
+
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = [
-        "service.acquisition.jobs.acquire_track",
-        "service.acquisition.jobs.acquire_album",
-    ]
+    functions = [acquire_track, acquire_album]
     max_jobs = settings.worker_concurrency
     on_startup = startup
     on_shutdown = shutdown

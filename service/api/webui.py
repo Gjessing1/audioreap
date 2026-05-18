@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -92,32 +93,6 @@ async def search_results(
     )
 
 
-@router.get("/search/cloud", response_class=HTMLResponse)
-async def cloud_search(request: Request, q: str = "") -> HTMLResponse:
-    # Each entry: plain dict with title/artist/duration/provider_ref + pre-serialized JSON
-    # so the template doesn't need to call tojson on a Pydantic object.
-    candidates: list[dict[str, object]] = []
-    if q:
-        try:
-            import service.providers.ytdlp  # noqa: F401
-            from service.core.models import SearchQuery
-            from service.providers import get
-
-            provider = get("ytdlp")()
-            async for c in provider.search(SearchQuery(q=q, limit=5)):
-                candidates.append({
-                    "title": c.title,
-                    "artist": c.artist,
-                    "duration_seconds": c.duration_seconds,
-                    "provider_ref": c.provider_ref,
-                    "candidate_json": c.model_dump_json(),
-                })
-        except Exception as exc:
-            logger.warning("Cloud search failed: %s", exc)
-
-    return templates.TemplateResponse(
-        request, "partials/cloud_results.html", {"candidates": candidates, "q": q}
-    )
 
 
 @router.get("/jobs", response_class=HTMLResponse)
@@ -199,6 +174,79 @@ async def retry_job(
 
     return templates.TemplateResponse(
         request, "partials/job_card.html", {"job": _job_to_model(row)}
+    )
+
+
+@router.post("/jobs/cancel/{job_id}", response_class=HTMLResponse)
+async def cancel_job(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise HTTPException(404)
+    if row.state in ("done", "failed", "cancelled"):
+        return templates.TemplateResponse(
+            request, "partials/job_card.html", {"job": _job_to_model(row)}
+        )
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.zrem("arq:queue", f"acquire:{job_id}")
+        await redis.aclose()
+    except Exception:
+        pass  # best-effort dequeue
+
+    row.state = "cancelled"
+    row.error = "Cancelled by user"
+    row.updated_at = datetime.utcnow()
+    await session.flush()
+    await session.commit()
+
+    return templates.TemplateResponse(
+        request, "partials/job_card.html", {"job": _job_to_model(row)}
+    )
+
+
+@router.get("/search/cloud", response_class=HTMLResponse)
+async def cloud_search_page(
+    request: Request,
+    q: str = "",
+    offset: int = 0,
+) -> HTMLResponse:
+    candidates: list[dict[str, object]] = []
+    if q:
+        try:
+            import service.providers.ytdlp  # noqa: F401
+            from service.core.models import SearchQuery
+            from service.providers import get
+
+            provider = get("ytdlp")()
+            limit = 5
+            count = 0
+            skip = offset
+            async for c in provider.search(SearchQuery(q=q, limit=limit + skip)):
+                if skip > 0:
+                    skip -= 1
+                    continue
+                candidates.append({
+                    "title": c.title,
+                    "artist": c.artist,
+                    "duration_seconds": c.duration_seconds,
+                    "provider_ref": c.provider_ref,
+                    "candidate_json": c.model_dump_json(),
+                })
+                count += 1
+                if count >= limit:
+                    break
+        except Exception as exc:
+            logger.warning("Cloud search failed: %s", exc)
+
+    return templates.TemplateResponse(
+        request, "partials/cloud_results.html",
+        {"candidates": candidates, "q": q, "offset": offset, "limit": 5},
     )
 
 

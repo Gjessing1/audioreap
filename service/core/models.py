@@ -101,7 +101,7 @@ class AcquisitionJob(BaseModel):
     id: str
     track_ref: TrackRef
     state: Literal[
-        "queued", "downloading", "processing", "tagging", "importing", "done", "failed"
+        "queued", "downloading", "processing", "tagging", "importing", "done", "failed", "cancelled"
     ]
     progress: float | None = None
     error: str | None = None

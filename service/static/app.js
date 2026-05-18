@@ -64,6 +64,20 @@ function updatePlayBtns() {
 /* Re-attach after HTMX swaps */
 document.body.addEventListener("htmx:afterSwap", () => updatePlayBtns());
 
+window.playPreview = function(ref, title) {
+  const previewUrl = "/api/preview?ref=" + encodeURIComponent(ref);
+  if (currentId === "preview:" + ref) {
+    togglePlay();
+    return;
+  }
+  currentId = "preview:" + ref;
+  audio.src = previewUrl;
+  playerTitle.textContent = title + " (preview)";
+  playerBar.classList.remove("hidden");
+  audio.play().catch(() => {});
+  updatePlayBtns();
+};
+
 /* ── Acquire (bypass hx-vals JSON-in-JSON problem) ───────────────────────── */
 window.acquireTrack = async function(btn) {
   const targetId = btn.dataset.target;
