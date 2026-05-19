@@ -4,12 +4,21 @@
 {% block content %}
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
   <h2 style="font-size:18px">Library overview</h2>
-  <button class="btn"
-          hx-post="/api/scan"
-          hx-swap="none"
-          hx-on::after-request="this.textContent='Scanning…'; setTimeout(() => { this.textContent='Scan library'; window.location.reload(); }, 8000)">
-    Scan library
-  </button>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-ghost btn-sm"
+            hx-post="/api/enrich/all"
+            hx-swap="none"
+            hx-on::after-request="this.textContent='Enrichment queued ✓'; this.disabled=true"
+            title="Queue MusicBrainz enrichment for all unmatched tracks">
+      Enrich library
+    </button>
+    <button class="btn"
+            hx-post="/api/scan"
+            hx-swap="none"
+            hx-on::after-request="this.textContent='Scanning…'; setTimeout(() => { this.textContent='Scan library'; window.location.reload(); }, 8000)">
+      Scan library
+    </button>
+  </div>
 </div>
 
 {% if stats.tracks == 0 %}
@@ -22,6 +31,7 @@
   </div>
 </div>
 {% else %}
+
 <div class="stats">
   <div class="stat">
     <div class="stat-val">{{ stats.tracks }}</div>
@@ -36,10 +46,72 @@
     <div class="stat-label">Artists</div>
   </div>
 </div>
+
+{% if quality %}
+<div class="section-title" style="margin-top:16px">Metadata quality</div>
+<div class="stats" style="margin-bottom:8px">
+  <div class="stat">
+    <div class="stat-val" style="color:{% if quality.low_quality == 0 %}var(--success){% elif quality.low_quality > stats.tracks // 2 %}var(--danger){% else %}var(--warn){% endif %}">
+      {{ quality.low_quality }}
+    </div>
+    <div class="stat-label">Low quality</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val" style="color:{% if quality.no_mbid == 0 %}var(--success){% else %}var(--muted){% endif %}">
+      {{ quality.no_mbid }}
+    </div>
+    <div class="stat-label">No MB match</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val" style="color:{% if quality.no_art == 0 %}var(--success){% else %}var(--muted){% endif %}">
+      {{ quality.no_art }}
+    </div>
+    <div class="stat-label">No cover art</div>
+  </div>
+</div>
+{% if quality.no_mbid > 0 %}
+<p class="empty" style="margin:4px 0 12px;font-size:13px">
+  Click <strong>Enrich library</strong> to queue MusicBrainz lookups for {{ quality.no_mbid }} unmatched tracks.
+  Jobs run in the background at 1 req/sec — check the Jobs page for progress.
+</p>
+{% endif %}
+{% endif %}
+
+{% if low_quality_tracks %}
+<div class="section-title" style="margin-top:8px">Needs improvement</div>
+{% for t in low_quality_tracks %}
+<div class="card" id="qtrack-{{ t.internal_id }}">
+  <div class="card-info">
+    <div class="card-title">{{ t.title }}</div>
+    <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
+    <div class="card-sub" style="font-size:11px;margin-top:2px;color:var(--muted)">
+      Quality {{ "%.0f"|format(t.quality_score * 100) }}%
+      {% if not t.has_mbid %} · No MB ID{% endif %}
+      {% if not t.has_art %} · No cover art{% endif %}
+    </div>
+  </div>
+  <div class="card-actions">
+    {% if t.has_mbid %}
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/library/tracks/{{ t.internal_id }}/retag"
+            hx-target="#qtrack-{{ t.internal_id }}"
+            hx-swap="outerHTML">
+      Re-tag
+    </button>
+    {% endif %}
+    <button class="btn btn-sm btn-ghost"
+            hx-delete="/library/tracks/{{ t.internal_id }}"
+            hx-target="#qtrack-{{ t.internal_id }}"
+            hx-swap="outerHTML swap:0.3s"
+            hx-confirm="Move this track to trash?"
+            style="color:var(--muted)">✕</button>
+  </div>
+</div>
+{% endfor %}
 {% endif %}
 
 {% if recent %}
-<div class="section-title">Recent additions</div>
+<div class="section-title" style="margin-top:16px">Recent additions</div>
 {% for t in recent %}
 <div class="card" id="track-{{ t.internal_id }}">
   <button class="play-btn" data-id="{{ t.internal_id }}"
@@ -58,5 +130,7 @@
   </div>
 </div>
 {% endfor %}
+{% endif %}
+
 {% endif %}
 {% endblock %}

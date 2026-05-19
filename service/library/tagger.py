@@ -35,6 +35,7 @@ class TaggedFile:
     container: str
     bitrate_kbps: int | None
     sample_rate_hz: int | None
+    has_cover_art: bool = False
 
 
 def _parse_tracknum(value: str | None) -> int | None:
@@ -87,6 +88,37 @@ def _vorbis_str(tags: object, key: str) -> str | None:
     first = val[0] if isinstance(val, list) else val
     text = str(first).strip()
     return text or None
+
+
+def _check_cover_art(audio: object, tags: object) -> bool:
+    """Return True if the file has embedded cover art."""
+    if isinstance(audio, MP4):
+        return bool(tags and tags.get("covr"))  # type: ignore[union-attr]
+    elif isinstance(tags, ID3):
+        return any(k.startswith("APIC") for k in tags.keys())
+    else:
+        from mutagen.flac import FLAC
+        if isinstance(audio, FLAC):
+            return bool(audio.pictures)  # type: ignore[union-attr]
+        # OGG / Opus: METADATA_BLOCK_PICTURE vorbis comment
+        return bool(
+            tags
+            and (
+                tags.get("METADATA_BLOCK_PICTURE")  # type: ignore[union-attr]
+                or tags.get("metadata_block_picture")  # type: ignore[union-attr]
+            )
+        )
+
+
+def has_cover_art(path: Path) -> bool:
+    """Return True if the audio file at path has embedded cover art."""
+    try:
+        audio = MutagenFile(path)
+    except Exception:
+        return False
+    if audio is None:
+        return False
+    return _check_cover_art(audio, audio.tags)
 
 
 def read_tags(path: Path) -> TaggedFile | None:
@@ -150,6 +182,8 @@ def read_tags(path: Path) -> TaggedFile | None:
         track_number = _parse_tracknum(_vorbis_str(tags, "tracknumber"))
         disc_number = _parse_tracknum(_vorbis_str(tags, "discnumber"))
 
+    cover = _check_cover_art(audio, tags)
+
     return TaggedFile(
         path=path,
         title=title,
@@ -164,6 +198,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         container=container,
         bitrate_kbps=bitrate,
         sample_rate_hz=sample_rate,
+        has_cover_art=cover,
     )
 
 

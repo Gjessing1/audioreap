@@ -432,3 +432,37 @@ async def get_job(
     return _job_row_to_model(row)
 
 
+# ── Metadata enrichment ───────────────────────────────────────────────────
+
+class EnrichResponse(BaseModel):
+    queued: int
+
+
+@app.post("/api/enrich/all", response_model=EnrichResponse)
+async def enrich_all(session: AsyncSession = Depends(get_session)) -> EnrichResponse:
+    """Queue MusicBrainz enrichment jobs for all tracks lacking a Recording ID."""
+    from service.db.schema import Track
+
+    rows = (
+        await session.execute(
+            select(Track.id).where(Track.musicbrainz_recording_id.is_(None))
+        )
+    ).scalars().all()
+
+    if not rows:
+        return EnrichResponse(queued=0)
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        for track_id in rows:
+            await redis.enqueue_job("enrich_track", track_id=track_id)
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}") from exc
+
+    logger.info("Queued %d enrichment jobs", len(rows))
+    return EnrichResponse(queued=len(rows))
+
+

@@ -337,9 +337,62 @@ async def library_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    from service.metadata.quality import LOW_QUALITY_THRESHOLD
+
     track_count = (await session.execute(select(func.count(Track.id)))).scalar_one()
     album_count = (await session.execute(select(func.count(Album.id)))).scalar_one()
     artist_count = (await session.execute(select(func.count(Artist.id)))).scalar_one()
+
+    # Quality stats
+    no_mbid_count = (
+        await session.execute(
+            select(func.count(Track.id)).where(Track.musicbrainz_recording_id.is_(None))
+        )
+    ).scalar_one()
+    no_art_count = (
+        await session.execute(
+            select(func.count(TrackFile.id)).where(
+                (TrackFile.has_cover_art.is_(None)) | (TrackFile.has_cover_art == 0)
+            )
+        )
+    ).scalar_one()
+    low_quality_count = (
+        await session.execute(
+            select(func.count(Track.id)).where(
+                (Track.tag_quality_score.isnot(None))
+                & (Track.tag_quality_score < LOW_QUALITY_THRESHOLD)
+            )
+        )
+    ).scalar_one()
+
+    # Low-quality tracks to surface (with file, worst first)
+    low_quality_rows = (
+        await session.execute(
+            select(Track)
+            .join(Track.artist)
+            .outerjoin(Track.album)
+            .join(Track.file)
+            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+            .where(
+                Track.tag_quality_score.isnot(None),
+                Track.tag_quality_score < LOW_QUALITY_THRESHOLD,
+            )
+            .order_by(Track.tag_quality_score.asc())
+            .limit(30)
+        )
+    ).unique().scalars().all()
+
+    low_quality = []
+    for row in low_quality_rows:
+        low_quality.append({
+            "internal_id": row.id,
+            "title": row.title,
+            "artist": row.artist.name,
+            "album": row.album.title if row.album else None,
+            "quality_score": row.tag_quality_score,
+            "has_mbid": bool(row.musicbrainz_recording_id),
+            "has_art": bool(row.file and row.file.has_cover_art),
+        })
 
     recent_rows = (
         await session.execute(
@@ -359,9 +412,77 @@ async def library_page(
         {
             "active": "library",
             "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count},
+            "quality": {
+                "no_mbid": no_mbid_count,
+                "no_art": no_art_count,
+                "low_quality": low_quality_count,
+            },
+            "low_quality_tracks": low_quality,
             "recent": [_track_to_ref(r) for r in recent_rows],
             "settings_music_dir": str(settings.music_dir),
         },
+    )
+
+
+@router.post("/library/tracks/{internal_id}/retag", response_class=HTMLResponse)
+async def retag_track(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from service.library.tagger import has_cover_art as _has_cover_art, write_tags as _write_tags
+    from service.metadata.musicbrainz import get_recording_by_id
+    from service.metadata.quality import compute_quality_score
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or not row.musicbrainz_recording_id or not row.file:
+        raise HTTPException(400, "Track not found or missing MB Recording ID")
+
+    match = await asyncio.to_thread(
+        get_recording_by_id, row.musicbrainz_recording_id, settings.cache_dir
+    )
+    if match is None:
+        raise HTTPException(502, "MusicBrainz lookup failed")
+
+    file_path = Path(row.file.path)
+    if not file_path.exists():
+        raise HTTPException(404, "File not on disk")
+
+    await asyncio.to_thread(
+        _write_tags,
+        file_path,
+        title=match.title or None,
+        artist=match.artist or None,
+        album=match.album,
+        year=match.year,
+        track_number=match.track_number,
+    )
+    hca = await asyncio.to_thread(_has_cover_art, file_path)
+
+    async with session.begin():
+        row.file.has_cover_art = hca
+        row.tag_quality_score = compute_quality_score(
+            title=match.title or row.title,
+            artist=match.artist or row.artist.name,
+            album=match.album or (row.album.title if row.album else None),
+            year=match.year,
+            track_number=match.track_number,
+            musicbrainz_recording_id=row.musicbrainz_recording_id,
+            has_cover_art=hca,
+        )
+
+    pct = int((row.tag_quality_score or 0) * 100)
+    return HTMLResponse(
+        f'<div id="qtrack-{internal_id}" class="card" style="opacity:0.6">'
+        f'<div class="card-info">'
+        f'<div class="card-title">{row.title}</div>'
+        f'<div class="card-sub">{row.artist.name} · Re-tagged from MusicBrainz · Quality {pct}%</div>'
+        f"</div></div>"
     )
 
 

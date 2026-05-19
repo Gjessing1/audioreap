@@ -178,3 +178,33 @@ def lookup_recording(
 
     logger.info("MB match: %r → %s (sim=%.2f)", title, best.recording_id, best_sim)
     return best
+
+
+def get_recording_by_id(
+    recording_id: str,
+    cache_dir: Path | None = None,
+) -> MBRecording | None:
+    """Fetch a specific MB recording by its ID (for re-tagging)."""
+    key = f"mbid:{recording_id}"
+
+    raw: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw = _load_cache(cache_dir, key)
+
+    if raw is None:
+        try:
+            result = musicbrainzngs.get_recording_by_id(
+                recording_id,
+                includes=["artists", "releases", "media"],
+            )
+            raw = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MB get_recording_by_id failed for %s: %s", recording_id, exc)
+            return None
+
+    rec = raw.get("recording")
+    if not rec or not isinstance(rec, dict):
+        return None
+    return _parse_recording(rec)

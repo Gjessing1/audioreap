@@ -84,6 +84,80 @@ async def acquire_album(
         )
 
 
+async def enrich_track(
+    ctx: dict[str, object],
+    *,
+    track_id: str,
+) -> None:
+    """arq job: attempt MusicBrainz enrichment for a track without a Recording ID."""
+    import asyncio
+    from pathlib import Path as _Path
+
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import joinedload as _joinedload
+
+    from service.config import settings as _settings
+    from service.db.schema import Track as _Track
+    from service.library.tagger import has_cover_art as _has_cover_art, write_tags as _write_tags
+    from service.metadata.musicbrainz import lookup_recording as _lookup
+    from service.metadata.quality import compute_quality_score as _quality
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+
+    async with session_factory() as session, session.begin():
+        stmt = (
+            _select(_Track)
+            .options(
+                _joinedload(_Track.artist),
+                _joinedload(_Track.album),
+                _joinedload(_Track.file),
+            )
+            .where(_Track.id == track_id)
+        )
+        track = (await session.execute(stmt)).unique().scalar_one_or_none()
+        if track is None or track.musicbrainz_recording_id:
+            return
+
+        match = await asyncio.to_thread(
+            _lookup,
+            track.title,
+            track.artist.name,
+            track.duration_seconds,
+            _settings.cache_dir,
+        )
+        if match is None:
+            logger.debug("No MB match for track %s", track_id)
+            return
+
+        track.musicbrainz_recording_id = match.recording_id
+
+        if track.file:
+            file_path = _Path(track.file.path)
+            if file_path.exists():
+                await asyncio.to_thread(
+                    _write_tags,
+                    file_path,
+                    title=match.title or None,
+                    artist=match.artist or None,
+                    album=match.album,
+                    year=match.year,
+                    track_number=match.track_number,
+                )
+                hca = await asyncio.to_thread(_has_cover_art, file_path)
+                track.file.has_cover_art = hca
+                track.tag_quality_score = _quality(
+                    title=match.title or track.title,
+                    artist=match.artist or track.artist.name,
+                    album=match.album or (track.album.title if track.album else None),
+                    year=match.year,
+                    track_number=match.track_number,
+                    musicbrainz_recording_id=match.recording_id,
+                    has_cover_art=hca,
+                )
+
+    logger.info("Enriched track %s → MB %s", track_id, match.recording_id)
+
+
 async def acquire_track(
     ctx: dict[str, object],
     *,

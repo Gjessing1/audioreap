@@ -18,6 +18,7 @@ from service.core.identity import make_id
 from service.core.normalize import normalize
 from service.db.schema import Album, Artist, Track, TrackFile
 from service.library.tagger import SUPPORTED_EXTENSIONS, TaggedFile, read_tags
+from service.metadata.quality import compute_quality_score
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ async def _upsert_track_file(
         container=tagged.container,
         bitrate_kbps=tagged.bitrate_kbps,
         sample_rate_hz=tagged.sample_rate_hz,
+        has_cover_art=tagged.has_cover_art,
         file_mtime=file_mtime,
         created_at=_now(),
     )
@@ -163,6 +165,16 @@ async def _process_file(
         duration_seconds=tagged.duration_seconds,
     )
 
+    quality_score = compute_quality_score(
+        title=title,
+        artist=tagged.artist or artist_name,
+        album=album_title,
+        year=tagged.year,
+        track_number=tagged.track_number,
+        musicbrainz_recording_id=None,
+        has_cover_art=tagged.has_cover_art,
+    )
+
     track_row = await session.get(Track, track_id)
     track_is_new = track_row is None
     if track_row is None:
@@ -174,6 +186,7 @@ async def _process_file(
             duration_seconds=tagged.duration_seconds,
             track_number=tagged.track_number,
             disc_number=tagged.disc_number,
+            tag_quality_score=quality_score,
             created_at=_now(),
             updated_at=_now(),
         )
@@ -181,6 +194,17 @@ async def _process_file(
     else:
         track_row.album_id = album_id
         track_row.track_number = tagged.track_number
+        # Preserve MB ID in quality score computation if already enriched
+        quality_score = compute_quality_score(
+            title=title,
+            artist=tagged.artist or artist_name,
+            album=album_title,
+            year=tagged.year,
+            track_number=tagged.track_number,
+            musicbrainz_recording_id=track_row.musicbrainz_recording_id,
+            has_cover_art=tagged.has_cover_art,
+        )
+        track_row.tag_quality_score = quality_score
         track_row.updated_at = _now()
 
     is_new_or_updated = await _upsert_track_file(session, tagged, track_id, file_mtime)
