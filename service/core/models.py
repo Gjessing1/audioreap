@@ -71,10 +71,16 @@ class TrackCandidate(BaseModel):
     title: str
     artist: str
     album: str | None = None
+    year: int | None = None
+    track_number: int | None = None
     duration_seconds: int | None = None
     quality_hint: TrackQuality | None = None
     thumbnail_url: str | None = None
     raw_metadata: dict[str, object] = {}
+    # Set by album-coordinator jobs — prevents MB text search from overriding
+    # placement metadata (album/year/track_number) with a different release.
+    mb_release_id: str | None = None
+    mb_recording_id: str | None = None
 
 
 class FetchResult(BaseModel):

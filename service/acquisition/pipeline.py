@@ -123,7 +123,8 @@ async def run_acquisition(
     tmp_acquire_dir: Path,
     session: AsyncSession,
     scan_trigger: ScanTrigger | None = None,
-) -> None:
+) -> Path | None:
+    """Returns the final library path on success, None on failure/staging."""
     """Execute the full acquisition pipeline for one track.
 
     Updates the AcquisitionJobRow at each stage. Never raises — all errors
@@ -215,8 +216,23 @@ async def run_acquisition(
         duration = (tagged.duration_seconds if tagged else None) or candidate.duration_seconds
 
         # ── 3a. MusicBrainz lookup — AcoustID first, text search fallback ────
-        mb_recording_id: str | None = None
-        mb_release_id: str | None = None
+        #
+        # When the candidate already has album+track_number (set by the album
+        # coordinator job from MB discography data), those are authoritative for
+        # path placement. MB match is still done for recording_id/artwork, but
+        # we never let it move the file to a different album folder.
+        candidate_album_locked = bool(candidate.album and candidate.track_number)
+
+        # Apply candidate's pre-resolved fields as defaults before MB lookup
+        if candidate.album:
+            album = candidate.album
+        if candidate.year:
+            year = candidate.year
+        if candidate.track_number:
+            track_number = candidate.track_number
+
+        mb_recording_id: str | None = candidate.mb_recording_id
+        mb_release_id: str | None = candidate.mb_release_id
         mb_artist_id: str | None = None
         mb_artist_sort: str | None = None
         mb_original_year: int | None = None
@@ -241,15 +257,19 @@ async def run_acquisition(
 
             if mb is not None:
                 mb_recording_id = mb.recording_id  # type: ignore[union-attr]
-                mb_release_id = mb.release_id  # type: ignore[union-attr]
+                mb_release_id = mb_release_id or mb.release_id  # type: ignore[union-attr]
                 mb_artist_id = mb.artist_id  # type: ignore[union-attr]
                 mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
                 mb_original_year = mb.original_year  # type: ignore[union-attr]
+                # Always take title/artist corrections from MB
                 title = mb.title or title  # type: ignore[union-attr]
                 artist = mb.artist or artist  # type: ignore[union-attr]
-                album = mb.album or album  # type: ignore[union-attr]
-                year = mb.year or year  # type: ignore[union-attr]
-                track_number = mb.track_number or track_number  # type: ignore[union-attr]
+                # Only take album/year/track_number from MB when candidate doesn't
+                # have them locked (i.e., came from a discography album acquire).
+                if not candidate_album_locked:
+                    album = mb.album or album  # type: ignore[union-attr]
+                    year = mb.year or year  # type: ignore[union-attr]
+                    track_number = mb.track_number or track_number  # type: ignore[union-attr]
                 try:
                     from service.metadata.artwork import fetch_artwork
                     artwork_bytes = await fetch_artwork(
@@ -379,15 +399,6 @@ async def run_acquisition(
                 logger.debug("Artwork embed failed: %s", art_exc)
             write_cover_jpg(dest.parent, artwork_bytes)
 
-        # ── 5c. ReplayGain analysis ────────────────────────────────────────
-        try:
-            rg_gain = await asyncio.to_thread(compute_replaygain, dest)
-            if rg_gain is not None:
-                await asyncio.to_thread(write_replaygain, dest, rg_gain)
-                logger.debug("ReplayGain: %s gain=%+.2f dB", dest.name, rg_gain)
-        except Exception as rg_exc:
-            logger.debug("ReplayGain failed for %s: %s", dest, rg_exc)
-
         # ── 6. Index in DB ─────────────────────────────────────────────────
         # Use a savepoint so index failures don't roll back the outer transaction
         # (which is needed for the final _set_state call).
@@ -426,3 +437,4 @@ async def run_acquisition(
 
         await _set_state(session, job_id, "done", track_id=hash_track_id)
         logger.info("Acquisition done: %s → %s", job_id, dest)
+        return dest
