@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Library Health — audioreap{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <h1>Library Health</h1>
+    <a href="/library" class="btn btn-ghost btn-sm">← Library</a>
+  </div>
+</div>
+
+<div class="stats" style="margin-bottom:24px">
+  <div class="stat">
+    <div class="stat-val" style="color:{% if dupe_count == 0 %}var(--success){% else %}var(--warn){% endif %}">{{ dupe_count }}</div>
+    <div class="stat-label">Duplicate tracks</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val" style="color:{% if no_cover_count == 0 %}var(--success){% else %}var(--muted){% endif %}">{{ no_cover_count }}</div>
+    <div class="stat-label">Albums without cover</div>
+  </div>
+</div>
+
+<div class="section-title">Duplicate tracks
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/health/dupes"
+          hx-target="#health-dupes"
+          hx-swap="innerHTML"
+          hx-indicator="#dupes-spinner">
+    Load <span id="dupes-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Tracks with the same MusicBrainz recording ID in multiple files. Keep the best-quality copy.
+</p>
+<div id="health-dupes"></div>
+
+<div class="section-title" style="margin-top:24px">Split albums
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/health/splits"
+          hx-target="#health-splits"
+          hx-swap="innerHTML"
+          hx-indicator="#splits-spinner">
+    Load <span id="splits-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Albums that appear to be the same release stored in different folders (e.g. "The Beatles" vs "Beatles, The").
+  You approve every merge — nothing happens automatically.
+</p>
+<div id="health-splits"></div>
+{% endblock %}

@@ -273,6 +273,25 @@ async def scan(
             logger.info("Removed missing file from index: %s", path_str)
         if removed_paths:
             await session.flush()
+            # Cascade: remove Track rows that no longer have any TrackFile
+            orphan_track_ids = (
+                await session.execute(
+                    select(Track.id).where(~Track.id.in_(select(TrackFile.track_id)))
+                )
+            ).scalars().all()
+            if orphan_track_ids:
+                await session.execute(delete(Track).where(Track.id.in_(orphan_track_ids)))
+                logger.info("Removed %d orphaned Track rows", len(orphan_track_ids))
+                await session.flush()
+            # Cascade: remove Album rows with no remaining tracks
+            await session.execute(
+                delete(Album).where(~Album.id.in_(select(Track.album_id).where(Track.album_id.is_not(None))))
+            )
+            # Cascade: remove Artist rows with no remaining tracks
+            await session.execute(
+                delete(Artist).where(~Artist.id.in_(select(Track.artist_id)))
+            )
+            await session.flush()
 
     logger.info(
         "Scan complete: added=%d updated=%d skipped=%d removed=%d errors=%d",

@@ -225,7 +225,7 @@ async def acquire_album_from_mb(
 
     # ── 1. Fetch track list from MB (blocking, cached) ─────────────────────
     try:
-        album_title, release_id, mb_tracks = await _asyncio.to_thread(
+        album_title, release_id, mb_year, mb_tracks = await _asyncio.to_thread(
             get_release_group_tracks, release_group_id, _settings.cache_dir
         )
     except Exception as exc:
@@ -244,18 +244,18 @@ async def acquire_album_from_mb(
                 row.state = "failed"
         return
 
-    year = mb_tracks[0].duration_seconds  # placeholder — get year from release group
-    # Get year from existing AlbumAcquisitionJob row
-    async with session_factory() as session:
-        album_row = await session.get(_AlbumJob, album_job_id)
-        year_val: int | None = None
-        if album_row and album_row.candidate_json:
-            try:
-                import json
-                data = json.loads(album_row.candidate_json)
-                year_val = data.get("year")
-            except Exception:
-                pass
+    # Year: MB release group is authoritative; fall back to whatever was stored in the job row
+    year_val: int | None = mb_year
+    if year_val is None:
+        async with session_factory() as session:
+            album_row = await session.get(_AlbumJob, album_job_id)
+            if album_row and album_row.candidate_json:
+                try:
+                    import json
+                    data = json.loads(album_row.candidate_json)
+                    year_val = data.get("year")
+                except Exception:
+                    pass
 
     # ── 2. Check which tracks are already owned by MB recording ID ─────────
     owned_recording_ids: set[str] = set()

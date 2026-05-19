@@ -311,14 +311,14 @@ async def acquire(
 
     candidate = TrackCandidate.model_validate_json(candidate_json)
 
-    async with session.begin():
-        job_id = await create_job(
-            session,
-            provider_name=provider_name,
-            provider_ref=provider_ref,
-            candidate=candidate,
-            query=query or None,
-        )
+    job_id = await create_job(
+        session,
+        provider_name=provider_name,
+        provider_ref=provider_ref,
+        candidate=candidate,
+        query=query or None,
+    )
+    await session.commit()
 
     try:
         from arq import create_pool

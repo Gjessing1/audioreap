@@ -1,0 +1,39 @@
+{% if not groups %}
+<p class="empty">No split albums detected.</p>
+{% else %}
+{% for g in groups %}
+{% set canonical = g[0] %}
+<div class="card" id="split-{{ canonical.id }}" style="flex-direction:column;align-items:stretch;gap:8px">
+  <div style="font-weight:600">{{ canonical.title }}
+    {% if canonical.year %}<span style="color:var(--muted);font-weight:400"> · {{ canonical.year }}</span>{% endif %}
+    <span style="font-size:12px;color:var(--warn);float:right">{{ g|length }} folders</span>
+  </div>
+  {% for album in g %}
+  <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">
+    <div style="flex:1;min-width:0">
+      <div style="font-size:13px;color:var(--text)">{{ album.artist }}</div>
+      <div style="font-size:12px;color:var(--muted)">{{ album.ntracks }} track{{ 's' if album.ntracks != 1 else '' }}
+        {% if loop.first %}<span style="color:var(--success)"> · canonical</span>{% endif %}
+      </div>
+    </div>
+    {% if not loop.first %}
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/library/albums/{{ canonical.id }}/merge/{{ album.id }}"
+            hx-target="#split-{{ canonical.id }}"
+            hx-swap="outerHTML"
+            hx-confirm="Move {{ album.ntracks }} track(s) from '{{ album.artist }}' into '{{ canonical.artist }}' folder?">
+      Merge here
+    </button>
+    {% endif %}
+    <button class="btn btn-sm btn-ghost"
+            hx-delete="/library/albums/{{ album.id }}"
+            hx-target="#split-{{ canonical.id }}"
+            hx-swap="outerHTML swap:0.2s"
+            hx-confirm="Delete all {{ album.ntracks }} track(s) in this folder?">
+      Delete
+    </button>
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+{% endif %}

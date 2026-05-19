@@ -179,13 +179,26 @@ class YtdlpProvider(Provider):
                 continue
             video_id = entry.get("id") or ""
             video_url = entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
-            title = entry.get("title") or "Unknown"
+            # Use the dedicated track/artist fields (set for YouTube Music), fall back to
+            # splitting "Artist - Title" from the video title, then fall back to album_artist.
+            track_title_raw = str(entry.get("track") or entry.get("title") or "Unknown")
+            entry_artist = entry.get("artist")
+            if entry_artist:
+                track_title = track_title_raw
+                track_artist = str(entry_artist)
+            elif " - " in track_title_raw:
+                parts = track_title_raw.split(" - ", 1)
+                track_artist = parts[0].strip()
+                track_title = parts[1].strip()
+            else:
+                track_title = track_title_raw
+                track_artist = album_artist
             duration = entry.get("duration")
             tracks.append(TrackCandidate(
                 provider=self.name,
                 provider_ref=video_url,
-                title=title,
-                artist=album_artist,
+                title=track_title,
+                artist=track_artist,
                 album=album_title,
                 duration_seconds=int(duration) if duration else None,
                 thumbnail_url=entry.get("thumbnail"),

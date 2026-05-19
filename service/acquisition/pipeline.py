@@ -223,6 +223,23 @@ async def run_acquisition(
         # we never let it move the file to a different album folder.
         candidate_album_locked = bool(candidate.album and candidate.track_number)
 
+        # ── 3b. Track identity validation ─────────────────────────────────────
+        # When the album coordinator locked duration from MB, a large discrepancy
+        # means we almost certainly downloaded the wrong video (edit, different song, clip).
+        force_staging = False
+        force_staging_reason: str | None = None
+        _got_dur = tagged.duration_seconds if tagged else None
+        if candidate_album_locked and candidate.duration_seconds and _got_dur:
+            _delta = abs(_got_dur - candidate.duration_seconds)
+            _tol = max(30, int(candidate.duration_seconds * 0.2))
+            if _delta > _tol:
+                force_staging = True
+                force_staging_reason = (
+                    f"duration mismatch: expected ~{candidate.duration_seconds}s, "
+                    f"got {_got_dur}s — likely wrong track"
+                )
+                logger.warning("Job %s %r: %s", job_id, candidate.title, force_staging_reason)
+
         # Apply candidate's pre-resolved fields as defaults before MB lookup
         if candidate.album:
             album = candidate.album
@@ -242,12 +259,28 @@ async def run_acquisition(
             from service.metadata.musicbrainz import get_recording_by_id, lookup_recording
 
             mb: object = None
+            mb_from_acoustid = False
+            acoustid_mbid: str | None = None
             if settings.acoustid_api_key:
                 acoustid_mbid = await acoustid_to_mbid(audio_path, settings.acoustid_api_key)
                 if acoustid_mbid:
                     mb = await asyncio.to_thread(
                         get_recording_by_id, acoustid_mbid, settings.cache_dir
                     )
+                    if mb is not None:
+                        mb_from_acoustid = True
+                    # AcoustID fingerprint says this is a different recording than expected
+                    if candidate.mb_recording_id and acoustid_mbid != candidate.mb_recording_id:
+                        force_staging = True
+                        force_staging_reason = (
+                            f"fingerprint mismatch: expected recording "
+                            f"{candidate.mb_recording_id[:8]}…, "
+                            f"got {acoustid_mbid[:8]}…"
+                        )
+                        logger.warning(
+                            "Job %s %r: AcoustID mismatch (expected %s, got %s)",
+                            job_id, title, candidate.mb_recording_id, acoustid_mbid,
+                        )
 
             if mb is None:
                 mb = await asyncio.to_thread(
@@ -256,7 +289,22 @@ async def run_acquisition(
                 )
 
             if mb is not None:
-                mb_recording_id = mb.recording_id  # type: ignore[union-attr]
+                resolved_recording_id = mb.recording_id  # type: ignore[union-attr]
+
+                # When the candidate has a recording ID locked by the album coordinator
+                # (from MB discography), only trust a different result from AcoustID
+                # fingerprinting — text search routinely returns the same song from a
+                # different release and must not silently swap a track's identity.
+                if candidate.mb_recording_id and not mb_from_acoustid:
+                    if resolved_recording_id != candidate.mb_recording_id:
+                        logger.info(
+                            "Text search returned different recording %s (expected %s) for %r "
+                            "— keeping locked recording_id",
+                            resolved_recording_id, candidate.mb_recording_id, title,
+                        )
+                        resolved_recording_id = candidate.mb_recording_id
+
+                mb_recording_id = resolved_recording_id
                 mb_release_id = mb_release_id or mb.release_id  # type: ignore[union-attr]
                 mb_artist_id = mb.artist_id  # type: ignore[union-attr]
                 mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
@@ -282,8 +330,11 @@ async def run_acquisition(
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
 
-        # Determine albumartist (always set — prevents Navidrome album splits)
-        albumartist = artist
+        # Determine albumartist (always set — prevents Navidrome album splits).
+        # For album-locked candidates (from MB discography coordinator), lock albumartist
+        # to candidate.artist so all tracks land in the same folder even when MB corrects
+        # an individual track's artist to something like "George Harrison" on a Beatles album.
+        albumartist = candidate.artist if candidate_album_locked else artist
         is_compilation = (album is not None) and albumartist.lower() in ("various artists", "various")
 
         # Always write the final resolved tags (candidate fallback or MB-enriched)
@@ -338,10 +389,9 @@ async def run_acquisition(
             has_cover_art=artwork_bytes is not None,
         )
         threshold = settings.staging_quality_threshold
-        use_staging = (
-            threshold > 0
-            and pre_score < threshold
-            and settings.staging_dir != music_dir
+        use_staging = settings.staging_dir != music_dir and (
+            force_staging
+            or (threshold > 0 and pre_score < threshold)
         )
 
         # ── 5. Atomic place (music or staging) ────────────────────────────
@@ -376,12 +426,17 @@ async def run_acquisition(
             if row is not None:
                 row.state = "staged"
                 row.staging_path = str(staging_dest)
+                if force_staging_reason:
+                    row.error = force_staging_reason
                 row.updated_at = datetime.now(UTC).replace(tzinfo=None)
                 await session.flush()
-            logger.info(
-                "Staged (quality=%.0f%% < %.0f%%): %s → %s",
-                pre_score * 100, threshold * 100, job_id, staging_dest,
-            )
+            if force_staging_reason:
+                logger.info("Staged (%s): %s → %s", force_staging_reason, job_id, staging_dest)
+            else:
+                logger.info(
+                    "Staged (quality=%.0f%% < %.0f%%): %s → %s",
+                    pre_score * 100, threshold * 100, job_id, staging_dest,
+                )
             return
 
         try:

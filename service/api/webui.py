@@ -344,10 +344,12 @@ async def library_page(
     album_count = (await session.execute(select(func.count(Album.id)))).scalar_one()
     artist_count = (await session.execute(select(func.count(Artist.id)))).scalar_one()
 
-    # Quality stats
+    # Quality stats — only count tracks that have an actual file on disk
     no_mbid_count = (
         await session.execute(
-            select(func.count(Track.id)).where(Track.musicbrainz_recording_id.is_(None))
+            select(func.count(Track.id))
+            .join(Track.file)
+            .where(Track.musicbrainz_recording_id.is_(None))
         )
     ).scalar_one()
     no_art_count = (
@@ -359,7 +361,9 @@ async def library_page(
     ).scalar_one()
     low_quality_count = (
         await session.execute(
-            select(func.count(Track.id)).where(
+            select(func.count(Track.id))
+            .join(Track.file)
+            .where(
                 (Track.tag_quality_score.isnot(None))
                 & (Track.tag_quality_score < LOW_QUALITY_THRESHOLD)
             )
@@ -867,35 +871,35 @@ async def acquire_playlist(
     now = datetime.now(UTC).replace(tzinfo=None)
     import_id = str(uuid.uuid4())
 
-    async with session.begin():
-        pl_row = PlaylistImport(
-            id=import_id,
-            url=import_url,
-            title=import_title or "Untitled Playlist",
-            source=import_source,
-            track_count=len(candidates),
-            enqueued_count=0,
-            owned_count=0,
-            state="active",
-            created_at=now,
-            updated_at=now,
+    pl_row = PlaylistImport(
+        id=import_id,
+        url=import_url,
+        title=import_title or "Untitled Playlist",
+        source=import_source,
+        track_count=len(candidates),
+        enqueued_count=0,
+        owned_count=0,
+        state="active",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(pl_row)
+
+    job_data: list[tuple[str, str, TrackCandidate]] = []
+    for candidate_json in candidates:
+        candidate = TrackCandidate.model_validate_json(candidate_json)
+        job_id = await create_job(
+            session,
+            provider_name=candidate.provider,
+            provider_ref=candidate.provider_ref,
+            candidate=candidate,
+            query=f"{candidate.artist} - {candidate.title}",
+            playlist_import_id=import_id,
         )
-        session.add(pl_row)
+        job_data.append((job_id, candidate_json, candidate))
 
-        job_data: list[tuple[str, str, TrackCandidate]] = []
-        for candidate_json in candidates:
-            candidate = TrackCandidate.model_validate_json(candidate_json)
-            job_id = await create_job(
-                session,
-                provider_name=candidate.provider,
-                provider_ref=candidate.provider_ref,
-                candidate=candidate,
-                query=f"{candidate.artist} - {candidate.title}",
-                playlist_import_id=import_id,
-            )
-            job_data.append((job_id, candidate_json, candidate))
-
-        pl_row.enqueued_count = len(job_data)
+    pl_row.enqueued_count = len(job_data)
+    await session.commit()
 
     try:
         from arq import create_pool
@@ -1048,7 +1052,7 @@ async def discography_tracklist(
     """Return an HTML partial with the MB tracklist for a release group."""
     from service.metadata.musicbrainz import get_release_group_tracks
 
-    album_title, release_id, tracks = await asyncio.to_thread(
+    album_title, release_id, _year, tracks = await asyncio.to_thread(
         get_release_group_tracks, release_group_id, settings.cache_dir
     )
 
@@ -1430,3 +1434,347 @@ async def staging_reject(
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     await session.commit()
     return HTMLResponse("")
+
+
+def _read_mb_release_id(path: Path) -> str | None:
+    """Read MUSICBRAINZ_ALBUMID from file tags using mutagen."""
+    try:
+        import mutagen
+        f = mutagen.File(path)
+        if f is None:
+            return None
+        # Vorbis / OGG / FLAC
+        for key in ("musicbrainz_albumid", "MUSICBRAINZ_ALBUMID"):
+            if key in f:
+                v = f[key]
+                return str(v[0]) if isinstance(v, list) and v else str(v) if v else None
+        # ID3 (MP3): TXXX:MusicBrainz Album Id
+        if hasattr(f, "tags") and f.tags:
+            for frame_key in f.tags.keys():
+                if "musicbrainz album id" in frame_key.lower():
+                    frame = f.tags[frame_key]
+                    if hasattr(frame, "text"):
+                        return str(frame.text[0]) if frame.text else None
+        # MP4
+        if "----:com.apple.iTunes:MusicBrainz Album Id" in f:
+            raw = f["----:com.apple.iTunes:MusicBrainz Album Id"]
+            return raw[0].decode() if raw and isinstance(raw[0], bytes) else None
+    except Exception:
+        pass
+    return None
+
+
+# ── Library Health / Management ───────────────────────────────────────────
+
+
+@router.get("/library/health", response_class=HTMLResponse)
+async def library_health_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Library health overview — duplicates, split albums, missing covers."""
+    dupe_count = (await session.execute(
+        select(func.count()).select_from(
+            select(Track.musicbrainz_recording_id)
+            .join(Track.file)
+            .where(Track.musicbrainz_recording_id.is_not(None))
+            .group_by(Track.musicbrainz_recording_id)
+            .having(func.count(Track.id) > 1)
+            .subquery()
+        )
+    )).scalar_one()
+
+    no_cover_count = (await session.execute(
+        select(func.count(Album.id)).where(
+            ~Album.id.in_(
+                select(Track.album_id)
+                .join(Track.file)
+                .where(TrackFile.has_cover_art == 1)
+                .where(Track.album_id.is_not(None))
+            )
+        ).where(
+            Album.id.in_(
+                select(Track.album_id).where(Track.album_id.is_not(None))
+            )
+        )
+    )).scalar_one()
+
+    return templates.TemplateResponse(
+        request, "library_health.html",
+        {
+            "active": "health",
+            "dupe_count": dupe_count,
+            "no_cover_count": no_cover_count,
+        },
+    )
+
+
+@router.get("/library/health/dupes", response_class=HTMLResponse)
+async def library_health_dupes(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: duplicate tracks (same MB recording_id, multiple files)."""
+    from collections import defaultdict
+    from sqlalchemy.orm import joinedload as _jl
+
+    dupe_rids = (await session.execute(
+        select(Track.musicbrainz_recording_id)
+        .join(Track.file)
+        .where(Track.musicbrainz_recording_id.is_not(None))
+        .group_by(Track.musicbrainz_recording_id)
+        .having(func.count(Track.id) > 1)
+    )).scalars().all()
+
+    groups: list[dict] = []
+    if dupe_rids:
+        rows = (await session.execute(
+            select(Track)
+            .options(_jl(Track.artist), _jl(Track.album), _jl(Track.file))
+            .join(Track.file)
+            .where(Track.musicbrainz_recording_id.in_(dupe_rids))
+            .order_by(Track.musicbrainz_recording_id, TrackFile.bitrate_kbps.desc().nulls_last())
+        )).unique().scalars().all()
+
+        by_rid: dict[str, list[Track]] = defaultdict(list)
+        for t in rows:
+            by_rid[t.musicbrainz_recording_id].append(t)  # type: ignore[index]
+
+        for rid, tracks in by_rid.items():
+            groups.append({
+                "recording_id": rid,
+                "title": tracks[0].title,
+                "artist": tracks[0].artist.name,
+                "tracks": [
+                    {
+                        "id": t.id,
+                        "path": t.file.path if t.file else "",
+                        "codec": t.file.codec if t.file else "",
+                        "bitrate_kbps": t.file.bitrate_kbps if t.file else None,
+                        "has_cover_art": bool(t.file.has_cover_art) if t.file else False,
+                        "quality_score": t.tag_quality_score,
+                    }
+                    for t in tracks
+                ],
+            })
+
+    return templates.TemplateResponse(
+        request, "partials/health_dupes.html", {"groups": groups}
+    )
+
+
+@router.get("/library/health/splits", response_class=HTMLResponse)
+async def library_health_splits(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: albums split across multiple folders due to artist name variants."""
+    from collections import defaultdict
+    from service.core.normalize import normalize
+
+    rows = (await session.execute(
+        select(
+            Album.id, Album.title, Album.year, Artist.name,
+            func.count(Track.id).label("ntracks"),
+        )
+        .join(Artist, Artist.id == Album.artist_id)
+        .join(Track, Track.album_id == Album.id)
+        .group_by(Album.id, Album.title, Album.year, Artist.name)
+    )).all()
+
+    # Group by normalized (title, artist)
+    key_to_albums: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for album_id, title, year, artist_name, ntracks in rows:
+        key = (normalize(title), normalize(artist_name))
+        key_to_albums[key].append({
+            "id": album_id,
+            "title": title,
+            "year": year,
+            "artist": artist_name,
+            "ntracks": ntracks,
+        })
+
+    split_groups = [
+        albums for albums in key_to_albums.values()
+        if len(albums) > 1
+    ]
+    # Sort each group: most tracks first (canonical candidate)
+    for g in split_groups:
+        g.sort(key=lambda a: a["ntracks"], reverse=True)
+
+    return templates.TemplateResponse(
+        request, "partials/health_splits.html", {"groups": split_groups}
+    )
+
+
+@router.delete("/library/albums/{album_id}", response_class=HTMLResponse)
+async def delete_album(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Trash all files in an album and remove its DB records."""
+    from sqlalchemy.orm import joinedload as _jl
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    for track in album.tracks:
+        if track.file:
+            fp = Path(track.file.path)
+            if fp.exists():
+                try:
+                    safe_trash(fp, settings.music_dir / ".trash")
+                except Exception as exc:
+                    logger.warning("Trash failed for %s: %s", fp, exc)
+            await session.delete(track.file)
+        await session.delete(track)
+
+    await session.delete(album)
+    await session.commit()
+
+    try:
+        from service.navidrome.client import trigger_scan
+        await trigger_scan()
+    except Exception:
+        pass
+
+    return HTMLResponse("")
+
+
+@router.post("/library/albums/{album_id}/cover/fetch", response_class=HTMLResponse)
+async def fetch_album_cover(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Fetch cover art from Cover Art Archive and write as cover.jpg."""
+    from sqlalchemy.orm import joinedload as _jl
+    from service.library.tagger import write_cover_jpg
+    from service.metadata.artwork import fetch_from_caa
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    # Find the first track with a real file to locate the album dir and release ID
+    release_id: str | None = album.musicbrainz_release_id
+    album_dir: Path | None = None
+    for track in album.tracks:
+        if track.file and Path(track.file.path).exists():
+            album_dir = Path(track.file.path).parent
+            if not release_id:
+                release_id = _read_mb_release_id(Path(track.file.path))
+            break
+
+    if not release_id:
+        return HTMLResponse('<span class="badge-warn">No MusicBrainz release ID — cannot fetch cover</span>')
+    if album_dir is None:
+        return HTMLResponse('<span class="badge-warn">No files found for this album</span>')
+
+    art = await fetch_from_caa(release_id)
+    if art is None:
+        return HTMLResponse('<span class="badge-warn">Cover not found on Cover Art Archive</span>')
+
+    try:
+        write_cover_jpg(album_dir, art)
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">Write failed: {exc}</span>')
+
+    # Update has_cover_art on all track files in this album
+    for track in album.tracks:
+        if track.file:
+            track.file.has_cover_art = True
+    await session.commit()
+
+    return HTMLResponse('<span class="badge-ok">Cover saved ✓</span>')
+
+
+@router.post("/library/albums/{canonical_id}/merge/{source_id}", response_class=HTMLResponse)
+async def merge_album(
+    request: Request,
+    canonical_id: str,
+    source_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Move all files from source album into canonical album folder, then rescan."""
+    import os
+    from sqlalchemy.orm import joinedload as _jl
+
+    canonical = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == canonical_id)
+    )).unique().scalar_one_or_none()
+    source = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == source_id)
+    )).unique().scalar_one_or_none()
+
+    if canonical is None or source is None:
+        raise HTTPException(404)
+
+    # Determine the canonical album directory
+    canonical_dir: Path | None = None
+    for t in canonical.tracks:
+        if t.file and Path(t.file.path).exists():
+            canonical_dir = Path(t.file.path).parent
+            break
+    if canonical_dir is None:
+        return HTMLResponse('<span class="badge-warn">Canonical album has no files on disk</span>')
+
+    moved = 0
+    skipped = 0
+    for track in source.tracks:
+        if not track.file:
+            continue
+        src = Path(track.file.path)
+        if not src.exists():
+            continue
+        dst = canonical_dir / src.name
+        if dst.exists():
+            skipped += 1
+            continue
+        try:
+            os.rename(src, dst)
+            moved += 1
+        except OSError as exc:
+            logger.warning("Merge: failed to move %s → %s: %s", src, dst, exc)
+
+    # Remove now-empty source directory
+    try:
+        src_dir = Path(source.tracks[0].file.path).parent if source.tracks and source.tracks[0].file else None
+        if src_dir and src_dir.exists() and not list(src_dir.iterdir()):
+            src_dir.rmdir()
+    except Exception:
+        pass
+
+    # Re-scan canonical dir to update DB
+    try:
+        from service.index.scanner import scan
+        await scan(session, canonical_dir, incremental=False)
+        await session.commit()
+    except Exception as exc:
+        logger.warning("Merge: scan failed: %s", exc)
+
+    try:
+        from service.navidrome.client import trigger_scan
+        await trigger_scan()
+    except Exception:
+        pass
+
+    return HTMLResponse(
+        f'<span class="badge-ok">Merged {moved} tracks ✓'
+        + (f" ({skipped} skipped — already existed)" if skipped else "")
+        + "</span>"
+    )

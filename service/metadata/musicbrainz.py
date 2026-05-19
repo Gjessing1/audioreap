@@ -353,12 +353,13 @@ class MBTrack:
 def get_release_group_tracks(
     release_group_id: str,
     cache_dir: Path | None = None,
-) -> tuple[str, str | None, list[MBTrack]]:
+) -> tuple[str, str | None, int | None, list[MBTrack]]:
     """Fetch the track list for the primary release of a release group.
 
-    Returns (album_title, release_id, tracks). Makes 2 MB API calls:
+    Returns (album_title, release_id, year, tracks). Makes 2 MB API calls:
     one to find the first official release, one to fetch its tracks.
-    Both responses are cached.
+    Both responses are cached. year is the original release year from the
+    release group's first-release-date.
     """
     key_rg = f"rg_tracks:{release_group_id}"
     raw_rg: dict[str, object] | None = None
@@ -380,12 +381,21 @@ def get_release_group_tracks(
 
     rg_data = raw_rg.get("release-group") or {}
     if not isinstance(rg_data, dict):
-        return "Unknown Album", None, []
+        return "Unknown Album", None, None, []
 
     album_title = str(rg_data.get("title") or "Unknown Album")
+
+    rg_year: int | None = None
+    rg_date = str(rg_data.get("first-release-date") or "")
+    if rg_date and len(rg_date) >= 4:
+        try:
+            rg_year = int(rg_date[:4])
+        except ValueError:
+            pass
+
     releases = rg_data.get("release-list") or []
     if not isinstance(releases, list) or not releases:
-        return album_title, None, []
+        return album_title, None, rg_year, []
 
     # Prefer an official release; fall back to first
     release_id: str | None = None
@@ -396,7 +406,7 @@ def get_release_group_tracks(
                 break
 
     if not release_id:
-        return album_title, None, []
+        return album_title, None, rg_year, []
 
     key_rel = f"release_tracks:{release_id}"
     raw_rel: dict[str, object] | None = None
@@ -414,12 +424,21 @@ def get_release_group_tracks(
                 _save_cache(cache_dir, key_rel, raw_rel)
         except Exception as exc:
             logger.warning("MB release fetch failed for %s: %s", release_id, exc)
-            return album_title, release_id, []
+            return album_title, release_id, rg_year, []
 
     tracks: list[MBTrack] = []
     rel_data = raw_rel.get("release") or {}
     if not isinstance(rel_data, dict):
-        return album_title, release_id, []
+        return album_title, release_id, rg_year, []
+
+    # Use specific release date as fallback if release group year not available
+    if rg_year is None:
+        rel_date = str(rel_data.get("date") or "")
+        if rel_date and len(rel_date) >= 4:
+            try:
+                rg_year = int(rel_date[:4])
+            except ValueError:
+                pass
 
     for medium in rel_data.get("medium-list") or []:
         if not isinstance(medium, dict):
@@ -440,4 +459,4 @@ def get_release_group_tracks(
             tracks.append(MBTrack(number=number, title=title, duration_seconds=duration_s, recording_id=rid))
 
     tracks.sort(key=lambda t: t.number)
-    return album_title, release_id, tracks
+    return album_title, release_id, rg_year, tracks
