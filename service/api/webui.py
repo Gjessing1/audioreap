@@ -1167,10 +1167,8 @@ async def staging_approve(
         raise HTTPException(500, f"Move failed: {exc}")
 
     # Index and scan
-    hash_track_id: str | None = None
     try:
-        async with session.begin_nested():
-            await index_file(session, dest)
+        await index_file(session, dest)
         await session.flush()
     except Exception as exc:
         logger.warning("Staging approve: index failed for %s: %s", dest, exc)
@@ -1196,15 +1194,14 @@ async def staging_reenrich(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Re-run MB enrichment on a staged file; auto-approve if quality improves."""
-    from service.acquisition.pipeline import _set_state
     from service.config import settings as _s
     from service.index.scanner import index_file
-    from service.library.tagger import has_cover_art, write_tags
+    from service.library.tagger import write_cover_jpg, write_tags
+    from service.library.writer import atomic_place
     from service.metadata.artwork import fetch_artwork
     from service.metadata.musicbrainz import lookup_recording
     from service.metadata.quality import compute_quality_score
     from service.navidrome.client import trigger_scan
-    from service.library.writer import atomic_place
 
     row = await session.get(AcquisitionJobRow, job_id)
     if not row or row.state != "staged" or not row.staging_path:
@@ -1280,11 +1277,9 @@ async def staging_reenrich(
         dest.parent.mkdir(parents=True, exist_ok=True)
         atomic_place(staging_path, dest)
         if artwork_bytes:
-            from service.library.tagger import write_cover_jpg
             write_cover_jpg(dest.parent, artwork_bytes)
         try:
-            async with session.begin_nested():
-                await index_file(session, dest)
+            await index_file(session, dest)
             await session.flush()
         except Exception as exc:
             logger.warning("Re-enrich auto-promote index failed: %s", exc)

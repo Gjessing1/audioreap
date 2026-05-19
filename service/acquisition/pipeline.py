@@ -22,7 +22,10 @@ from service.core.models import TrackCandidate
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
 from service.library.layout import track_path
-from service.library.tagger import has_cover_art, read_tags, write_cover_jpg, write_tags
+from service.library.tagger import (
+    compute_replaygain, has_cover_art, read_tags,
+    write_cover_jpg, write_replaygain, write_tags,
+)
 from service.metadata.quality import compute_quality_score
 from service.library.writer import atomic_place
 from service.providers.base import Provider
@@ -375,6 +378,15 @@ async def run_acquisition(
             except Exception as art_exc:
                 logger.debug("Artwork embed failed: %s", art_exc)
             write_cover_jpg(dest.parent, artwork_bytes)
+
+        # ── 5c. ReplayGain analysis ────────────────────────────────────────
+        try:
+            rg_gain = await asyncio.to_thread(compute_replaygain, dest)
+            if rg_gain is not None:
+                await asyncio.to_thread(write_replaygain, dest, rg_gain)
+                logger.debug("ReplayGain: %s gain=%+.2f dB", dest.name, rg_gain)
+        except Exception as rg_exc:
+            logger.debug("ReplayGain failed for %s: %s", dest, rg_exc)
 
         # ── 6. Index in DB ─────────────────────────────────────────────────
         # Scanner creates the row with a hash-based ID; we backfill MB fields after.
