@@ -1,0 +1,34 @@
+<div class="release-tracklist">
+  <div style="font-weight:600;margin-bottom:8px">{{ album_title }}</div>
+  {% if tracks %}
+  <table style="width:100%;font-size:13px;border-collapse:collapse">
+    {% for t in tracks %}
+    <tr style="border-bottom:1px solid var(--border);{% if t.recording_id and t.recording_id in owned_recording_ids %}opacity:0.5{% endif %}">
+      <td style="padding:4px 8px 4px 0;width:28px;color:var(--muted)">{{ t.number }}</td>
+      <td style="padding:4px 0">{{ t.title }}</td>
+      <td style="padding:4px 0 4px 8px;color:var(--muted);text-align:right">
+        {% if t.duration_seconds %}{{ t.duration_seconds // 60 }}:{{ '%02d' % (t.duration_seconds % 60) }}{% endif %}
+      </td>
+      <td style="padding:4px 0 4px 8px;width:60px">
+        {% if t.recording_id and t.recording_id in owned_recording_ids %}
+        <span class="badge badge-done" style="font-size:11px">owned</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form style="margin-top:10px"
+        hx-post="/discography/{{ artist_mbid }}/{{ release_group_id }}/acquire"
+        hx-target="closest .release-tracklist"
+        hx-swap="innerHTML"
+        hx-indicator="#disco-spinner-{{ release_group_id }}">
+    <input type="hidden" name="artist" value="{{ artist }}">
+    <button type="submit" class="btn btn-sm">
+      Acquire all
+      <span id="disco-spinner-{{ release_group_id }}" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </form>
+  {% else %}
+  <p class="muted" style="font-size:13px">No tracks found in MusicBrainz.</p>
+  {% endif %}
+</div>

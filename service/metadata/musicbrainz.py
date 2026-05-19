@@ -340,3 +340,104 @@ def get_recording_by_id(
     if not rec or not isinstance(rec, dict):
         return None
     return _parse_recording(rec)
+
+
+@dataclass
+class MBTrack:
+    number: int
+    title: str
+    duration_seconds: int | None
+    recording_id: str | None
+
+
+def get_release_group_tracks(
+    release_group_id: str,
+    cache_dir: Path | None = None,
+) -> tuple[str, str | None, list[MBTrack]]:
+    """Fetch the track list for the primary release of a release group.
+
+    Returns (album_title, release_id, tracks). Makes 2 MB API calls:
+    one to find the first official release, one to fetch its tracks.
+    Both responses are cached.
+    """
+    key_rg = f"rg_tracks:{release_group_id}"
+    raw_rg: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw_rg = _load_cache(cache_dir, key_rg)
+
+    if raw_rg is None:
+        try:
+            result = musicbrainzngs.get_release_group_by_id(
+                release_group_id,
+                includes=["releases"],
+            )
+            raw_rg = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key_rg, raw_rg)
+        except Exception as exc:
+            logger.warning("MB release group fetch failed for %s: %s", release_group_id, exc)
+            return "Unknown Album", None, []
+
+    rg_data = raw_rg.get("release-group") or {}
+    if not isinstance(rg_data, dict):
+        return "Unknown Album", None, []
+
+    album_title = str(rg_data.get("title") or "Unknown Album")
+    releases = rg_data.get("release-list") or []
+    if not isinstance(releases, list) or not releases:
+        return album_title, None, []
+
+    # Prefer an official release; fall back to first
+    release_id: str | None = None
+    for rel in releases:
+        if isinstance(rel, dict):
+            release_id = str(rel.get("id") or "")
+            if rel.get("status", "").lower() == "official":
+                break
+
+    if not release_id:
+        return album_title, None, []
+
+    key_rel = f"release_tracks:{release_id}"
+    raw_rel: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw_rel = _load_cache(cache_dir, key_rel)
+
+    if raw_rel is None:
+        try:
+            result = musicbrainzngs.get_release_by_id(
+                release_id,
+                includes=["recordings", "media"],
+            )
+            raw_rel = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key_rel, raw_rel)
+        except Exception as exc:
+            logger.warning("MB release fetch failed for %s: %s", release_id, exc)
+            return album_title, release_id, []
+
+    tracks: list[MBTrack] = []
+    rel_data = raw_rel.get("release") or {}
+    if not isinstance(rel_data, dict):
+        return album_title, release_id, []
+
+    for medium in rel_data.get("medium-list") or []:
+        if not isinstance(medium, dict):
+            continue
+        for t in medium.get("track-list") or []:
+            if not isinstance(t, dict):
+                continue
+            rec = t.get("recording") or {}
+            title = str(t.get("title") or (rec.get("title") if isinstance(rec, dict) else None) or "Unknown")
+            pos = t.get("position") or t.get("number")
+            try:
+                number = int(pos) if pos else 0
+            except (ValueError, TypeError):
+                number = 0
+            duration_ms = t.get("length") or (rec.get("length") if isinstance(rec, dict) else None)
+            duration_s: int | None = int(int(duration_ms) / 1000) if duration_ms else None
+            rid = str(rec.get("id") or "") or None if isinstance(rec, dict) else None
+            tracks.append(MBTrack(number=number, title=title, duration_seconds=duration_s, recording_id=rid))
+
+    tracks.sort(key=lambda t: t.number)
+    return album_title, release_id, tracks

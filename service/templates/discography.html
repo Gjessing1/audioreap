@@ -55,14 +55,18 @@
   <div class="card-actions">
     {% if r.owned %}
     <span class="badge badge-done">owned</span>
-    {% else %}
-    <a href="/search?q={{ (artist_name + ' ' + r.title)|urlencode }}"
-       class="btn btn-sm" style="color:var(--text)">
-      Search &amp; acquire
-    </a>
     {% endif %}
+    <button class="btn btn-sm btn-ghost"
+            hx-get="/discography/{{ artist_mbid }}/{{ r.release_group_id }}/tracks?artist={{ artist_name|urlencode }}"
+            hx-target="#rg-tracks-{{ r.release_group_id }}"
+            hx-swap="innerHTML"
+            hx-indicator="#rg-spinner-{{ r.release_group_id }}">
+      {% if r.owned %}Show tracks{% else %}Acquire{% endif %}
+      <span id="rg-spinner-{{ r.release_group_id }}" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
   </div>
 </div>
+<div id="rg-tracks-{{ r.release_group_id }}" style="padding:0 8px 8px"></div>
 {% endfor %}
 {% else %}
 <p class="empty">No releases found for the selected types.</p>

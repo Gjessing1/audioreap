@@ -1037,6 +1037,124 @@ async def discography_search(
     )
 
 
+@router.get("/discography/{artist_mbid}/{release_group_id}/tracks", response_class=HTMLResponse)
+async def discography_tracklist(
+    request: Request,
+    artist_mbid: str,
+    release_group_id: str,
+    artist: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return an HTML partial with the MB tracklist for a release group."""
+    from service.metadata.musicbrainz import get_release_group_tracks
+
+    album_title, release_id, tracks = await asyncio.to_thread(
+        get_release_group_tracks, release_group_id, settings.cache_dir
+    )
+
+    # Check which tracks are already in local library by MB recording ID
+    owned_recording_ids: set[str] = set()
+    if tracks:
+        rids = [t.recording_id for t in tracks if t.recording_id]
+        if rids:
+            rows = (await session.execute(
+                select(Track).where(Track.musicbrainz_recording_id.in_(rids))
+            )).scalars().all()
+            owned_recording_ids = {r.musicbrainz_recording_id for r in rows if r.musicbrainz_recording_id}
+
+    return templates.TemplateResponse(
+        request, "partials/release_tracklist.html",
+        {
+            "artist": artist,
+            "artist_mbid": artist_mbid,
+            "release_group_id": release_group_id,
+            "album_title": album_title,
+            "release_id": release_id,
+            "tracks": tracks,
+            "owned_recording_ids": owned_recording_ids,
+        },
+    )
+
+
+@router.post("/discography/{artist_mbid}/{release_group_id}/acquire", response_class=HTMLResponse)
+async def discography_acquire_album(
+    request: Request,
+    artist_mbid: str,
+    release_group_id: str,
+    artist: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue acquisition jobs for all unowned tracks in a release group."""
+    from service.acquisition.jobs import create_job
+    from service.core.models import TrackCandidate
+    from service.metadata.musicbrainz import get_release_group_tracks
+
+    album_title, release_id, tracks = await asyncio.to_thread(
+        get_release_group_tracks, release_group_id, settings.cache_dir
+    )
+
+    if not tracks:
+        return HTMLResponse('<span class="badge-warn">No tracks found in MusicBrainz</span>')
+
+    # Skip tracks already owned by MB recording ID
+    owned_recording_ids: set[str] = set()
+    rids = [t.recording_id for t in tracks if t.recording_id]
+    if rids:
+        rows = (await session.execute(
+            select(Track).where(Track.musicbrainz_recording_id.in_(rids))
+        )).scalars().all()
+        owned_recording_ids = {r.musicbrainz_recording_id for r in rows if r.musicbrainz_recording_id}
+
+    queued = 0
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+
+        async with session.begin():
+            for t in tracks:
+                if t.recording_id and t.recording_id in owned_recording_ids:
+                    continue
+                search_ref = f"ytsearch1:{artist} {t.title}"
+                candidate = TrackCandidate(
+                    provider="ytdlp",
+                    provider_ref=search_ref,
+                    title=t.title,
+                    artist=artist or "Unknown",
+                    album=album_title,
+                    duration_seconds=t.duration_seconds,
+                )
+                job_id = await create_job(
+                    session,
+                    provider_name="ytdlp",
+                    provider_ref=search_ref,
+                    candidate=candidate,
+                    query=f"{artist} - {t.title}",
+                )
+                await redis.enqueue_job(
+                    "acquire_track",
+                    job_id=job_id,
+                    provider_name="ytdlp",
+                    provider_ref=search_ref,
+                    candidate_json=candidate.model_dump_json(),
+                    music_dir=str(settings.music_dir),
+                    tmp_acquire_dir=str(settings.tmp_acquire_dir),
+                    _job_id=f"acquire:{job_id}",
+                )
+                queued += 1
+
+        await redis.aclose()
+    except Exception as exc:
+        logger.error("Discography acquire failed: %s", exc)
+        return HTMLResponse(f'<span class="badge-warn">Error: {exc}</span>')
+
+    skipped = len(tracks) - queued
+    msg = f"Queued {queued} track{'s' if queued != 1 else ''}"
+    if skipped:
+        msg += f" ({skipped} already owned)"
+    return HTMLResponse(f'<span class="badge-ok">{msg} — <a href="/jobs">View jobs</a></span>')
+
+
 @router.get("/discography/{artist_mbid}", response_class=HTMLResponse)
 async def discography_view(
     request: Request,
