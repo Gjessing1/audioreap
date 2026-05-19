@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Discography{% if artist_name %} — {{ artist_name }}{% endif %} — audioreap{% endblock %}
+
+{% block content %}
+<h2 style="font-size:18px;margin-bottom:16px">Artist Discography</h2>
+
+{% if not artist_name %}
+{# Search form #}
+<input id="disco-q" name="q" type="search"
+       placeholder="Search artist (e.g. Radiohead, Daft Punk)…"
+       inputmode="search" enterkeyhint="search" autocomplete="off" autofocus
+       style="width:100%;margin-bottom:12px"
+       hx-get="/discography/search"
+       hx-trigger="input changed delay:400ms, keyup[key=='Enter']"
+       hx-target="#artist-candidates"
+       hx-include="[name='q']">
+
+<div id="artist-candidates">
+  <p class="empty">Type an artist name to browse their MusicBrainz discography.</p>
+</div>
+
+{% else %}
+{# Discography view #}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+  <div>
+    <div style="font-weight:600;font-size:18px">{{ artist_name }}</div>
+    <div class="card-sub">{{ owned_count }} / {{ total_count }} releases owned</div>
+  </div>
+  <a href="/discography" class="btn btn-ghost btn-sm">← Search again</a>
+</div>
+
+{% if all_types %}
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+  {% for t in all_types %}
+  <span class="badge {% if t in selected_types %}badge-busy{% else %}badge-queued{% endif %}"
+        style="cursor:pointer;user-select:none"
+        onclick="toggleType('{{ t }}')">
+    {{ t }}
+  </span>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if releases %}
+{% for r in releases %}
+<div class="card" style="margin-bottom:6px;{% if r.owned %}opacity:0.55{% endif %}">
+  <div class="card-info">
+    <div class="card-title">{{ r.title }}</div>
+    <div class="card-sub">
+      {{ r.release_type }}{% if r.year %} · {{ r.year }}{% endif %}
+    </div>
+  </div>
+  <div class="card-actions">
+    {% if r.owned %}
+    <span class="badge badge-done">owned</span>
+    {% else %}
+    <a href="/search?q={{ (artist_name + ' ' + r.title)|urlencode }}"
+       class="btn btn-sm">
+      Search &amp; acquire
+    </a>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="empty">No releases found for the selected types.</p>
+{% endif %}
+
+<script>
+function toggleType(type) {
+  const url = new URL(window.location);
+  const types = url.searchParams.getAll('types');
+  const idx = types.indexOf(type);
+  if (idx >= 0) types.splice(idx, 1); else types.push(type);
+  url.searchParams.delete('types');
+  types.forEach(t => url.searchParams.append('types', t));
+  window.location = url.toString();
+}
+</script>
+{% endif %}
+{% endblock %}

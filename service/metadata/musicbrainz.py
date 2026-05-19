@@ -14,13 +14,29 @@ from pathlib import Path
 
 import musicbrainzngs
 
-from service.search.matcher import DEDUP_THRESHOLD, track_similarity
+from service.search.matcher import DEDUP_THRESHOLD, title_similarity, track_similarity
 
 logger = logging.getLogger(__name__)
 
 musicbrainzngs.set_useragent("audioreap", "0.1", "https://github.com/Gjessing1/audioreap")
 
 _CACHE_TTL = 86400  # 24 hours
+
+
+@dataclass
+class MBArtist:
+    artist_id: str
+    name: str
+    disambiguation: str | None
+    score: float
+
+
+@dataclass
+class MBReleaseGroup:
+    release_group_id: str
+    title: str
+    year: int | None
+    release_type: str  # "Album", "EP", "Single", "Live", "Compilation", etc.
 
 
 @dataclass
@@ -178,6 +194,97 @@ def lookup_recording(
 
     logger.info("MB match: %r → %s (sim=%.2f)", title, best.recording_id, best_sim)
     return best
+
+
+def search_artists(
+    name: str,
+    limit: int = 10,
+    cache_dir: Path | None = None,
+) -> list[MBArtist]:
+    """Search MB for artists by name. Returns ranked candidates."""
+    key = f"artist_search:{_cache_key(name, '')}"
+
+    raw: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw = _load_cache(cache_dir, key)
+
+    if raw is None:
+        try:
+            result = musicbrainzngs.search_artists(artist=name, limit=limit)
+            raw = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MB artist search failed for %r: %s", name, exc)
+            return []
+
+    artists: list[MBArtist] = []
+    for a in raw.get("artist-list") or []:
+        if not isinstance(a, dict):
+            continue
+        artists.append(MBArtist(
+            artist_id=str(a.get("id", "")),
+            name=str(a.get("name", "")),
+            disambiguation=str(a.get("disambiguation") or "") or None,
+            score=int(a.get("ext:score", 0)) / 100.0,
+        ))
+    return artists
+
+
+def get_artist_release_groups(
+    artist_mbid: str,
+    cache_dir: Path | None = None,
+) -> tuple[str, list[MBReleaseGroup]]:
+    """Get artist name and all release groups from MusicBrainz.
+
+    Returns (artist_name, release_groups).
+    """
+    key = f"artist_rg:{artist_mbid}"
+
+    raw: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw = _load_cache(cache_dir, key)
+
+    if raw is None:
+        try:
+            result = musicbrainzngs.get_artist_by_id(
+                artist_mbid,
+                includes=["release-groups"],
+            )
+            raw = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MB release group fetch failed for %s: %s", artist_mbid, exc)
+            return "Unknown Artist", []
+
+    artist_data = raw.get("artist") or {}
+    if not isinstance(artist_data, dict):
+        return "Unknown Artist", []
+
+    artist_name = str(artist_data.get("name") or "Unknown Artist")
+
+    groups: list[MBReleaseGroup] = []
+    for rg in artist_data.get("release-group-list") or []:
+        if not isinstance(rg, dict):
+            continue
+        rg_type = str(rg.get("type") or rg.get("primary-type") or "Album")
+        date = str(rg.get("first-release-date") or "")
+        year: int | None = None
+        if date and len(date) >= 4:
+            try:
+                year = int(date[:4])
+            except ValueError:
+                pass
+        groups.append(MBReleaseGroup(
+            release_group_id=str(rg.get("id", "")),
+            title=str(rg.get("title", "")),
+            year=year,
+            release_type=rg_type,
+        ))
+
+    groups.sort(key=lambda g: (g.year or 0, g.title))
+    return artist_name, groups
 
 
 def get_recording_by_id(

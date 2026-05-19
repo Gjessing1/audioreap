@@ -795,3 +795,97 @@ def _yt_search_one(query: str) -> str:
         vid_id = entry.get("id") or ""
         return str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")
     return f"ytsearch1:{query}"
+
+
+# ── Discography ───────────────────────────────────────────────────────────
+
+@router.get("/discography", response_class=HTMLResponse)
+async def discography_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "discography.html", {"active": "discography"}
+    )
+
+
+@router.get("/discography/search", response_class=HTMLResponse)
+async def discography_search(
+    request: Request,
+    q: str = "",
+) -> HTMLResponse:
+    if not q.strip():
+        return HTMLResponse("")
+
+    from service.metadata.musicbrainz import search_artists
+
+    artists = await asyncio.to_thread(
+        search_artists, q.strip(), 8, settings.cache_dir
+    )
+    return templates.TemplateResponse(
+        request, "partials/artist_candidates.html", {"artists": artists, "q": q}
+    )
+
+
+@router.get("/discography/{artist_mbid}", response_class=HTMLResponse)
+async def discography_view(
+    request: Request,
+    artist_mbid: str,
+    types: list[str] = [],
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from service.core.normalize import normalize as _normalize
+    from service.metadata.musicbrainz import get_artist_release_groups
+    from service.search.matcher import title_similarity
+
+    selected_types = set(types) or {"Album", "EP", "Single"}
+
+    artist_name, release_groups = await asyncio.to_thread(
+        get_artist_release_groups, artist_mbid, settings.cache_dir
+    )
+
+    filtered = [rg for rg in release_groups if rg.release_type in selected_types]
+
+    # Find artist in local DB by fuzzy name match
+    local_album_titles: set[str] = set()
+    all_local_artists = (
+        await session.execute(
+            select(Artist).where(Artist.name.ilike(f"%{artist_name.split()[0]}%"))
+        )
+    ).scalars().all()
+    for la in all_local_artists:
+        if title_similarity(la.name, artist_name) >= 0.85:
+            local_albums = (
+                await session.execute(select(Album).where(Album.artist_id == la.id))
+            ).scalars().all()
+            local_album_titles = {_normalize(a.title) for a in local_albums}
+            break
+
+    release_entries = []
+    for rg in filtered:
+        normalized_title = _normalize(rg.title)
+        owned = any(
+            title_similarity(normalized_title, local_t) >= 0.80
+            for local_t in local_album_titles
+        )
+        release_entries.append({
+            "release_group_id": rg.release_group_id,
+            "title": rg.title,
+            "year": rg.year,
+            "release_type": rg.release_type,
+            "owned": owned,
+        })
+
+    owned_count = sum(1 for r in release_entries if r["owned"])
+    all_types = sorted({rg.release_type for rg in release_groups})
+
+    return templates.TemplateResponse(
+        request, "discography.html",
+        {
+            "active": "discography",
+            "artist_name": artist_name,
+            "artist_mbid": artist_mbid,
+            "releases": release_entries,
+            "owned_count": owned_count,
+            "total_count": len(release_entries),
+            "all_types": all_types,
+            "selected_types": selected_types,
+        },
+    )
