@@ -480,9 +480,14 @@ async def subsonic_capture_proxy(path: str, request: Request) -> Response:
         len(resp.content),
     )
 
+    # Strip headers that conflict with the decompressed body we're serving:
+    # content-encoding: we always serve decompressed (httpx handles it)
+    # content-length: recomputed from actual body length by Starlette
+    # transfer-encoding: no chunked passthrough
+    # date: uvicorn adds its own; forwarding Navidrome's causes duplicates
+    _STRIP = frozenset({"transfer-encoding", "content-encoding", "content-length", "date"})
     return Resp(
         content=resp.content,
         status_code=resp.status_code,
-        headers={k: v for k, v in resp.headers.items()
-                 if k.lower() not in ("transfer-encoding", "content-encoding")},
+        headers={k: v for k, v in resp.headers.items() if k.lower() not in _STRIP},
     )
