@@ -1,7 +1,7 @@
 {% if artists %}
 <div class="section-title">Artists matching "{{ q }}"</div>
 {% for a in artists %}
-<a href="/discography/{{ a.artist_id }}" style="text-decoration:none">
+<a href="/discography/{{ a.artist_id }}" style="text-decoration:none;color:inherit;display:block">
   <div class="card" style="margin-bottom:6px;cursor:pointer">
     <div class="card-info">
       <div class="card-title">{{ a.name }}</div>
@@ -11,7 +11,7 @@
     </div>
     <div class="card-actions">
       <span class="badge badge-queued">{{ "%.0f"|format(a.score * 100) }}%</span>
-      <span class="btn btn-sm btn-ghost">View →</span>
+      <span class="btn btn-sm btn-ghost" style="color:var(--text)">View →</span>
     </div>
   </div>
 </a>

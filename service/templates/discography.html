@@ -32,20 +32,22 @@
 {% if all_types %}
 <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
   {% for t in all_types %}
-  <span class="badge {% if t in selected_types %}badge-busy{% else %}badge-queued{% endif %}"
-        style="cursor:pointer;user-select:none"
-        onclick="toggleType('{{ t }}')">
+  <button onclick="toggleType('{{ t }}')"
+          style="border:1px solid {% if t in selected_types %}var(--primary){% else %}var(--border){% endif %};
+                 background:{% if t in selected_types %}var(--primary){% else %}transparent{% endif %};
+                 color:var(--text);
+                 border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">
     {{ t }}
-  </span>
+  </button>
   {% endfor %}
 </div>
 {% endif %}
 
 {% if releases %}
 {% for r in releases %}
-<div class="card" style="margin-bottom:6px;{% if r.owned %}opacity:0.55{% endif %}">
+<div class="card" style="margin-bottom:6px">
   <div class="card-info">
-    <div class="card-title">{{ r.title }}</div>
+    <div class="card-title" style="{% if r.owned %}color:var(--muted){% endif %}">{{ r.title }}</div>
     <div class="card-sub">
       {{ r.release_type }}{% if r.year %} · {{ r.year }}{% endif %}
     </div>
@@ -55,7 +57,7 @@
     <span class="badge badge-done">owned</span>
     {% else %}
     <a href="/search?q={{ (artist_name + ' ' + r.title)|urlencode }}"
-       class="btn btn-sm">
+       class="btn btn-sm" style="color:var(--text)">
       Search &amp; acquire
     </a>
     {% endif %}
