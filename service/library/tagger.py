@@ -210,14 +210,20 @@ def write_tags(
     albumartist: str | None = None,
     album: str | None = None,
     year: int | None = None,
+    original_year: int | None = None,
     track_number: int | None = None,
     disc_number: int | None = None,
+    artist_sort: str | None = None,
+    compilation: bool = False,
+    mb_recording_id: str | None = None,
+    mb_release_id: str | None = None,
+    mb_artist_id: str | None = None,
     artwork_bytes: bytes | None = None,
 ) -> None:
     """Write normalized tags back to an audio file.
 
-    Only fields that are not None are written — existing tags for omitted
-    fields are left untouched.
+    Only fields that are not None (or False for booleans) are written —
+    existing tags for omitted fields are left untouched.
     """
     audio = MutagenFile(path)
     if audio is None:
@@ -241,12 +247,30 @@ def write_tags(
             tags["©day"] = [str(year)]  # type: ignore[index]
         if track_number is not None:
             tags["trkn"] = [(track_number, 0)]  # type: ignore[index]
+        if artist_sort is not None:
+            tags["soar"] = [artist_sort]  # type: ignore[index]
+        if compilation:
+            tags["cpil"] = True  # type: ignore[index]
+        if mb_recording_id is not None:
+            tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [  # type: ignore[index]
+                mb_recording_id.encode()
+            ]
+        if mb_release_id is not None:
+            tags["----:com.apple.iTunes:MusicBrainz Album Id"] = [  # type: ignore[index]
+                mb_release_id.encode()
+            ]
+        if mb_artist_id is not None:
+            tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [  # type: ignore[index]
+                mb_artist_id.encode()
+            ]
         if artwork_bytes is not None:
             from mutagen.mp4 import MP4Cover
             tags["covr"] = [MP4Cover(artwork_bytes, imageformat=MP4Cover.FORMAT_JPEG)]  # type: ignore[index]
 
     elif isinstance(tags, ID3):
-        from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
+        from mutagen.id3 import (
+            APIC, TALB, TCMP, TDOR, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TSOP, TXXX,
+        )
 
         if title is not None:
             tags["TIT2"] = TIT2(encoding=3, text=[title])
@@ -258,10 +282,28 @@ def write_tags(
             tags["TALB"] = TALB(encoding=3, text=[album])
         if year is not None:
             tags["TDRC"] = TDRC(encoding=3, text=[str(year)])
+        if original_year is not None:
+            tags["TDOR"] = TDOR(encoding=3, text=[str(original_year)])
         if track_number is not None:
             tags["TRCK"] = TRCK(encoding=3, text=[str(track_number)])
         if disc_number is not None:
             tags["TPOS"] = TPOS(encoding=3, text=[str(disc_number)])
+        if artist_sort is not None:
+            tags["TSOP"] = TSOP(encoding=3, text=[artist_sort])
+        if compilation:
+            tags["TCMP"] = TCMP(encoding=3, text=["1"])
+        if mb_recording_id is not None:
+            tags["TXXX:MusicBrainz Track Id"] = TXXX(
+                encoding=3, desc="MusicBrainz Track Id", text=[mb_recording_id]
+            )
+        if mb_release_id is not None:
+            tags["TXXX:MusicBrainz Album Id"] = TXXX(
+                encoding=3, desc="MusicBrainz Album Id", text=[mb_release_id]
+            )
+        if mb_artist_id is not None:
+            tags["TXXX:MusicBrainz Artist Id"] = TXXX(
+                encoding=3, desc="MusicBrainz Artist Id", text=[mb_artist_id]
+            )
         if artwork_bytes is not None:
             tags["APIC"] = APIC(
                 encoding=3,
@@ -286,14 +328,35 @@ def write_tags(
             tags["album"] = [album]  # type: ignore[index]
         if year is not None:
             tags["date"] = [str(year)]  # type: ignore[index]
+        if original_year is not None:
+            tags["originaldate"] = [str(original_year)]  # type: ignore[index]
         if track_number is not None:
             tags["tracknumber"] = [str(track_number)]  # type: ignore[index]
         if disc_number is not None:
             tags["discnumber"] = [str(disc_number)]  # type: ignore[index]
+        if artist_sort is not None:
+            tags["artistsort"] = [artist_sort]  # type: ignore[index]
+        if compilation:
+            tags["compilation"] = ["1"]  # type: ignore[index]
+        if mb_recording_id is not None:
+            tags["musicbrainz_trackid"] = [mb_recording_id]  # type: ignore[index]
+        if mb_release_id is not None:
+            tags["musicbrainz_albumid"] = [mb_release_id]  # type: ignore[index]
+        if mb_artist_id is not None:
+            tags["musicbrainz_artistid"] = [mb_artist_id]  # type: ignore[index]
         if artwork_bytes is not None:
             _embed_vorbis_art(audio, artwork_bytes)
 
     audio.save()
+
+
+def write_cover_jpg(album_dir: Path, artwork_bytes: bytes) -> None:
+    """Write artwork as cover.jpg in the album directory (sidecar file)."""
+    try:
+        cover_path = album_dir / "cover.jpg"
+        cover_path.write_bytes(artwork_bytes)
+    except Exception:
+        pass
 
 
 def _embed_vorbis_art(audio: object, data: bytes) -> None:

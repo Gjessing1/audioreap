@@ -37,13 +37,16 @@ class Settings(BaseSettings):
     # Logging
     log_format: str = "pretty"  # "json" in prod
 
+    # AcoustID (optional — enables fingerprint-based MB matching)
+    acoustid_api_key: str = ""
+
     # Quality review
     min_bitrate_kbps: int = 128  # Tracks below this are flagged as low quality
 
     # Algorithm versions — increment to trigger migrations
     id_algorithm_version: int = 1
     normalize_version: int = 1
-    layout_version: int = 1
+    layout_version: int = 2
 
 
 settings = Settings()

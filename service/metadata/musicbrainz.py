@@ -48,7 +48,10 @@ class MBRecording:
     year: int | None
     track_number: int | None
     score: float
-    release_id: str | None = None  # first release's MB release MBID (for CAA artwork)
+    release_id: str | None = None      # first release's MB release MBID (for CAA artwork)
+    artist_id: str | None = None       # MB artist MBID (for MUSICBRAINZ_ARTISTID tag)
+    artist_sort: str | None = None     # e.g. "Beatles, The" (for ARTISTSORT tag)
+    original_year: int | None = None   # first-ever release year (for ORIGINALDATE tag)
 
 
 def _cache_key(title: str, artist: str) -> str:
@@ -95,15 +98,22 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
 
     artist_credits = rec.get("artist-credit") or []
     artist = ""
+    artist_id: str | None = None
+    artist_sort: str | None = None
     if isinstance(artist_credits, list) and artist_credits:
         first = artist_credits[0]
         if isinstance(first, dict):
             a = first.get("artist") or {}
             if isinstance(a, dict):
                 artist = str(a.get("name", ""))
+                artist_id = str(a.get("id") or "") or None
+                sort_name = str(a.get("sort-name") or "").strip()
+                if sort_name and sort_name != artist:
+                    artist_sort = sort_name
 
     album: str | None = None
     year: int | None = None
+    original_year: int | None = None
     track_number: int | None = None
     release_id: str | None = None
 
@@ -114,6 +124,14 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
             album = str(release.get("title") or "")
             year = _extract_year(release)
             release_id = str(release.get("id") or "") or None
+            rg = release.get("release-group") or {}
+            if isinstance(rg, dict):
+                rg_date = str(rg.get("first-release-date") or "")
+                if rg_date and len(rg_date) >= 4:
+                    try:
+                        original_year = int(rg_date[:4])
+                    except ValueError:
+                        pass
             medium_list = release.get("medium-list") or []
             if isinstance(medium_list, list) and medium_list:
                 medium = medium_list[0]
@@ -138,6 +156,9 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
         track_number=track_number,
         score=score,
         release_id=release_id,
+        artist_id=artist_id,
+        artist_sort=artist_sort,
+        original_year=original_year,
     )
 
 
@@ -306,7 +327,7 @@ def get_recording_by_id(
         try:
             result = musicbrainzngs.get_recording_by_id(
                 recording_id,
-                includes=["artists", "releases", "media"],
+                includes=["artists", "releases", "release-groups", "media"],
             )
             raw = dict(result)
             if cache_dir is not None:

@@ -22,7 +22,7 @@ from service.core.models import TrackCandidate
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
 from service.library.layout import track_path
-from service.library.tagger import has_cover_art, read_tags, write_tags
+from service.library.tagger import has_cover_art, read_tags, write_cover_jpg, write_tags
 from service.metadata.quality import compute_quality_score
 from service.library.writer import atomic_place
 from service.providers.base import Provider
@@ -211,24 +211,42 @@ async def run_acquisition(
         disc_number = (tagged.disc_number if tagged else None)
         duration = (tagged.duration_seconds if tagged else None) or candidate.duration_seconds
 
-        # ── 3a. MusicBrainz lookup ────────────────────────────────────────────
+        # ── 3a. MusicBrainz lookup — AcoustID first, text search fallback ────
         mb_recording_id: str | None = None
         mb_release_id: str | None = None
+        mb_artist_id: str | None = None
+        mb_artist_sort: str | None = None
+        mb_original_year: int | None = None
         artwork_bytes: bytes | None = None
         try:
-            from service.metadata.musicbrainz import lookup_recording
-            mb = await asyncio.to_thread(
-                lookup_recording, title, artist, duration,
-                cache_dir=settings.cache_dir,
-            )
+            from service.metadata.acoustid import acoustid_to_mbid
+            from service.metadata.musicbrainz import get_recording_by_id, lookup_recording
+
+            mb: object = None
+            if settings.acoustid_api_key:
+                acoustid_mbid = await acoustid_to_mbid(audio_path, settings.acoustid_api_key)
+                if acoustid_mbid:
+                    mb = await asyncio.to_thread(
+                        get_recording_by_id, acoustid_mbid, settings.cache_dir
+                    )
+
+            if mb is None:
+                mb = await asyncio.to_thread(
+                    lookup_recording, title, artist, duration,
+                    cache_dir=settings.cache_dir,
+                )
+
             if mb is not None:
-                mb_recording_id = mb.recording_id
-                mb_release_id = mb.release_id
-                title = mb.title or title
-                artist = mb.artist or artist
-                album = mb.album or album
-                year = mb.year or year
-                track_number = mb.track_number or track_number
+                mb_recording_id = mb.recording_id  # type: ignore[union-attr]
+                mb_release_id = mb.release_id  # type: ignore[union-attr]
+                mb_artist_id = mb.artist_id  # type: ignore[union-attr]
+                mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
+                mb_original_year = mb.original_year  # type: ignore[union-attr]
+                title = mb.title or title  # type: ignore[union-attr]
+                artist = mb.artist or artist  # type: ignore[union-attr]
+                album = mb.album or album  # type: ignore[union-attr]
+                year = mb.year or year  # type: ignore[union-attr]
+                track_number = mb.track_number or track_number  # type: ignore[union-attr]
                 try:
                     from service.metadata.artwork import fetch_artwork
                     artwork_bytes = await fetch_artwork(
@@ -241,15 +259,27 @@ async def run_acquisition(
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
 
+        # Determine albumartist (always set — prevents Navidrome album splits)
+        albumartist = artist
+        is_compilation = (album is not None) and albumartist.lower() in ("various artists", "various")
+
         # Always write the final resolved tags (candidate fallback or MB-enriched)
         try:
             write_tags(
                 audio_path,
                 title=title,
                 artist=artist,
+                albumartist=albumartist,
                 album=album,
                 year=year,
+                original_year=mb_original_year,
                 track_number=track_number,
+                disc_number=disc_number,
+                artist_sort=mb_artist_sort,
+                compilation=is_compilation,
+                mb_recording_id=mb_recording_id,
+                mb_release_id=mb_release_id,
+                mb_artist_id=mb_artist_id,
             )
         except Exception as tag_exc:
             logger.warning("Tag write failed for %s: %s", audio_path, tag_exc)
@@ -264,6 +294,7 @@ async def run_acquisition(
             disc_number=disc_number,
             title=title,
             ext=ext,
+            albumartist=albumartist,
         )
 
         # ── 4. Idempotency check ───────────────────────────────────────────
@@ -282,12 +313,13 @@ async def run_acquisition(
             logger.error("Placement failed %s: %s", job_id, exc)
             return
 
-        # ── 5b. Embed artwork after placement ──────────────────────────────
+        # ── 5b. Embed artwork + write cover.jpg sidecar ────────────────────
         if artwork_bytes:
             try:
                 write_tags(dest, artwork_bytes=artwork_bytes)
             except Exception as art_exc:
                 logger.debug("Artwork embed failed: %s", art_exc)
+            write_cover_jpg(dest.parent, artwork_bytes)
 
         # ── 6. Index in DB ─────────────────────────────────────────────────
         # Scanner creates the row with a hash-based ID; we backfill MB fields after.

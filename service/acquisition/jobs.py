@@ -170,9 +170,15 @@ async def enrich_track(
                     file_path,
                     title=clean_title,
                     artist=clean_artist,
+                    albumartist=clean_artist,
                     album=match.album,
                     year=match.year,
+                    original_year=match.original_year,
                     track_number=match.track_number,
+                    artist_sort=match.artist_sort,
+                    mb_recording_id=match.recording_id,
+                    mb_release_id=match.release_id,
+                    mb_artist_id=match.artist_id,
                 )
                 hca = await asyncio.to_thread(_has_cover_art, file_path)
                 track.file.has_cover_art = hca
