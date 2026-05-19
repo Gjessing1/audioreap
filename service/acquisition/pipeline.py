@@ -22,7 +22,8 @@ from service.core.models import TrackCandidate
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
 from service.library.layout import track_path
-from service.library.tagger import read_tags, write_tags
+from service.library.tagger import has_cover_art, read_tags, write_tags
+from service.metadata.quality import compute_quality_score
 from service.library.writer import atomic_place
 from service.providers.base import Provider
 
@@ -167,8 +168,23 @@ async def run_acquisition(
             s = str(v).strip() if v is not None else ""
             return s if s and s.lower() not in ("none", "unknown") else None
 
-        _fetch_title = _rm_str("track") or _rm_str("title")
-        _fetch_artist = _rm_str("artist") or _rm_str("uploader") or _rm_str("channel")
+        _artist_from_meta = _rm_str("artist")   # only set for YouTube Music
+        _title_raw = _rm_str("track") or _rm_str("title")
+        _uploader = _rm_str("uploader") or _rm_str("channel")
+
+        if _artist_from_meta:
+            # YouTube Music: trust the dedicated artist/track fields
+            _fetch_title = _title_raw
+            _fetch_artist = _artist_from_meta
+        elif _title_raw and " - " in _title_raw:
+            # Regular YouTube: split "Artist - Title" convention in video title
+            _split = _title_raw.split(" - ", 1)
+            _fetch_artist = _split[0].strip()
+            _fetch_title = _split[1].strip()
+        else:
+            _fetch_title = _title_raw
+            _fetch_artist = _uploader
+
         _fetch_album = _rm_str("album")
         _ry = _rm.get("release_year")
         _fetch_year: int | None = int(_ry) if isinstance(_ry, (int, float)) and _ry else None
@@ -197,15 +213,17 @@ async def run_acquisition(
 
         # ── 3a. MusicBrainz lookup ────────────────────────────────────────────
         mb_recording_id: str | None = None
+        mb_release_id: str | None = None
         artwork_bytes: bytes | None = None
         try:
             from service.metadata.musicbrainz import lookup_recording
-            mb = lookup_recording(
-                title, artist, duration,
+            mb = await asyncio.to_thread(
+                lookup_recording, title, artist, duration,
                 cache_dir=settings.cache_dir,
             )
             if mb is not None:
                 mb_recording_id = mb.recording_id
+                mb_release_id = mb.release_id
                 title = mb.title or title
                 artist = mb.artist or artist
                 album = mb.album or album
@@ -214,7 +232,7 @@ async def run_acquisition(
                 try:
                     from service.metadata.artwork import fetch_artwork
                     artwork_bytes = await fetch_artwork(
-                        release_mbid=None,
+                        release_mbid=mb_release_id,
                         thumbnail_url=candidate.thumbnail_url,
                         cache_dir=settings.cache_dir,
                     )
@@ -272,18 +290,33 @@ async def run_acquisition(
                 logger.debug("Artwork embed failed: %s", art_exc)
 
         # ── 6. Index in DB ─────────────────────────────────────────────────
+        # Scanner creates the row with a hash-based ID; we backfill MB fields after.
+        hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration)
         try:
             await index_file(session, dest)
             await session.flush()
+
+            if mb_recording_id or artwork_bytes is not None:
+                from service.db.schema import Track as _Track
+                track_row = await session.get(_Track, hash_track_id)
+                if track_row is not None:
+                    if mb_recording_id:
+                        track_row.musicbrainz_recording_id = mb_recording_id
+                    hca = await asyncio.to_thread(has_cover_art, dest)
+                    if track_row.file:
+                        track_row.file.has_cover_art = hca
+                    track_row.tag_quality_score = compute_quality_score(
+                        title=title,
+                        artist=artist,
+                        album=album,
+                        year=year,
+                        track_number=track_number,
+                        musicbrainz_recording_id=mb_recording_id,
+                        has_cover_art=hca,
+                    )
+                    await session.flush()
         except Exception as exc:
             logger.warning("DB index failed for %s: %s", dest, exc)
-
-        track_id = make_id(
-            artist=artist,
-            title=title,
-            duration_seconds=duration,
-            musicbrainz_recording_id=mb_recording_id,
-        )
 
         # ── 7. Trigger Navidrome scan ──────────────────────────────────────
         try:
@@ -291,5 +324,5 @@ async def run_acquisition(
         except Exception as exc:
             logger.warning("Navidrome scan trigger failed: %s", exc)
 
-        await _set_state(session, job_id, "done", track_id=track_id)
+        await _set_state(session, job_id, "done", track_id=hash_track_id)
         logger.info("Acquisition done: %s → %s", job_id, dest)

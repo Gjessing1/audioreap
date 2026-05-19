@@ -71,15 +71,23 @@ class YtdlpProvider(Provider):
                 continue
             video_id = entry.get("id") or entry.get("url", "")
             video_url = entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
-            # YouTube Music returns structured artist/track fields; fall back to
-            # uploader/title for regular YouTube results.
-            title = entry.get("track") or entry.get("title") or "Unknown"
-            artist = (
-                entry.get("artist")
-                or entry.get("uploader")
-                or entry.get("channel")
-                or "Unknown"
-            )
+
+            artist_from_meta = entry.get("artist")  # only set for YouTube Music
+            title_raw = str(entry.get("track") or entry.get("title") or "Unknown")
+            uploader = entry.get("uploader") or entry.get("channel") or "Unknown"
+
+            if artist_from_meta:
+                title = title_raw
+                artist = str(artist_from_meta)
+            elif " - " in title_raw:
+                # Split "Artist - Title" convention common in regular YouTube uploads
+                parts = title_raw.split(" - ", 1)
+                artist = parts[0].strip()
+                title = parts[1].strip()
+            else:
+                title = title_raw
+                artist = str(uploader)
+
             album = entry.get("album")
             duration = entry.get("duration")
 

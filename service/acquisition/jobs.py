@@ -118,18 +118,49 @@ async def enrich_track(
         if track is None or track.musicbrainz_recording_id:
             return
 
+        # Attempt MB lookup with the stored title/artist.
+        # If the title looks like "Artist - Title" (common for YouTube uploads indexed
+        # before the split logic was added), also try with split values.
+        lookup_title = track.title
+        lookup_artist = track.artist.name
         match = await asyncio.to_thread(
-            _lookup,
-            track.title,
-            track.artist.name,
-            track.duration_seconds,
-            _settings.cache_dir,
+            _lookup, lookup_title, lookup_artist, track.duration_seconds, _settings.cache_dir,
         )
+        if match is None and " - " in lookup_title:
+            parts = lookup_title.split(" - ", 1)
+            split_artist, split_title = parts[0].strip(), parts[1].strip()
+            match = await asyncio.to_thread(
+                _lookup, split_title, split_artist, track.duration_seconds, _settings.cache_dir,
+            )
+            if match is not None:
+                lookup_title = split_title
+                lookup_artist = split_artist
+
         if match is None:
             logger.debug("No MB match for track %s", track_id)
             return
 
         track.musicbrainz_recording_id = match.recording_id
+
+        # Update title/artist in DB if they changed (e.g., after "Artist - Title" split)
+        clean_title = match.title or lookup_title
+        clean_artist = match.artist or lookup_artist
+        if clean_title != track.title:
+            track.title = clean_title
+        if clean_artist != track.artist.name:
+            # Find or create the correct Artist row
+            from service.index.scanner import _artist_id as _aid
+            from service.db.schema import Artist as _Artist
+            from datetime import UTC as _UTC, datetime as _dt
+            new_aid = _aid(clean_artist)
+            existing = await session.get(_Artist, new_aid)
+            if existing is None:
+                now = _dt.now(_UTC).replace(tzinfo=None)
+                session.add(_Artist(
+                    id=new_aid, name=clean_artist,
+                    created_at=now, updated_at=now,
+                ))
+            track.artist_id = new_aid
 
         if track.file:
             file_path = _Path(track.file.path)
@@ -137,8 +168,8 @@ async def enrich_track(
                 await asyncio.to_thread(
                     _write_tags,
                     file_path,
-                    title=match.title or None,
-                    artist=match.artist or None,
+                    title=clean_title,
+                    artist=clean_artist,
                     album=match.album,
                     year=match.year,
                     track_number=match.track_number,
@@ -146,8 +177,8 @@ async def enrich_track(
                 hca = await asyncio.to_thread(_has_cover_art, file_path)
                 track.file.has_cover_art = hca
                 track.tag_quality_score = _quality(
-                    title=match.title or track.title,
-                    artist=match.artist or track.artist.name,
+                    title=clean_title,
+                    artist=clean_artist,
                     album=match.album or (track.album.title if track.album else None),
                     year=match.year,
                     track_number=match.track_number,
