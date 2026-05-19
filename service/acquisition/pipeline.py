@@ -389,11 +389,12 @@ async def run_acquisition(
             logger.debug("ReplayGain failed for %s: %s", dest, rg_exc)
 
         # ── 6. Index in DB ─────────────────────────────────────────────────
-        # Scanner creates the row with a hash-based ID; we backfill MB fields after.
+        # Use a savepoint so index failures don't roll back the outer transaction
+        # (which is needed for the final _set_state call).
         hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration)
         try:
-            await index_file(session, dest)
-            await session.flush()
+            async with session.begin_nested():
+                await index_file(session, dest)
 
             if mb_recording_id or artwork_bytes is not None:
                 from service.db.schema import Track as _Track

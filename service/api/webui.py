@@ -464,17 +464,17 @@ async def retag_track(
     )
     hca = await asyncio.to_thread(_has_cover_art, file_path)
 
-    async with session.begin():
-        row.file.has_cover_art = hca
-        row.tag_quality_score = compute_quality_score(
-            title=match.title or row.title,
-            artist=match.artist or row.artist.name,
-            album=match.album or (row.album.title if row.album else None),
-            year=match.year,
-            track_number=match.track_number,
-            musicbrainz_recording_id=row.musicbrainz_recording_id,
-            has_cover_art=hca,
-        )
+    row.file.has_cover_art = hca
+    row.tag_quality_score = compute_quality_score(
+        title=match.title or row.title,
+        artist=match.artist or row.artist.name,
+        album=match.album or (row.album.title if row.album else None),
+        year=match.year,
+        track_number=match.track_number,
+        musicbrainz_recording_id=row.musicbrainz_recording_id,
+        has_cover_art=hca,
+    )
+    await session.commit()
 
     pct = int((row.tag_quality_score or 0) * 100)
     return HTMLResponse(
@@ -602,14 +602,14 @@ async def reacquire_track(
         duration_seconds=row.duration_seconds,
     )
 
-    async with session.begin():
-        job_id = await create_job(
-            session,
-            provider_name=candidate.provider,
-            provider_ref=candidate.provider_ref,
-            candidate=candidate,
-            query=f"{candidate.artist} - {candidate.title} [re-acquire]",
-        )
+    job_id = await create_job(
+        session,
+        provider_name=candidate.provider,
+        provider_ref=candidate.provider_ref,
+        candidate=candidate,
+        query=f"{candidate.artist} - {candidate.title} [re-acquire]",
+    )
+    await session.commit()
 
     try:
         from arq import create_pool
@@ -682,17 +682,17 @@ async def fetch_track_art(
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
     hca = await asyncio.to_thread(_has_cover_art, file_path)
 
-    async with session.begin():
-        row.file.has_cover_art = hca
-        row.tag_quality_score = compute_quality_score(
-            title=row.title,
-            artist=row.artist.name,
-            album=row.album.title if row.album else None,
-            year=None,
-            track_number=row.track_number,
-            musicbrainz_recording_id=row.musicbrainz_recording_id,
-            has_cover_art=hca,
-        )
+    row.file.has_cover_art = hca
+    row.tag_quality_score = compute_quality_score(
+        title=row.title,
+        artist=row.artist.name,
+        album=row.album.title if row.album else None,
+        year=None,
+        track_number=row.track_number,
+        musicbrainz_recording_id=row.musicbrainz_recording_id,
+        has_cover_art=hca,
+    )
+    await session.commit()
 
     return HTMLResponse(
         f'<div id="art-{internal_id}" class="badge badge-done">Art embedded ✓</div>'
@@ -1111,38 +1111,38 @@ async def discography_acquire_album(
         from arq.connections import RedisSettings
         redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
 
-        async with session.begin():
-            for t in tracks:
-                if t.recording_id and t.recording_id in owned_recording_ids:
-                    continue
-                search_ref = f"ytsearch1:{artist} {t.title}"
-                candidate = TrackCandidate(
-                    provider="ytdlp",
-                    provider_ref=search_ref,
-                    title=t.title,
-                    artist=artist or "Unknown",
-                    album=album_title,
-                    duration_seconds=t.duration_seconds,
-                )
-                job_id = await create_job(
-                    session,
-                    provider_name="ytdlp",
-                    provider_ref=search_ref,
-                    candidate=candidate,
-                    query=f"{artist} - {t.title}",
-                )
-                await redis.enqueue_job(
-                    "acquire_track",
-                    job_id=job_id,
-                    provider_name="ytdlp",
-                    provider_ref=search_ref,
-                    candidate_json=candidate.model_dump_json(),
-                    music_dir=str(settings.music_dir),
-                    tmp_acquire_dir=str(settings.tmp_acquire_dir),
-                    _job_id=f"acquire:{job_id}",
-                )
-                queued += 1
+        for t in tracks:
+            if t.recording_id and t.recording_id in owned_recording_ids:
+                continue
+            search_ref = f"ytsearch1:{artist} {t.title}"
+            candidate = TrackCandidate(
+                provider="ytdlp",
+                provider_ref=search_ref,
+                title=t.title,
+                artist=artist or "Unknown",
+                album=album_title,
+                duration_seconds=t.duration_seconds,
+            )
+            job_id = await create_job(
+                session,
+                provider_name="ytdlp",
+                provider_ref=search_ref,
+                candidate=candidate,
+                query=f"{artist} - {t.title}",
+            )
+            await redis.enqueue_job(
+                "acquire_track",
+                job_id=job_id,
+                provider_name="ytdlp",
+                provider_ref=search_ref,
+                candidate_json=candidate.model_dump_json(),
+                music_dir=str(settings.music_dir),
+                tmp_acquire_dir=str(settings.tmp_acquire_dir),
+                _job_id=f"acquire:{job_id}",
+            )
+            queued += 1
 
+        await session.commit()
         await redis.aclose()
     except Exception as exc:
         logger.error("Discography acquire failed: %s", exc)

@@ -327,7 +327,7 @@ def get_recording_by_id(
         try:
             result = musicbrainzngs.get_recording_by_id(
                 recording_id,
-                includes=["artists", "releases", "release-groups", "media"],
+                includes=["artists", "releases", "media"],
             )
             raw = dict(result)
             if cache_dir is not None:

@@ -31,26 +31,54 @@ nav {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   padding: 0 16px;
-  height: 52px;
+  min-height: 52px;
   position: sticky;
   top: 0;
   z-index: 100;
   gap: 4px;
 }
 
-nav .brand { font-weight: 700; color: var(--primary); margin-right: auto; font-size: 17px; }
+nav .brand { font-weight: 700; color: var(--primary); font-size: 17px; flex: 1; }
 
-nav a {
+/* Hamburger — visible on mobile, hidden on desktop */
+.nav-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  width: 36px; height: 36px;
+  min-height: 36px; min-width: 36px;
+  font-size: 18px;
+  padding: 0;
+  cursor: pointer;
+}
+.nav-toggle:hover { background: var(--surface2); }
+
+/* Nav links — hidden on mobile until toggled */
+.nav-links {
+  display: none;
+  width: 100%;
+  flex-direction: column;
+  padding: 8px 0 12px;
+  gap: 2px;
+}
+nav.nav-open .nav-links { display: flex; }
+
+.nav-links a {
   color: var(--muted);
   text-decoration: none;
-  padding: 6px 10px;
+  padding: 10px 12px;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: 15px;
   transition: background .15s, color .15s;
 }
-nav a:hover, nav a.active { background: var(--surface2); color: var(--text); }
+.nav-links a:hover, .nav-links a.active { background: var(--surface2); color: var(--text); }
 
 main { max-width: 800px; margin: 0 auto; padding: 20px 16px; }
 
@@ -207,9 +235,29 @@ button:disabled { opacity: .5; cursor: default; }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (min-width: 640px) {
-  nav { gap: 8px; }
-  nav a { font-size: 15px; }
+  .nav-toggle { display: none; }
+  .nav-links {
+    display: flex !important;
+    flex-direction: row;
+    width: auto;
+    flex: 0;
+    padding: 0;
+    gap: 4px;
+  }
+  .nav-links a { font-size: 14px; padding: 6px 10px; }
+  nav.nav-open .nav-links { flex-direction: row; }
   #player-progress { max-width: 360px; }
   .search-columns { flex-direction: row; gap: 24px; align-items: flex-start; }
   .search-col .section-title { margin-top: 0; }
 }
+
+/* ── Utility ─────────────────────────────────────────────────────────────── */
+.badge-ok   { color: var(--success); }
+.badge-warn { color: var(--warn); }
+.muted      { color: var(--muted); }
+.page-header { margin-bottom: 20px; }
+.page-header h1 { font-size: 20px; font-weight: 700; }
+.card-list { display: flex; flex-direction: column; gap: 0; }
+.card-body { flex: 1; min-width: 0; }
+.card-meta { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.empty-state { text-align: center; color: var(--muted); padding: 40px 20px; }

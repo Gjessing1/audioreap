@@ -13,10 +13,10 @@
             title="Queue MusicBrainz enrichment for all unmatched tracks">
       Enrich library
     </button>
-    <button class="btn"
+    <button class="btn" id="scan-btn"
             hx-post="/api/scan"
             hx-swap="none"
-            hx-on::after-request="this.textContent='Scanning…'; setTimeout(() => { this.textContent='Scan library'; window.location.reload(); }, 8000)">
+            hx-on::after-request="this.textContent='Scanning…'; this.disabled=true; setTimeout(() => { window.location.reload(); }, 15000)">
       Scan library
     </button>
   </div>

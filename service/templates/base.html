@@ -14,15 +14,18 @@
   <title>{% block title %}audioreap{% endblock %}</title>
 </head>
 <body>
-<nav>
+<nav id="main-nav">
   <span class="brand">♪ audioreap</span>
-  <a href="/search"      {% if active == 'search'      %}class="active"{% endif %}>Search</a>
-  <a href="/jobs"        {% if active == 'jobs'        %}class="active"{% endif %}>Jobs</a>
-  <a href="/playlists"   {% if active == 'playlists'   %}class="active"{% endif %}>Playlists</a>
-  <a href="/discography" {% if active == 'discography' %}class="active"{% endif %}>Discography</a>
-  <a href="/library"     {% if active == 'library'     %}class="active"{% endif %}>Library</a>
-  <a href="/staging"     {% if active == 'staging'     %}class="active"{% endif %}>Staging</a>
-  <a href="/health"      {% if active == 'health'      %}class="active"{% endif %}>Health</a>
+  <button class="nav-toggle" onclick="document.getElementById('main-nav').classList.toggle('nav-open')" aria-label="Menu">☰</button>
+  <div class="nav-links">
+    <a href="/search"      {% if active == 'search'      %}class="active"{% endif %}>Search</a>
+    <a href="/jobs"        {% if active == 'jobs'        %}class="active"{% endif %}>Jobs</a>
+    <a href="/playlists"   {% if active == 'playlists'   %}class="active"{% endif %}>Playlists</a>
+    <a href="/discography" {% if active == 'discography' %}class="active"{% endif %}>Discography</a>
+    <a href="/library"     {% if active == 'library'     %}class="active"{% endif %}>Library</a>
+    <a href="/staging"     {% if active == 'staging'     %}class="active"{% endif %}>Staging</a>
+    <a href="/health"      {% if active == 'health'      %}class="active"{% endif %}>Health</a>
+  </div>
 </nav>
 
 <main>
