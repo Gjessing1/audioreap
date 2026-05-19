@@ -304,8 +304,63 @@ async def run_acquisition(
             await _set_state(session, job_id, "done", track_id=track_id)
             return
 
-        # ── 5. Atomic place ────────────────────────────────────────────────
+        # ── 4b. Pre-placement quality score for staging decision ───────────
+        pre_score = compute_quality_score(
+            title=title,
+            artist=artist,
+            album=album,
+            year=year,
+            track_number=track_number,
+            musicbrainz_recording_id=mb_recording_id,
+            has_cover_art=artwork_bytes is not None,
+        )
+        threshold = settings.staging_quality_threshold
+        use_staging = (
+            threshold > 0
+            and pre_score < threshold
+            and settings.staging_dir != music_dir
+        )
+
+        # ── 5. Atomic place (music or staging) ────────────────────────────
         await _set_state(session, job_id, "importing")
+
+        if use_staging:
+            # Place in staging — Navidrome won't see this until approved
+            staging_dest = track_path(
+                settings.staging_dir,
+                artist=artist,
+                album=album,
+                year=year,
+                track_number=track_number,
+                disc_number=disc_number,
+                title=title,
+                ext=ext,
+                albumartist=albumartist,
+            )
+            try:
+                atomic_place(audio_path, staging_dest)
+            except Exception as exc:
+                await _set_state(session, job_id, "failed", failure_class="transient", error=str(exc))
+                logger.error("Staging placement failed %s: %s", job_id, exc)
+                return
+            if artwork_bytes:
+                try:
+                    write_tags(staging_dest, artwork_bytes=artwork_bytes)
+                except Exception:
+                    pass
+                write_cover_jpg(staging_dest.parent, artwork_bytes)
+            row = await session.get(AcquisitionJobRow, job_id)
+            if row is not None:
+                row.state = "staged"
+                row.staging_path = str(staging_dest)
+                row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                await session.flush()
+            logger.info(
+                "Staged (quality=%.0f%% < %.0f%%): %s → %s",
+                pre_score * 100, threshold * 100, job_id, staging_dest,
+            )
+            return
+
         try:
             atomic_place(audio_path, dest)
         except Exception as exc:

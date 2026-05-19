@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # AcoustID (optional — enables fingerprint-based MB matching)
     acoustid_api_key: str = ""
 
+    # Staging (tracks below threshold land here for review before Navidrome sees them)
+    staging_dir: Path = Path("/music-staging")
+    staging_quality_threshold: float = 0.40  # ~3/7 factors; set 0.0 to disable staging
+
     # Quality review
     min_bitrate_kbps: int = 128  # Tracks below this are flagged as low quality
 

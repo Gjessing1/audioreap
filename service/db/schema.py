@@ -122,6 +122,7 @@ class AcquisitionJobRow(Base):
         String, ForeignKey("playlist_imports.id"), nullable=True
     )
     track_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    staging_path: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 

@@ -1102,3 +1102,241 @@ async def discography_view(
             "selected_types": selected_types,
         },
     )
+
+
+# ── Staging ───────────────────────────────────────────────────────────────────
+
+@router.get("/staging", response_class=HTMLResponse)
+async def staging_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (
+        await session.execute(
+            select(AcquisitionJobRow)
+            .where(AcquisitionJobRow.state == "staged")
+            .order_by(AcquisitionJobRow.updated_at.desc())
+        )
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request, "staging.html",
+        {"active": "staging", "staged": rows, "threshold": settings.staging_quality_threshold},
+    )
+
+
+@router.post("/staging/{job_id}/approve", response_class=HTMLResponse)
+async def staging_approve(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Move a staged track into /music and index it."""
+    import shutil
+
+    from service.acquisition.pipeline import _set_state
+    from service.index.scanner import index_file
+    from service.navidrome.client import trigger_scan
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    if not row or row.state != "staged" or not row.staging_path:
+        raise HTTPException(404, "Staged job not found")
+
+    staging_path = Path(row.staging_path)
+    if not staging_path.exists():
+        row.state = "failed"
+        row.error = "Staged file no longer exists"
+        await session.commit()
+        raise HTTPException(410, "Staged file missing")
+
+    # Compute music_dir destination by replacing staging_dir prefix
+    try:
+        rel = staging_path.relative_to(settings.staging_dir)
+    except ValueError:
+        raise HTTPException(500, "staging_path not under staging_dir")
+
+    dest = settings.music_dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        try:
+            import os
+            os.rename(staging_path, dest)
+        except OSError:
+            shutil.move(str(staging_path), str(dest))
+    except Exception as exc:
+        raise HTTPException(500, f"Move failed: {exc}")
+
+    # Index and scan
+    hash_track_id: str | None = None
+    try:
+        async with session.begin_nested():
+            await index_file(session, dest)
+        await session.flush()
+    except Exception as exc:
+        logger.warning("Staging approve: index failed for %s: %s", dest, exc)
+
+    row.state = "done"
+    row.staging_path = None
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.commit()
+
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    logger.info("Staging approved: %s → %s", job_id, dest)
+    return HTMLResponse('<span class="badge-ok">Approved — moved to library</span>')
+
+
+@router.post("/staging/{job_id}/reenrich", response_class=HTMLResponse)
+async def staging_reenrich(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Re-run MB enrichment on a staged file; auto-approve if quality improves."""
+    from service.acquisition.pipeline import _set_state
+    from service.config import settings as _s
+    from service.index.scanner import index_file
+    from service.library.tagger import has_cover_art, write_tags
+    from service.metadata.artwork import fetch_artwork
+    from service.metadata.musicbrainz import lookup_recording
+    from service.metadata.quality import compute_quality_score
+    from service.navidrome.client import trigger_scan
+    from service.library.writer import atomic_place
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    if not row or row.state != "staged" or not row.staging_path:
+        raise HTTPException(404)
+
+    staging_path = Path(row.staging_path)
+    if not staging_path.exists():
+        raise HTTPException(410, "Staged file missing")
+
+    # Parse candidate for current title/artist
+    from service.core.models import TrackCandidate
+    candidate: TrackCandidate | None = None
+    if row.candidate_json:
+        try:
+            candidate = TrackCandidate.model_validate_json(row.candidate_json)
+        except Exception:
+            pass
+
+    title = (candidate.title if candidate else None) or staging_path.stem
+    artist = (candidate.artist if candidate else None) or "Unknown"
+
+    mb = await asyncio.to_thread(
+        lookup_recording, title, artist, None, cache_dir=_s.cache_dir
+    )
+    if mb is None:
+        return HTMLResponse('<span class="badge-warn">No MB match found — still in staging</span>')
+
+    # Write improved tags to staged file
+    artwork_bytes: bytes | None = None
+    try:
+        artwork_bytes = await fetch_artwork(
+            release_mbid=mb.release_id,
+            thumbnail_url=None,
+            cache_dir=_s.cache_dir,
+        )
+    except Exception:
+        pass
+
+    await asyncio.to_thread(
+        write_tags,
+        staging_path,
+        title=mb.title or title,
+        artist=mb.artist or artist,
+        albumartist=mb.artist or artist,
+        album=mb.album,
+        year=mb.year,
+        original_year=mb.original_year,
+        track_number=mb.track_number,
+        artist_sort=mb.artist_sort,
+        mb_recording_id=mb.recording_id,
+        mb_release_id=mb.release_id,
+        mb_artist_id=mb.artist_id,
+        artwork_bytes=artwork_bytes,
+    )
+
+    new_score = compute_quality_score(
+        title=mb.title or title,
+        artist=mb.artist or artist,
+        album=mb.album,
+        year=mb.year,
+        track_number=mb.track_number,
+        musicbrainz_recording_id=mb.recording_id,
+        has_cover_art=artwork_bytes is not None,
+    )
+
+    if new_score >= _s.staging_quality_threshold:
+        # Auto-promote to library
+        try:
+            rel = staging_path.relative_to(_s.staging_dir)
+        except ValueError:
+            return HTMLResponse('<span class="badge-warn">Enriched but path error — approve manually</span>')
+        dest = _s.music_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        atomic_place(staging_path, dest)
+        if artwork_bytes:
+            from service.library.tagger import write_cover_jpg
+            write_cover_jpg(dest.parent, artwork_bytes)
+        try:
+            async with session.begin_nested():
+                await index_file(session, dest)
+            await session.flush()
+        except Exception as exc:
+            logger.warning("Re-enrich auto-promote index failed: %s", exc)
+        row.state = "done"
+        row.staging_path = None
+        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.commit()
+        try:
+            await trigger_scan()
+        except Exception:
+            pass
+        return HTMLResponse(
+            f'<span class="badge-ok">Enriched (quality {new_score:.0%}) — auto-promoted to library</span>'
+        )
+
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.commit()
+    return HTMLResponse(
+        f'<span class="badge-warn">Enriched (quality {new_score:.0%}) — still below threshold, approve manually</span>'
+    )
+
+
+@router.post("/staging/{job_id}/reject", response_class=HTMLResponse)
+async def staging_reject(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Delete the staged file and mark the job failed."""
+    row = await session.get(AcquisitionJobRow, job_id)
+    if not row or row.state != "staged":
+        raise HTTPException(404)
+
+    if row.staging_path:
+        try:
+            Path(row.staging_path).unlink(missing_ok=True)
+            # Remove empty parent dirs up to staging_dir
+            p = Path(row.staging_path).parent
+            for _ in range(3):
+                if p == settings.staging_dir or not p.exists():
+                    break
+                try:
+                    p.rmdir()
+                except OSError:
+                    break
+                p = p.parent
+        except Exception as exc:
+            logger.debug("Staging reject cleanup: %s", exc)
+
+    row.state = "failed"
+    row.failure_class = "permanent"
+    row.error = "Rejected from staging queue"
+    row.staging_path = None
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.commit()
+    return HTMLResponse("")
