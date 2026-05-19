@@ -486,6 +486,219 @@ async def retag_track(
     )
 
 
+@router.get("/library/quality", response_class=HTMLResponse)
+async def quality_review_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Dedicated quality review: low bitrate, missing art, missing files."""
+    min_br = settings.min_bitrate_kbps
+
+    # Low-bitrate tracks (has file, bitrate known and below threshold)
+    low_br_rows = (
+        await session.execute(
+            select(Track)
+            .join(Track.artist)
+            .outerjoin(Track.album)
+            .join(Track.file)
+            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+            .where(
+                TrackFile.bitrate_kbps.isnot(None),
+                TrackFile.bitrate_kbps < min_br,
+            )
+            .order_by(TrackFile.bitrate_kbps.asc())
+            .limit(30)
+        )
+    ).unique().scalars().all()
+
+    # Tracks missing cover art but with MB ID (so CAA fetch may help)
+    no_art_rows = (
+        await session.execute(
+            select(Track)
+            .join(Track.artist)
+            .outerjoin(Track.album)
+            .join(Track.file)
+            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+            .where(
+                Track.musicbrainz_recording_id.isnot(None),
+                (TrackFile.has_cover_art.is_(None)) | (TrackFile.has_cover_art == 0),
+            )
+            .order_by(Track.title)
+            .limit(30)
+        )
+    ).unique().scalars().all()
+
+    # Missing files: TrackFile in DB but file not on disk
+    all_file_rows = (
+        await session.execute(
+            select(Track)
+            .join(Track.artist)
+            .outerjoin(Track.album)
+            .join(Track.file)
+            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+            .limit(500)
+        )
+    ).unique().scalars().all()
+    missing_file_tracks = [
+        r for r in all_file_rows
+        if r.file and not Path(r.file.path).exists()
+    ][:30]
+
+    def _to_dict(row: Track, extra: dict[str, object] | None = None) -> dict[str, object]:
+        d: dict[str, object] = {
+            "internal_id": row.id,
+            "title": row.title,
+            "artist": row.artist.name,
+            "album": row.album.title if row.album else None,
+            "has_mbid": bool(row.musicbrainz_recording_id),
+            "provider": row.file.provider if row.file else None,
+            "provider_ref": row.file.provider_ref if row.file else None,
+            "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
+            "codec": row.file.codec if row.file else None,
+        }
+        if extra:
+            d.update(extra)
+        return d
+
+    return templates.TemplateResponse(
+        request, "quality_review.html",
+        {
+            "active": "library",
+            "min_bitrate_kbps": min_br,
+            "low_bitrate": [_to_dict(r) for r in low_br_rows],
+            "no_art": [_to_dict(r) for r in no_art_rows],
+            "missing_files": [_to_dict(r) for r in missing_file_tracks],
+        },
+    )
+
+
+@router.post("/library/tracks/{internal_id}/reacquire", response_class=HTMLResponse)
+async def reacquire_track(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue a re-acquisition for a track using its original provider_ref."""
+    from service.acquisition.jobs import create_job
+    from service.core.models import TrackCandidate
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    if not row.file or not row.file.provider_ref:
+        raise HTTPException(400, "Track has no provider reference — search and re-acquire manually")
+
+    candidate = TrackCandidate(
+        provider=row.file.provider or "ytdlp",
+        provider_ref=row.file.provider_ref,
+        title=row.title,
+        artist=row.artist.name,
+        album=row.album.title if row.album else None,
+        duration_seconds=row.duration_seconds,
+    )
+
+    async with session.begin():
+        job_id = await create_job(
+            session,
+            provider_name=candidate.provider,
+            provider_ref=candidate.provider_ref,
+            candidate=candidate,
+            query=f"{candidate.artist} - {candidate.title} [re-acquire]",
+        )
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name=candidate.provider,
+            provider_ref=candidate.provider_ref,
+            candidate_json=candidate.model_dump_json(),
+            music_dir=str(settings.music_dir),
+            tmp_acquire_dir=str(settings.tmp_acquire_dir),
+            _job_id=f"acquire:{job_id}",
+        )
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+
+    return HTMLResponse(
+        f'<div class="card" style="opacity:0.5">'
+        f'<div class="card-info">'
+        f'<div class="card-title">{row.title}</div>'
+        f'<div class="card-sub">{row.artist.name} · Re-acquisition queued → <a href="/jobs">Jobs</a></div>'
+        f"</div></div>"
+    )
+
+
+@router.post("/library/tracks/{internal_id}/fetch-art", response_class=HTMLResponse)
+async def fetch_track_art(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Fetch cover art from Cover Art Archive and embed it in the track file."""
+    from service.library.tagger import has_cover_art as _has_cover_art, write_tags as _write_tags
+    from service.metadata.artwork import fetch_artwork
+    from service.metadata.musicbrainz import get_recording_by_id
+    from service.metadata.quality import compute_quality_score
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or not row.musicbrainz_recording_id or not row.file:
+        raise HTTPException(400, "Track not found or missing MB Recording ID")
+
+    file_path = Path(row.file.path)
+    if not file_path.exists():
+        raise HTTPException(404, "File not on disk")
+
+    # Get release ID for CAA via MB recording lookup
+    mb_rec = await asyncio.to_thread(
+        get_recording_by_id, row.musicbrainz_recording_id, settings.cache_dir
+    )
+    release_id = mb_rec.release_id if mb_rec else None
+
+    art = await fetch_artwork(
+        release_mbid=release_id,
+        cache_dir=settings.cache_dir,
+    )
+    if not art:
+        return HTMLResponse(
+            f'<div id="art-{internal_id}" class="card-sub" style="color:var(--warn)">'
+            f"No artwork found in Cover Art Archive for this track.</div>"
+        )
+
+    await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
+    hca = await asyncio.to_thread(_has_cover_art, file_path)
+
+    async with session.begin():
+        row.file.has_cover_art = hca
+        row.tag_quality_score = compute_quality_score(
+            title=row.title,
+            artist=row.artist.name,
+            album=row.album.title if row.album else None,
+            year=None,
+            track_number=row.track_number,
+            musicbrainz_recording_id=row.musicbrainz_recording_id,
+            has_cover_art=hca,
+        )
+
+    return HTMLResponse(
+        f'<div id="art-{internal_id}" class="badge badge-done">Art embedded ✓</div>'
+    )
+
+
 @router.get("/health", response_class=HTMLResponse)
 async def health_page(
     request: Request,

@@ -48,6 +48,7 @@ class MBRecording:
     year: int | None
     track_number: int | None
     score: float
+    release_id: str | None = None  # first release's MB release MBID (for CAA artwork)
 
 
 def _cache_key(title: str, artist: str) -> str:
@@ -104,6 +105,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
     album: str | None = None
     year: int | None = None
     track_number: int | None = None
+    release_id: str | None = None
 
     releases = rec.get("release-list") or []
     if isinstance(releases, list) and releases:
@@ -111,6 +113,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
         if isinstance(release, dict):
             album = str(release.get("title") or "")
             year = _extract_year(release)
+            release_id = str(release.get("id") or "") or None
             medium_list = release.get("medium-list") or []
             if isinstance(medium_list, list) and medium_list:
                 medium = medium_list[0]
@@ -134,6 +137,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
         year=year,
         track_number=track_number,
         score=score,
+        release_id=release_id,
     )
 
 

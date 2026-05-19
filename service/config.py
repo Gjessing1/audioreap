@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Logging
     log_format: str = "pretty"  # "json" in prod
 
+    # Quality review
+    min_bitrate_kbps: int = 128  # Tracks below this are flagged as low quality
+
     # Algorithm versions — increment to trigger migrations
     id_algorithm_version: int = 1
     normalize_version: int = 1
