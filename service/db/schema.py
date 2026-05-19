@@ -116,7 +116,25 @@ class AcquisitionJobRow(Base):
     album_job_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("album_acquisition_jobs.id"), nullable=True
     )
+    playlist_import_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("playlist_imports.id"), nullable=True
+    )
     track_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class PlaylistImport(Base):
+    __tablename__ = "playlist_imports"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str] = mapped_column(String, nullable=False)  # "youtube", "youtube_music", "spotify"
+    track_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enqueued_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    owned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 

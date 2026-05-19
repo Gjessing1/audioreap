@@ -1,12 +1,14 @@
 """HTMX-rendered web UI routes."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete as sa_delete, func, select
@@ -14,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from service.config import settings
-from service.core.models import AcquisitionJob, TrackQuality, TrackRef
-from service.db.schema import AcquisitionJobRow, Album, Artist, Track, TrackFile
+from service.core.models import AcquisitionJob, TrackCandidate, TrackQuality, TrackRef
+from service.db.schema import AcquisitionJobRow, Album, Artist, PlaylistImport, Track, TrackFile
 from service.library.writer import safe_trash
 from service.db.session import get_session
 
@@ -419,3 +421,256 @@ async def health_page(
             },
         },
     )
+
+
+# ── Playlists ─────────────────────────────────────────────────────────────
+
+@router.get("/playlists", response_class=HTMLResponse)
+async def playlists_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (
+        await session.execute(
+            select(PlaylistImport).order_by(PlaylistImport.created_at.desc()).limit(20)
+        )
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request, "playlists.html",
+        {
+            "active": "playlists",
+            "imports": rows,
+            "spotify_enabled": bool(settings.spotify_client_id),
+        },
+    )
+
+
+@router.post("/playlists/resolve", response_class=HTMLResponse)
+async def resolve_playlist(
+    request: Request,
+    url: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from service.core.identity import make_id
+
+    url = url.strip()
+    if not url:
+        return templates.TemplateResponse(
+            request, "partials/playlist_preview.html", {"error": "Please enter a playlist URL."}
+        )
+
+    if "spotify.com" in url:
+        if not settings.spotify_client_id:
+            return templates.TemplateResponse(
+                request, "partials/playlist_preview.html",
+                {
+                    "error": (
+                        "Spotify playlist support requires AUDIOREAP_SPOTIFY_CLIENT_ID and "
+                        "AUDIOREAP_SPOTIFY_CLIENT_SECRET environment variables."
+                    )
+                },
+            )
+        title, source, candidates = await _resolve_spotify_playlist(url)
+    else:
+        try:
+            import service.providers.ytdlp  # noqa: F401  ensure registered
+            from service.providers import get as get_provider
+            provider = get_provider("ytdlp")()
+            title, source, candidates = await provider.resolve_playlist(url)
+        except Exception as exc:
+            logger.warning("Playlist resolve failed for %r: %s", url, exc)
+            return templates.TemplateResponse(
+                request, "partials/playlist_preview.html",
+                {"error": f"Could not resolve playlist: {exc}"},
+            )
+
+    # Dedup check against local library
+    track_statuses: list[dict[str, object]] = []
+    for candidate in candidates:
+        internal_id = make_id(candidate.artist, candidate.title, candidate.duration_seconds)
+        stmt = (
+            select(Track)
+            .options(joinedload(Track.file))
+            .where(Track.id == internal_id)
+        )
+        row = (await session.execute(stmt)).unique().scalar_one_or_none()
+        owned = row is not None and row.file is not None
+        track_statuses.append({
+            "candidate": candidate,
+            "candidate_json": candidate.model_dump_json(),
+            "owned": owned,
+            "internal_id": internal_id,
+        })
+
+    owned_count = sum(1 for t in track_statuses if t["owned"])
+    return templates.TemplateResponse(
+        request, "partials/playlist_preview.html",
+        {
+            "url": url,
+            "title": title,
+            "source": source,
+            "tracks": track_statuses,
+            "owned_count": owned_count,
+            "total_count": len(track_statuses),
+        },
+    )
+
+
+@router.post("/playlists/acquire", response_class=HTMLResponse)
+async def acquire_playlist(
+    request: Request,
+    import_url: str = Form(...),
+    import_title: str = Form(...),
+    import_source: str = Form(default="unknown"),
+    candidates: list[str] = Form(default=[]),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from service.acquisition.jobs import create_job
+
+    if not candidates:
+        return HTMLResponse('<p class="empty">No tracks selected.</p>')
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    import_id = str(uuid.uuid4())
+
+    async with session.begin():
+        pl_row = PlaylistImport(
+            id=import_id,
+            url=import_url,
+            title=import_title or "Untitled Playlist",
+            source=import_source,
+            track_count=len(candidates),
+            enqueued_count=0,
+            owned_count=0,
+            state="active",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(pl_row)
+
+        job_data: list[tuple[str, str, TrackCandidate]] = []
+        for candidate_json in candidates:
+            candidate = TrackCandidate.model_validate_json(candidate_json)
+            job_id = await create_job(
+                session,
+                provider_name=candidate.provider,
+                provider_ref=candidate.provider_ref,
+                candidate=candidate,
+                query=f"{candidate.artist} - {candidate.title}",
+                playlist_import_id=import_id,
+            )
+            job_data.append((job_id, candidate_json, candidate))
+
+        pl_row.enqueued_count = len(job_data)
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        for job_id, candidate_json, candidate in job_data:
+            await redis.enqueue_job(
+                "acquire_track",
+                job_id=job_id,
+                provider_name=candidate.provider,
+                provider_ref=candidate.provider_ref,
+                candidate_json=candidate_json,
+                music_dir=str(settings.music_dir),
+                tmp_acquire_dir=str(settings.tmp_acquire_dir),
+                _job_id=f"acquire:{job_id}",
+            )
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+
+    return RedirectResponse("/jobs", status_code=303)
+
+
+async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandidate]]:
+    """Resolve a Spotify playlist via the Spotify Web API + YouTube search fallback."""
+    import re as _re
+
+    match = _re.search(r"playlist/([A-Za-z0-9]+)", url)
+    if not match:
+        raise ValueError("Could not extract Spotify playlist ID from URL")
+    playlist_id = match.group(1)
+
+    token = await _spotify_client_token()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        items: list[dict[str, object]] = []
+        next_url: str | None = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=50"
+        pl_title = "Spotify Playlist"
+
+        # Fetch playlist name
+        r = await client.get(
+            f"https://api.spotify.com/v1/playlists/{playlist_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        r.raise_for_status()
+        pl_title = str(r.json().get("name") or pl_title)
+
+        while next_url:
+            r = await client.get(next_url, headers={"Authorization": f"Bearer {token}"})
+            r.raise_for_status()
+            data = r.json()
+            items.extend(data.get("items") or [])
+            next_url = data.get("next")
+
+    candidates: list[TrackCandidate] = []
+    for item in items:
+        track = (item.get("track") or {}) if isinstance(item, dict) else {}
+        if not track or track.get("type") != "track":
+            continue
+        title = str(track.get("name") or "Unknown")
+        artists = track.get("artists") or []
+        artist = str(artists[0].get("name") if artists else "Unknown")
+        album_obj = track.get("album") or {}
+        album = str(album_obj.get("name")) if album_obj.get("name") else None
+        duration_ms = track.get("duration_ms")
+        duration_s = int(duration_ms) // 1000 if duration_ms else None
+
+        # Use yt-dlp YouTube search to get a provider_ref
+        search_q = f"{artist} {title}"
+        yt_url = await asyncio.to_thread(_yt_search_one, search_q)
+
+        candidates.append(TrackCandidate(
+            provider="ytdlp",
+            provider_ref=yt_url or f"ytsearch1:{search_q}",
+            title=title,
+            artist=artist,
+            album=album,
+            duration_seconds=duration_s,
+            raw_metadata={},
+        ))
+
+    return pl_title, "spotify", candidates
+
+
+async def _spotify_client_token() -> str:
+    import base64
+    import httpx
+
+    creds = base64.b64encode(
+        f"{settings.spotify_client_id}:{settings.spotify_client_secret}".encode()
+    ).decode()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            "https://accounts.spotify.com/api/token",
+            data={"grant_type": "client_credentials"},
+            headers={"Authorization": f"Basic {creds}"},
+        )
+        r.raise_for_status()
+    return str(r.json()["access_token"])
+
+
+def _yt_search_one(query: str) -> str:
+    import yt_dlp
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+    if info and info.get("entries"):
+        entry = info["entries"][0]
+        vid_id = entry.get("id") or ""
+        return str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")
+    return f"ytsearch1:{query}"

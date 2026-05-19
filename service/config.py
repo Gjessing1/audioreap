@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     ui_username: str = ""
     ui_password: str = ""
 
+    # Spotify (optional — enables Spotify playlist resolution)
+    spotify_client_id: str = ""
+    spotify_client_secret: str = ""
+
     # Logging
     log_format: str = "pretty"  # "json" in prod
 

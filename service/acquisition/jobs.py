@@ -27,6 +27,7 @@ async def create_job(
     provider_ref: str,
     candidate: TrackCandidate,
     query: str | None = None,
+    playlist_import_id: str | None = None,
 ) -> str:
     """Insert a queued job row and return its ID."""
     job_id = str(uuid.uuid4())
@@ -37,6 +38,7 @@ async def create_job(
         state="queued",
         query=query or f"{candidate.artist} - {candidate.title}",
         candidate_json=candidate.model_dump_json(),
+        playlist_import_id=playlist_import_id,
         created_at=_now(),
         updated_at=_now(),
     )

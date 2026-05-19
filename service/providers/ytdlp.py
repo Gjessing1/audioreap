@@ -194,6 +194,74 @@ class YtdlpProvider(Provider):
             tracks=tracks,
         )
 
+    async def resolve_playlist(self, url: str) -> tuple[str, str, list[TrackCandidate]]:
+        """Extract a flat track list from a playlist URL.
+
+        Returns (title, source, candidates) where source is one of
+        'youtube', 'youtube_music', 'spotify', 'unknown'.
+        """
+        import yt_dlp
+
+        opts = {**_ydl_opts_base(), "extract_flat": True}
+
+        def _sync() -> tuple[str, str, list[TrackCandidate]]:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+            if not info:
+                raise ValueError(f"yt-dlp returned no info for {url!r}")
+
+            if "entries" not in info:
+                raise ValueError("URL does not appear to be a playlist")
+
+            title = str(info.get("title") or "Unknown Playlist")
+            webpage_url = str(info.get("webpage_url") or url)
+
+            if "music.youtube.com" in webpage_url:
+                source = "youtube_music"
+            elif "spotify.com" in url:
+                source = "spotify"
+            else:
+                source = "youtube"
+
+            candidates: list[TrackCandidate] = []
+            for entry in info.get("entries") or []:
+                if not entry:
+                    continue
+                video_id = entry.get("id") or ""
+                video_url = (
+                    entry.get("url")
+                    or entry.get("webpage_url")
+                    or f"https://www.youtube.com/watch?v={video_id}"
+                )
+                track_title = str(entry.get("track") or entry.get("title") or "Unknown")
+                artist = str(
+                    entry.get("artist")
+                    or entry.get("uploader")
+                    or entry.get("channel")
+                    or "Unknown"
+                )
+                album = entry.get("album")
+                duration = entry.get("duration")
+                candidates.append(TrackCandidate(
+                    provider=self.name,
+                    provider_ref=video_url,
+                    title=track_title,
+                    artist=artist,
+                    album=str(album) if album else None,
+                    duration_seconds=int(duration) if duration else None,
+                    thumbnail_url=entry.get("thumbnail"),
+                    raw_metadata={
+                        k: v for k, v in entry.items()
+                        if isinstance(v, (str, int, float, bool))
+                    },
+                ))
+
+            return title, source, candidates
+
+        import asyncio
+        return await asyncio.to_thread(_sync)
+
     async def health_check(self) -> ProviderHealth:
         import yt_dlp
 

@@ -1,0 +1,63 @@
+{% if error %}
+<div class="card" style="border-color:var(--danger)">
+  <div class="card-info">
+    <div class="card-sub" style="color:var(--danger)">{{ error }}</div>
+  </div>
+</div>
+{% elif tracks %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+  <div>
+    <div style="font-weight:600">{{ title }}</div>
+    <div class="card-sub">
+      {{ source }} · {{ total_count }} tracks
+      {% if owned_count %} · {{ owned_count }} already owned{% endif %}
+    </div>
+  </div>
+</div>
+
+<form hx-post="/playlists/acquire"
+      hx-target="#playlist-preview"
+      hx-swap="innerHTML">
+  <input type="hidden" name="import_url" value="{{ url|e }}">
+  <input type="hidden" name="import_title" value="{{ title|e }}">
+  <input type="hidden" name="import_source" value="{{ source|e }}">
+
+  <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:12px">
+    {% for t in tracks %}
+    <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:{% if t.owned %}default{% else %}pointer{% endif %}">
+      {% if t.owned %}
+      <input type="checkbox" disabled checked style="opacity:0.4">
+      {% else %}
+      <input type="checkbox" name="candidates" value="{{ t.candidate_json|e }}" checked>
+      {% endif %}
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          {{ t.candidate.title }}
+        </div>
+        <div class="card-sub" style="font-size:12px">
+          {{ t.candidate.artist }}
+          {% if t.candidate.duration_seconds %}
+            · {{ t.candidate.duration_seconds // 60 }}:{{ '%02d' % (t.candidate.duration_seconds % 60) }}
+          {% endif %}
+        </div>
+      </div>
+      {% if t.owned %}
+      <span class="badge badge-done" style="font-size:11px">owned</span>
+      {% endif %}
+    </label>
+    {% endfor %}
+  </div>
+
+  <div style="display:flex;gap:8px;align-items:center">
+    <button type="submit" class="btn">
+      Import selected tracks
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+    <span class="card-sub" style="font-size:12px">
+      Uncheck tracks to skip. Already-owned tracks are excluded automatically.
+    </span>
+  </div>
+</form>
+{% else %}
+<p class="empty">No tracks found in this playlist.</p>
+{% endif %}

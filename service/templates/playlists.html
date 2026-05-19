@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Playlists — audioreap{% endblock %}
+
+{% block content %}
+<h2 style="font-size:18px;margin-bottom:16px">Playlist Import</h2>
+
+<form id="playlist-form"
+      hx-post="/playlists/resolve"
+      hx-target="#playlist-preview"
+      hx-swap="innerHTML"
+      hx-indicator="#resolve-spinner">
+  <div style="display:flex;gap:8px;margin-bottom:8px">
+    <input name="url" type="url"
+           placeholder="YouTube or YouTube Music playlist URL…"
+           inputmode="url" autocomplete="off"
+           style="flex:1;min-width:0"
+           required>
+    <button type="submit" class="btn">
+      Preview
+      <span id="resolve-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </div>
+  {% if not spotify_enabled %}
+  <p class="empty" style="margin-top:4px;font-size:12px">
+    Spotify playlist support requires AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET.
+  </p>
+  {% endif %}
+</form>
+
+<div id="playlist-preview" style="margin-top:20px"></div>
+
+{% if imports %}
+<div style="margin-top:32px">
+  <div class="section-title">Recent imports</div>
+  {% for imp in imports %}
+  <div class="card" style="margin-bottom:8px">
+    <div class="card-info">
+      <div class="card-title">{{ imp.title or imp.url }}</div>
+      <div class="card-sub">
+        {{ imp.source }} · {{ imp.enqueued_count }} enqueued · {{ imp.owned_count }} already owned
+        · {{ imp.created_at.strftime('%Y-%m-%d %H:%M') }}
+      </div>
+    </div>
+    <div class="card-actions">
+      <span class="badge {% if imp.state == 'active' %}badge-busy{% else %}badge-done{% endif %}">
+        {{ imp.state }}
+      </span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
