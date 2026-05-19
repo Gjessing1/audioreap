@@ -4,12 +4,20 @@
 {% block content %}
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
   <h2 style="font-size:18px">Acquisition jobs</h2>
-  <button class="btn btn-ghost btn-sm"
-          hx-get="/jobs/list"
-          hx-target="#job-list"
-          hx-indicator="#refresh-spinner">
-    Refresh <span id="refresh-spinner" class="htmx-indicator"><span class="spinner"></span></span>
-  </button>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-ghost btn-sm"
+            hx-get="/jobs/list"
+            hx-target="#job-list"
+            hx-indicator="#refresh-spinner">
+      Refresh <span id="refresh-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+    <button class="btn btn-ghost btn-sm"
+            hx-delete="/jobs/clear"
+            hx-target="#job-list"
+            style="color:var(--muted)">
+      Clear done
+    </button>
+  </div>
 </div>
 
 <div id="job-list">

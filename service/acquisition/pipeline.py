@@ -158,6 +158,21 @@ async def run_acquisition(
 
         audio_path = fetch_result.file_path
 
+        # Extract richer metadata from yt-dlp's full download info dict.
+        # The flat search extract often lacks artist/album; full info is authoritative.
+        _rm = fetch_result.raw_metadata
+
+        def _rm_str(key: str) -> str | None:
+            v = _rm.get(key)
+            s = str(v).strip() if v is not None else ""
+            return s if s and s.lower() not in ("none", "unknown") else None
+
+        _fetch_title = _rm_str("track") or _rm_str("title")
+        _fetch_artist = _rm_str("artist") or _rm_str("uploader") or _rm_str("channel")
+        _fetch_album = _rm_str("album")
+        _ry = _rm.get("release_year")
+        _fetch_year: int | None = int(_ry) if isinstance(_ry, (int, float)) and _ry else None
+
         # ── 2. Remux if needed ─────────────────────────────────────────────
         await _set_state(session, job_id, "processing")
         if audio_path.suffix.lower() in _REMUX_CONTAINERS:
@@ -169,12 +184,13 @@ async def run_acquisition(
                 return
 
         # ── 3. Read tags and decide final metadata ─────────────────────────
+        # Priority: file tags > yt-dlp full info > search candidate
         await _set_state(session, job_id, "tagging")
         tagged = read_tags(audio_path)
-        title = (tagged.title if tagged else None) or candidate.title
-        artist = (tagged.artist if tagged else None) or candidate.artist
-        album = (tagged.album if tagged else None) or candidate.album
-        year = (tagged.year if tagged else None)
+        title = (tagged.title if tagged else None) or _fetch_title or candidate.title
+        artist = (tagged.artist if tagged else None) or _fetch_artist or candidate.artist
+        album = (tagged.album if tagged else None) or _fetch_album or candidate.album
+        year = (tagged.year if tagged else None) or _fetch_year
         track_number = (tagged.track_number if tagged else None)
         disc_number = (tagged.disc_number if tagged else None)
         duration = (tagged.duration_seconds if tagged else None) or candidate.duration_seconds

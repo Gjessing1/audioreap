@@ -1,7 +1,7 @@
 {% if tracks %}
 <div class="section-title">In your library ({{ tracks|length }})</div>
 {% for t in tracks %}
-<div class="card">
+<div class="card" id="track-{{ t.internal_id }}">
   <button class="play-btn"
           data-id="{{ t.internal_id }}"
           onclick="playTrack('{{ t.internal_id }}', '{{ t.title|e }}')"
@@ -18,6 +18,12 @@
   </div>
   <div class="card-actions">
     <span class="badge badge-local">Local</span>
+    <button class="btn btn-sm btn-ghost"
+            hx-delete="/library/tracks/{{ t.internal_id }}"
+            hx-target="#track-{{ t.internal_id }}"
+            hx-swap="outerHTML swap:0.3s"
+            hx-confirm="Move this track to trash?"
+            style="color:var(--muted)">✕</button>
   </div>
 </div>
 {% endfor %}

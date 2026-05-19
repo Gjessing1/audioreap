@@ -9,13 +9,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from service.config import settings
 from service.core.models import AcquisitionJob, TrackQuality, TrackRef
 from service.db.schema import AcquisitionJobRow, Album, Artist, Track, TrackFile
+from service.library.writer import safe_trash
 from service.db.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -233,6 +234,56 @@ async def dismiss_job(
     if row is not None and row.state in ("done", "failed", "cancelled"):
         await session.delete(row)
         await session.commit()
+    return HTMLResponse("")
+
+
+@router.delete("/jobs/clear", response_class=HTMLResponse)
+async def clear_done_jobs(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    await session.execute(
+        sa_delete(AcquisitionJobRow).where(
+            AcquisitionJobRow.state.in_(["done", "failed", "cancelled"])
+        )
+    )
+    await session.commit()
+    rows = (
+        await session.execute(
+            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(50)
+        )
+    ).scalars().all()
+    jobs = [_job_to_model(r) for r in rows]
+    return templates.TemplateResponse(request, "partials/job_list.html", {"jobs": jobs})
+
+
+@router.delete("/library/tracks/{internal_id}", response_class=HTMLResponse)
+async def delete_track(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from sqlalchemy.orm import joinedload as _joinedload
+    stmt = (
+        select(Track)
+        .options(_joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        return HTMLResponse("")
+
+    if row.file:
+        file_path = Path(row.file.path)
+        if file_path.exists():
+            try:
+                safe_trash(file_path, settings.music_dir / ".trash")
+            except Exception as exc:
+                logger.warning("Trash move failed for %s: %s", file_path, exc)
+        await session.delete(row.file)
+
+    await session.delete(row)
+    await session.commit()
     return HTMLResponse("")
 
 
