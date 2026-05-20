@@ -1,0 +1,103 @@
+<div class="card card-review" id="browse-{{ track.id }}">
+
+  <div class="rv-header">
+    <div class="rv-art" style="font-size:16px;color:var(--t3)">♪</div>
+    <div class="rv-info">
+      <div class="rv-badges">
+        {% if track.musicbrainz_recording_id %}
+        <span class="badge badge-done">MB ✓</span>
+        <a href="https://musicbrainz.org/recording/{{ track.musicbrainz_recording_id }}"
+           target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
+        {% else %}
+        <span class="badge badge-queued">No MB ID</span>
+        {% endif %}
+        {% if track.file %}
+        <span class="badge badge-queued" style="font-family:var(--font-mono);font-size:10px">
+          {{ track.file.codec }}{% if track.file.bitrate_kbps %} {{ track.file.bitrate_kbps }}k{% endif %}
+        </span>
+        {% endif %}
+        {% if saved %}<span class="badge badge-done">Saved ✓</span>{% endif %}
+      </div>
+      {% if track.file %}
+      <div class="rv-source" style="font-family:var(--font-mono)">{{ track.file.path }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <form class="rv-form"
+        hx-post="/library/tracks/{{ track.id }}/save-tags"
+        hx-target="#browse-{{ track.id }}"
+        hx-swap="outerHTML">
+
+    <div class="rv-grid">
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">Title</label>
+        <input class="rv-input" name="title" value="{{ track.title }}" autocomplete="off">
+      </div>
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">Artist</label>
+        <input class="rv-input" name="artist" value="{{ track.artist.name }}" autocomplete="off">
+      </div>
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">Album</label>
+        <input class="rv-input" name="album"
+               value="{{ track.album.title if track.album else '' }}"
+               placeholder="Leave blank for Singles" autocomplete="off">
+      </div>
+      <div class="rv-field">
+        <label class="rv-label">Year</label>
+        <input class="rv-input" name="year" type="number"
+               value="{{ track.album.year if track.album and track.album.year else '' }}"
+               placeholder="YYYY" autocomplete="off">
+      </div>
+      <div class="rv-field">
+        <label class="rv-label">Track #</label>
+        <input class="rv-input" name="track_number" type="number"
+               value="{{ track.track_number or '' }}" autocomplete="off">
+      </div>
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">
+          MB Recording ID
+          {% if track.musicbrainz_recording_id %}
+          <a href="https://musicbrainz.org/recording/{{ track.musicbrainz_recording_id }}"
+             target="_blank">↗ view</a>
+          {% endif %}
+        </label>
+        <input class="rv-input rv-input--mono" name="mb_recording_id"
+               value="{{ track.musicbrainz_recording_id or '' }}"
+               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="rv-actions">
+      <button type="submit" class="btn btn-lg rv-approve">Save Tags</button>
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="document.getElementById('mb-edit-panel-{{ track.id }}').classList.toggle('hidden')">
+        Search MB
+      </button>
+      <button type="button" class="btn btn-sm rv-reject"
+              hx-get="/library/tracks/{{ track.id }}/edit-card"
+              hx-target="#browse-{{ track.id }}"
+              hx-swap="outerHTML"
+              style="color:var(--t3)">
+        Cancel
+      </button>
+    </div>
+  </form>
+
+  <div id="mb-edit-panel-{{ track.id }}" class="mb-panel hidden">
+    <form class="mb-search-row"
+          hx-get="/library/tracks/{{ track.id }}/mb-search"
+          hx-target="#mb-edit-results-{{ track.id }}"
+          hx-trigger="submit">
+      <input class="rv-input" name="q" type="text"
+             value="{{ track.artist.name }} {{ track.title }}"
+             placeholder="Artist - Title" autocomplete="off">
+      <button type="submit" class="btn btn-sm btn-ghost">
+        Search <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </form>
+    <div id="mb-edit-results-{{ track.id }}" class="mb-results"></div>
+  </div>
+
+</div>

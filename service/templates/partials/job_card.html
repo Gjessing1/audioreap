@@ -17,6 +17,15 @@
      hx-swap="outerHTML"
      {% endif %}>
 
+  {% if job.state in ('needs_review', 'staged') %}
+  <input type="checkbox"
+         class="job-check"
+         name="job_id"
+         value="{{ job.id }}"
+         onchange="updateBatchCount()"
+         style="width:16px;height:16px;accent-color:var(--primary);flex-shrink:0;cursor:pointer">
+  {% endif %}
+
   <div class="card-info">
     <div class="card-title">{{ job.track_ref.title }}</div>
     <div class="card-sub">{{ job.track_ref.artist }}<span class="muted"> · {{ job.id[:8] }}</span></div>
@@ -36,7 +45,7 @@
             onclick="playTrack('{{ job.track_ref.internal_id }}','{{ job.track_ref.title|e }}')">▶</button>
     {% endif %}
 
-    {% if job.state == 'needs_review' %}
+    {% if job.state in ('needs_review', 'staged') %}
     <button class="btn btn-sm"
             hx-get="/jobs/{{ job.id }}/review-card"
             hx-target="#job-{{ job.id }}"

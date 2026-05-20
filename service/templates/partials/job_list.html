@@ -1,13 +1,27 @@
 {% if not review and not active and not completed %}
 <div class="empty-state">
-  <p>No jobs yet — search for music and hit <strong>Acquire</strong>.</p>
+  <p>No jobs yet — search for music and hit <strong>Get</strong>.</p>
 </div>
 
 {% else %}
 
 {% if review %}
-<div class="section-title section-title--review">
-  Needs Review <span class="badge badge-review">{{ review|length }}</span>
+<div class="rv-section-header">
+  <div class="section-title section-title--review">
+    Needs Review <span class="badge badge-review">{{ review|length }}</span>
+  </div>
+  <div class="batch-bar hidden" id="batch-toolbar">
+    <span id="batch-count-label">0 selected</span>
+    <button class="btn btn-sm btn-success"
+            hx-post="/jobs/batch-approve"
+            hx-include=".job-check:checked"
+            hx-target="#job-list"
+            hx-swap="innerHTML"
+            hx-confirm="Approve all selected tracks with their current metadata?">
+      Approve Selected
+    </button>
+    <button class="btn btn-sm btn-ghost" onclick="clearJobChecks()">Clear</button>
+  </div>
 </div>
 <div class="job-section">
   {% for job in review %}
@@ -17,7 +31,9 @@
 {% endif %}
 
 {% if active %}
-<div class="section-title {% if review %}section-title--spaced{% endif %}">Active</div>
+<div class="section-title {% if review %}section-title--spaced{% endif %}">
+  Active
+</div>
 <div class="job-section">
   {% for job in active %}
   {% include "partials/job_card.html" %}
@@ -26,7 +42,9 @@
 {% endif %}
 
 {% if completed %}
-<div class="section-title {% if review or active %}section-title--spaced{% endif %}">Completed</div>
+<div class="section-title {% if review or active %}section-title--spaced{% endif %}">
+  Completed
+</div>
 <div class="job-section">
   {% for job in completed %}
   {% include "partials/job_card.html" %}

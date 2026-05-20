@@ -102,17 +102,70 @@ async def search_results(
 
 def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, list]:
     """Split job rows into review / active / completed groups for the UI."""
-    from sqlalchemy import case
     review, active, completed = [], [], []
     for r in rows:
         j = _job_to_model(r)
-        if r.state == "needs_review":
+        if r.state in ("needs_review", "staged"):
             review.append(j)
-        elif r.state in ("done", "failed", "cancelled", "staged"):
+        elif r.state in ("done", "failed", "cancelled"):
             completed.append(j)
         else:
             active.append(j)
     return {"review": review, "active": active, "completed": completed}
+
+
+async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
+    """Build resolved_metadata for staged items that pre-date Phase 13."""
+    from service.library.tagger import read_tags
+    from service.core.models import TrackCandidate
+
+    staging_path = Path(row.staging_path) if row.staging_path else None
+    tagged = None
+    if staging_path and staging_path.exists():
+        tagged = await asyncio.to_thread(read_tags, staging_path)
+
+    candidate: TrackCandidate | None = None
+    if row.candidate_json:
+        try:
+            candidate = TrackCandidate.model_validate_json(row.candidate_json)
+        except Exception:
+            pass
+
+    title = (tagged.title if tagged else None) or (candidate.title if candidate else None) or row.query or "Unknown"
+    artist = (tagged.artist if tagged else None) or (candidate.artist if candidate else None) or "Unknown"
+    album = (tagged.album if tagged else None) or (candidate.album if candidate else None)
+    year = (tagged.year if tagged else None) or (candidate.year if candidate else None)
+    track_number = (tagged.track_number if tagged else None) or (candidate.track_number if candidate else None)
+    disc_number = (tagged.disc_number if tagged else None)
+    duration = (tagged.duration_seconds if tagged else None) or (candidate.duration_seconds if candidate else None)
+    ext = (staging_path.suffix.lstrip(".") if staging_path else None) or "ogg"
+
+    mb_release_id: str | None = None
+    if staging_path and staging_path.exists():
+        mb_release_id = _read_mb_release_id(staging_path)
+
+    return {
+        "title": title,
+        "artist": artist,
+        "albumartist": (tagged.albumartist if tagged else None) or artist,
+        "album": album,
+        "year": year,
+        "original_year": None,
+        "track_number": track_number,
+        "disc_number": disc_number,
+        "duration_seconds": duration,
+        "ext": ext,
+        "mb_recording_id": None,
+        "mb_release_id": mb_release_id,
+        "mb_artist_id": None,
+        "mb_artist_sort": None,
+        "acoustid_confidence": None,
+        "mb_match_source": None,
+        "is_compilation": False,
+        "force_staging_reason": row.error,
+        "quality_score": 0.0,
+        "thumbnail_url": candidate.thumbnail_url if candidate else None,
+    }
 
 
 @router.get("/jobs", response_class=HTMLResponse)
@@ -260,12 +313,66 @@ async def review_card(
     row = await session.get(AcquisitionJobRow, job_id)
     if row is None:
         raise HTTPException(404)
-    if row.state != "needs_review" or not row.resolved_metadata_json:
-        raise HTTPException(400, "Job not in needs_review state")
-    meta = json.loads(row.resolved_metadata_json)
+
+    if row.state == "needs_review" and row.resolved_metadata_json:
+        meta = json.loads(row.resolved_metadata_json)
+    elif row.state in ("needs_review", "staged") and row.staging_path:
+        # Staged item from before Phase 13 — synthesize metadata and promote
+        meta = await _synthesize_review_meta(row)
+        row.resolved_metadata_json = json.dumps(meta)
+        row.state = "needs_review"
+        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.commit()
+    else:
+        raise HTTPException(400, "Job not reviewable")
+
     return templates.TemplateResponse(
         request, "partials/review_card.html",
         {"job_id": job_id, "meta": meta, "query": row.query or ""},
+    )
+
+
+@router.post("/jobs/batch-approve", response_class=HTMLResponse)
+async def batch_approve(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Approve multiple needs_review jobs at once using their stored metadata."""
+    from service.acquisition.pipeline import place_approved_track
+
+    form = await request.form()
+    job_ids: list[str] = list(form.getlist("job_id"))  # type: ignore[arg-type]
+
+    done_count = 0
+    fail_count = 0
+    for jid in job_ids:
+        try:
+            dest = await place_approved_track(jid, {}, session)
+            await session.commit()
+            if dest is not None and dest.exists():
+                try:
+                    from service.library.tagger import compute_replaygain, write_replaygain
+                    rg = await asyncio.to_thread(compute_replaygain, dest)
+                    if rg is not None:
+                        await asyncio.to_thread(write_replaygain, dest, rg)
+                except Exception:
+                    pass
+            done_count += 1
+        except Exception as exc:
+            logger.error("Batch approve failed for %s: %s", jid, exc)
+            row = await session.get(AcquisitionJobRow, jid)
+            if row:
+                row.error = str(exc)[:200]
+                await session.commit()
+            fail_count += 1
+
+    rows = (
+        await session.execute(
+            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
+        )
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request, "partials/job_list.html", _grouped_jobs(rows)
     )
 
 
@@ -679,6 +786,181 @@ async def library_rescan(
         f'<span class="badge badge-done">'
         f'Rescan done — {result.added} added, {result.removed} removed, {result.updated} updated'
         f'</span>'
+    )
+
+
+@router.get("/library/browse", response_class=HTMLResponse)
+async def library_browse(
+    request: Request,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Browse and edit all tracks in the library."""
+    return templates.TemplateResponse(
+        request, "library_browse.html",
+        {"active": "library", "q": q},
+    )
+
+
+@router.get("/library/browse/results", response_class=HTMLResponse)
+async def library_browse_results(
+    request: Request,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    stmt = (
+        select(Track)
+        .join(Track.artist)
+        .outerjoin(Track.album)
+        .join(Track.file)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .order_by(Artist.name, Track.title)
+        .limit(200)
+    )
+    if q.strip():
+        pattern = f"%{q.strip()}%"
+        stmt = stmt.where(Track.title.ilike(pattern) | Artist.name.ilike(pattern))
+    rows = (await session.execute(stmt)).unique().scalars().all()
+    return templates.TemplateResponse(
+        request, "partials/browse_results.html",
+        {"tracks": rows, "q": q},
+    )
+
+
+@router.get("/library/tracks/{internal_id}/edit-card", response_class=HTMLResponse)
+async def track_edit_card(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    return templates.TemplateResponse(
+        request, "partials/track_edit_card.html",
+        {"track": row},
+    )
+
+
+@router.post("/library/tracks/{internal_id}/save-tags", response_class=HTMLResponse)
+async def save_track_tags(
+    request: Request,
+    internal_id: str,
+    title: str = Form(""),
+    artist: str = Form(""),
+    album: str = Form(""),
+    year: str = Form(""),
+    track_number: str = Form(""),
+    mb_recording_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from service.library.tagger import write_tags as _write_tags, has_cover_art as _has_cover_art
+    from service.metadata.quality import compute_quality_score
+    from service.index.scanner import _upsert_artist, _upsert_album
+    from service.navidrome.client import trigger_scan
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or not row.file:
+        raise HTTPException(404)
+
+    file_path = Path(row.file.path)
+    if not file_path.exists():
+        raise HTTPException(404, "File not found on disk")
+
+    # Parse inputs
+    year_val: int | None = int(year) if year.strip().isdigit() else None
+    track_num_val: int | None = int(track_number) if track_number.strip().isdigit() else None
+    title_val = title.strip() or row.title
+    artist_val = artist.strip() or row.artist.name
+    album_val = album.strip() or (row.album.title if row.album else None)
+    mbid_val = mb_recording_id.strip() or None
+
+    # Write tags to file
+    try:
+        await asyncio.to_thread(
+            _write_tags,
+            file_path,
+            title=title_val,
+            artist=artist_val,
+            albumartist=artist_val,
+            album=album_val,
+            year=year_val,
+            track_number=track_num_val,
+            mb_recording_id=mbid_val,
+        )
+    except Exception as exc:
+        logger.warning("save-tags write failed for %s: %s", file_path, exc)
+
+    # Update DB — update existing rows in-place to avoid hash ID churn
+    row.title = title_val
+    row.track_number = track_num_val
+    row.musicbrainz_recording_id = mbid_val
+
+    if artist_val != row.artist.name:
+        new_artist_id = await _upsert_artist(session, artist_val)
+        row.artist_id = new_artist_id
+
+    if album_val and (not row.album or album_val != row.album.title):
+        artist_id_for_album = row.artist_id
+        new_album_id = await _upsert_album(session, artist_id_for_album, album_val, year_val, artist_val)
+        row.album_id = new_album_id
+    elif not album_val:
+        row.album_id = None
+
+    hca = await asyncio.to_thread(_has_cover_art, file_path)
+    if row.file:
+        row.file.has_cover_art = hca
+    row.tag_quality_score = compute_quality_score(
+        title=title_val, artist=artist_val, album=album_val, year=year_val,
+        track_number=track_num_val, musicbrainz_recording_id=mbid_val, has_cover_art=hca,
+    )
+    await session.commit()
+
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    # Reload fresh row
+    stmt2 = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    updated = (await session.execute(stmt2)).unique().scalar_one_or_none()
+    return templates.TemplateResponse(
+        request, "partials/track_edit_card.html",
+        {"track": updated, "saved": True},
+    )
+
+
+@router.get("/library/tracks/{internal_id}/mb-search", response_class=HTMLResponse)
+async def library_track_mb_search(
+    request: Request,
+    internal_id: str,
+    q: str = "",
+) -> HTMLResponse:
+    """Inline MB search for the library editor — reuses the same candidates partial
+    but targets the library editor's result div instead of job's."""
+    if not q.strip():
+        return HTMLResponse("")
+    from service.metadata.musicbrainz import search_recordings_free
+    results = await asyncio.to_thread(
+        search_recordings_free, q.strip(), 6, settings.cache_dir
+    )
+    return templates.TemplateResponse(
+        request, "partials/mb_candidates.html",
+        {"results": results, "job_id": None, "track_id": internal_id},
     )
 
 

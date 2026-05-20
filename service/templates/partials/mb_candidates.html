@@ -9,11 +9,19 @@
       </div>
       <div class="mb-candidate-id">{{ rec.recording_id }}</div>
     </div>
+    {% if job_id %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/{{ job_id }}/mb-apply"
             hx-vals='{"recording_id": "{{ rec.recording_id }}"}'
             hx-target="#job-{{ job_id }}"
             hx-swap="outerHTML">Use</button>
+    {% elif track_id %}
+    {# Library editor: clicking Use fills the MB ID input and updates label fields via JS #}
+    <button class="btn btn-sm btn-ghost"
+            onclick="applyMbToLibraryEditor('{{ track_id }}','{{ rec.recording_id }}','{{ rec.title|e }}','{{ rec.artist|e }}','{{ rec.album|e }}','{{ rec.year or '' }}')">
+      Use
+    </button>
+    {% endif %}
   </div>
   {% endfor %}
 </div>

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Browse Library — audioreap{% endblock %}
+{% block content %}
+
+<div class="page-toolbar">
+  <h2 class="page-title">Edit Metadata</h2>
+  <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
+</div>
+
+<p style="color:var(--t2);font-size:13px;margin-bottom:18px">
+  Click any track to edit its tags inline. Changes are written to the file and synced to Navidrome.
+</p>
+
+<form class="search-bar" style="margin-bottom:18px"
+      hx-get="/library/browse/results"
+      hx-trigger="input changed delay:300ms from:#bq, submit"
+      hx-target="#browse-results"
+      hx-include="#bq">
+  <input id="bq" name="q" type="search"
+         placeholder="Filter by title or artist…"
+         value="{{ q }}" autocomplete="off" autofocus>
+</form>
+
+<div id="browse-results">
+  <div class="empty" style="padding:20px 0;text-align:left">
+    <span class="spinner"></span> Loading tracks…
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    htmx.trigger('#bq', 'input');
+  });
+</script>
+{% endblock %}

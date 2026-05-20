@@ -110,6 +110,49 @@ window.acquireTrack = async function(btn) {
   }
 };
 
+/* ── Batch approve checkboxes ────────────────────────────────────────────── */
+window.updateBatchCount = function() {
+  const toolbar = document.getElementById('batch-toolbar');
+  const label   = document.getElementById('batch-count-label');
+  if (!toolbar) return;
+  const checked = document.querySelectorAll('.job-check:checked').length;
+  if (checked > 0) {
+    toolbar.classList.remove('hidden');
+    label.textContent = checked + ' selected';
+  } else {
+    toolbar.classList.add('hidden');
+  }
+};
+
+window.clearJobChecks = function() {
+  document.querySelectorAll('.job-check').forEach(cb => { cb.checked = false; });
+  updateBatchCount();
+};
+
+/* Reset checkbox state after HTMX swaps (batch approve replaces the list) */
+document.body.addEventListener('htmx:afterSwap', () => {
+  updateBatchCount();
+  updatePlayBtns();
+});
+
+/* ── Library MB apply (fills edit form fields without full page swap) ─────── */
+window.applyMbToLibraryEditor = function(trackId, recordingId, title, artist, album, year) {
+  const card = document.getElementById('browse-' + trackId);
+  if (!card) return;
+  const set = (name, val) => {
+    const el = card.querySelector('[name="' + name + '"]');
+    if (el && val) el.value = val;
+  };
+  set('mb_recording_id', recordingId);
+  set('title', title);
+  set('artist', artist);
+  set('album', album);
+  set('year', year);
+  // Close the MB panel
+  const panel = document.getElementById('mb-edit-panel-' + trackId);
+  if (panel) panel.classList.add('hidden');
+};
+
 /* ── Service worker registration ─────────────────────────────────────────── */
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/static/sw.js").catch(() => {});

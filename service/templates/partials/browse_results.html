@@ -1,0 +1,41 @@
+{% if tracks %}
+<div class="browse-list">
+  {% for t in tracks %}
+  <div class="browse-row" id="browse-{{ t.id }}">
+    <div class="browse-info"
+         hx-get="/library/tracks/{{ t.id }}/edit-card"
+         hx-target="#browse-{{ t.id }}"
+         hx-swap="outerHTML"
+         style="cursor:pointer">
+      <div class="browse-title">{{ t.title }}</div>
+      <div class="browse-meta">
+        <span>{{ t.artist.name }}</span>
+        {% if t.album %}<span class="muted">· {{ t.album.title }}</span>{% endif %}
+        {% if t.album and t.album.year %}<span class="muted">· {{ t.album.year }}</span>{% endif %}
+        {% if t.file %}
+        <span class="browse-codec">{{ t.file.codec }}{% if t.file.bitrate_kbps %} {{ t.file.bitrate_kbps }}k{% endif %}</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="browse-actions">
+      {% if t.tag_quality_score is not none %}
+      <span class="browse-quality {% if t.tag_quality_score >= 0.7 %}quality-good{% elif t.tag_quality_score >= 0.4 %}quality-mid{% else %}quality-low{% endif %}">
+        {{ "%.0f"|format(t.tag_quality_score * 100) }}%
+      </span>
+      {% endif %}
+      {% if t.musicbrainz_recording_id %}
+      <span class="badge badge-done" title="Has MB ID">MB</span>
+      {% endif %}
+      <button class="btn btn-sm btn-ghost"
+              hx-get="/library/tracks/{{ t.id }}/edit-card"
+              hx-target="#browse-{{ t.id }}"
+              hx-swap="outerHTML">Edit</button>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% elif q %}
+<p class="empty" style="text-align:left;padding:20px 0">No tracks matching "{{ q }}".</p>
+{% else %}
+<p class="empty" style="text-align:left;padding:20px 0">No tracks in library yet.</p>
+{% endif %}
