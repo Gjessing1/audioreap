@@ -1,4 +1,5 @@
-<div class="card card-review" id="browse-{{ track.id }}">
+{% set safe_id = track.id | replace(':', '_') %}
+<div class="card card-review" id="browse-{{ safe_id }}">
 
   <div class="rv-header">
     <div class="rv-art" style="font-size:16px;color:var(--t3)">♪</div>
@@ -26,7 +27,7 @@
 
   <form class="rv-form"
         hx-post="/library/tracks/{{ track.id }}/save-tags"
-        hx-target="#browse-{{ track.id }}"
+        hx-target="#browse-{{ safe_id }}"
         hx-swap="outerHTML">
 
     <div class="rv-grid">
@@ -59,8 +60,7 @@
         <label class="rv-label">
           MB Recording ID
           {% if track.musicbrainz_recording_id %}
-          <a href="https://musicbrainz.org/recording/{{ track.musicbrainz_recording_id }}"
-             target="_blank">↗ view</a>
+          <a href="https://musicbrainz.org/recording/{{ track.musicbrainz_recording_id }}" target="_blank">↗ view</a>
           {% endif %}
         </label>
         <input class="rv-input rv-input--mono" name="mb_recording_id"
@@ -72,23 +72,22 @@
     <div class="rv-actions">
       <button type="submit" class="btn btn-lg rv-approve">Save Tags</button>
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="document.getElementById('mb-edit-panel-{{ track.id }}').classList.toggle('hidden')">
+              onclick="document.getElementById('mb-edit-panel-{{ safe_id }}').classList.toggle('hidden')">
         Search MB
       </button>
       <button type="button" class="btn btn-sm rv-reject"
               hx-get="/library/tracks/{{ track.id }}/edit-card"
-              hx-target="#browse-{{ track.id }}"
-              hx-swap="outerHTML"
-              style="color:var(--t3)">
+              hx-target="#browse-{{ safe_id }}"
+              hx-swap="outerHTML">
         Cancel
       </button>
     </div>
   </form>
 
-  <div id="mb-edit-panel-{{ track.id }}" class="mb-panel hidden">
+  <div id="mb-edit-panel-{{ safe_id }}" class="mb-panel hidden">
     <form class="mb-search-row"
           hx-get="/library/tracks/{{ track.id }}/mb-search"
-          hx-target="#mb-edit-results-{{ track.id }}"
+          hx-target="#mb-edit-results-{{ safe_id }}"
           hx-trigger="submit">
       <input class="rv-input" name="q" type="text"
              value="{{ track.artist.name }} {{ track.title }}"
@@ -97,7 +96,7 @@
         Search <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
     </form>
-    <div id="mb-edit-results-{{ track.id }}" class="mb-results"></div>
+    <div id="mb-edit-results-{{ safe_id }}" class="mb-results"></div>
   </div>
 
 </div>

@@ -405,20 +405,31 @@ async def approve_job(
         await session.commit()
     except Exception as exc:
         logger.error("Approve job %s failed: %s", job_id, exc)
-        row = await session.get(AcquisitionJobRow, job_id)
-        if row:
-            row.error = str(exc)[:200]
-            await session.commit()
-        row = await session.get(AcquisitionJobRow, job_id)
-        meta = json.loads(row.resolved_metadata_json) if row and row.resolved_metadata_json else {}
-        return templates.TemplateResponse(
-            request, "partials/review_card.html",
-            {
-                "job_id": job_id, "meta": meta,
-                "query": row.query if row else "",
-                "error": str(exc),
-            },
-        )
+        # Rollback any partial transaction before using the session again
+        try:
+            await session.rollback()
+            row = await session.get(AcquisitionJobRow, job_id)
+            if row:
+                row.error = str(exc)[:200]
+                await session.commit()
+        except Exception:
+            pass
+        try:
+            row = await session.get(AcquisitionJobRow, job_id)
+            meta = json.loads(row.resolved_metadata_json) if row and row.resolved_metadata_json else {}
+            return templates.TemplateResponse(
+                request, "partials/review_card.html",
+                {
+                    "job_id": job_id, "meta": meta,
+                    "query": row.query if row else "",
+                    "error": str(exc),
+                },
+            )
+        except Exception:
+            return HTMLResponse(
+                f'<div class="card card-review" id="job-{job_id}">'
+                f'<div class="rv-form"><div class="rv-alert rv-alert--error">Approve failed: {exc}</div></div></div>'
+            )
 
     # ReplayGain after commit — subprocess inside a session causes greenlet conflict
     if dest is not None and dest.exists():

@@ -16,9 +16,9 @@
             hx-target="#job-{{ job_id }}"
             hx-swap="outerHTML">Use</button>
     {% elif track_id %}
-    {# Library editor: clicking Use fills the MB ID input and updates label fields via JS #}
+    {% set safe_track_id = track_id | replace(':', '_') %}
     <button class="btn btn-sm btn-ghost"
-            onclick="applyMbToLibraryEditor('{{ track_id }}','{{ rec.recording_id }}','{{ rec.title|e }}','{{ rec.artist|e }}','{{ rec.album|e }}','{{ rec.year or '' }}')">
+            onclick="applyMbToLibraryEditor('{{ track_id | replace(':', '_') }}','{{ rec.recording_id }}','{{ rec.title|e }}','{{ rec.artist|e }}','{{ rec.album|e }}','{{ rec.year or '' }}')">
       Use
     </button>
     {% endif %}

@@ -111,7 +111,7 @@ window.acquireTrack = async function(btn) {
 };
 
 /* ── Batch approve checkboxes ────────────────────────────────────────────── */
-window.updateBatchCount = function() {
+function _updateBatchCount() {
   const toolbar = document.getElementById('batch-toolbar');
   const label   = document.getElementById('batch-count-label');
   if (!toolbar) return;
@@ -122,16 +122,21 @@ window.updateBatchCount = function() {
   } else {
     toolbar.classList.add('hidden');
   }
-};
+}
+
+/* Event delegation — no inline handlers needed, works after HTMX swaps */
+document.body.addEventListener('change', function(e) {
+  if (e.target.classList.contains('job-check')) _updateBatchCount();
+});
 
 window.clearJobChecks = function() {
   document.querySelectorAll('.job-check').forEach(cb => { cb.checked = false; });
-  updateBatchCount();
+  _updateBatchCount();
 };
 
-/* Reset checkbox state after HTMX swaps (batch approve replaces the list) */
+/* Reset after HTMX swaps */
 document.body.addEventListener('htmx:afterSwap', () => {
-  updateBatchCount();
+  _updateBatchCount();
   updatePlayBtns();
 });
 

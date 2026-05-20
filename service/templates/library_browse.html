@@ -11,25 +11,25 @@
   Click any track to edit its tags inline. Changes are written to the file and synced to Navidrome.
 </p>
 
-<form class="search-bar" style="margin-bottom:18px"
+<form id="browse-form"
       hx-get="/library/browse/results"
       hx-trigger="input changed delay:300ms from:#bq, submit"
       hx-target="#browse-results"
-      hx-include="#bq">
-  <input id="bq" name="q" type="search"
-         placeholder="Filter by title or artist…"
-         value="{{ q }}" autocomplete="off" autofocus>
+      hx-include="#bq"
+      style="margin-bottom:18px">
+  <div class="search-bar" style="margin-bottom:0">
+    <input id="bq" name="q" type="search"
+           placeholder="Filter by title or artist…"
+           value="{{ q }}" autocomplete="off" autofocus>
+  </div>
 </form>
 
-<div id="browse-results">
-  <div class="empty" style="padding:20px 0;text-align:left">
+<div id="browse-results"
+     hx-get="/library/browse/results?q={{ q|urlencode }}"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <div style="display:flex;align-items:center;gap:8px;color:var(--t3);font-size:13px;padding:20px 0">
     <span class="spinner"></span> Loading tracks…
   </div>
 </div>
-
-<script>
-  document.addEventListener('DOMContentLoaded', () => {
-    htmx.trigger('#bq', 'input');
-  });
-</script>
 {% endblock %}

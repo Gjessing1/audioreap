@@ -18,7 +18,7 @@
     <span class="badge badge-local">Local</span>
     <button class="btn btn-sm btn-ghost"
             hx-delete="/library/tracks/{{ t.internal_id }}"
-            hx-target="#track-{{ t.internal_id }}"
+            hx-target="closest .card"
             hx-swap="outerHTML swap:0.25s"
             hx-confirm="Move this track to trash?"
             style="color:var(--t4)">✕</button>

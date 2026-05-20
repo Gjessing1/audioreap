@@ -1,10 +1,11 @@
 {% if tracks %}
 <div class="browse-list">
   {% for t in tracks %}
-  <div class="browse-row" id="browse-{{ t.id }}">
+  {% set safe_id = t.id | replace(':', '_') %}
+  <div class="browse-row" id="browse-{{ safe_id }}">
     <div class="browse-info"
          hx-get="/library/tracks/{{ t.id }}/edit-card"
-         hx-target="#browse-{{ t.id }}"
+         hx-target="#browse-{{ safe_id }}"
          hx-swap="outerHTML"
          style="cursor:pointer">
       <div class="browse-title">{{ t.title }}</div>
@@ -24,11 +25,11 @@
       </span>
       {% endif %}
       {% if t.musicbrainz_recording_id %}
-      <span class="badge badge-done" title="Has MB ID">MB</span>
+      <span class="badge badge-done" title="Has MusicBrainz ID">MB</span>
       {% endif %}
       <button class="btn btn-sm btn-ghost"
               hx-get="/library/tracks/{{ t.id }}/edit-card"
-              hx-target="#browse-{{ t.id }}"
+              hx-target="#browse-{{ safe_id }}"
               hx-swap="outerHTML">Edit</button>
     </div>
   </div>
