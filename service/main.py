@@ -73,7 +73,10 @@ async def basic_auth_middleware(request: Request, call_next: object) -> Response
         return await call_next_fn(request)
 
     path = request.url.path
-    if path == "/health" or path.startswith("/static/"):
+    if (path == "/health"
+            or path.startswith("/static/")
+            or path.endswith(".webmanifest")
+            or path.endswith("sw.js")):
         return await call_next_fn(request)
 
     auth = request.headers.get("authorization", "")

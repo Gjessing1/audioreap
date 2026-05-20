@@ -18,9 +18,19 @@
             hx-target="#job-list"
             hx-swap="innerHTML"
             hx-confirm="Approve all selected tracks with their current metadata?">
-      Approve Selected
+      Approve
     </button>
-    <button class="btn btn-sm btn-ghost" onclick="clearJobChecks()">Clear</button>
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/jobs/bulk-action"
+            hx-include=".job-check:checked"
+            hx-vals='{"action":"reject"}'
+            hx-target="#job-list"
+            hx-swap="innerHTML"
+            hx-confirm="Reject and trash all selected staged files?">
+      Reject
+    </button>
+    <button class="btn btn-sm btn-ghost" onclick="selectAllReview()">All</button>
+    <button class="btn btn-sm btn-ghost" onclick="clearJobChecks()">None</button>
   </div>
 </div>
 <div class="job-section">
@@ -33,6 +43,15 @@
 {% if active %}
 <div class="section-title {% if review %}section-title--spaced{% endif %}">
   Active
+  <button class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:11px"
+          hx-post="/jobs/bulk-action"
+          hx-vals='{"action":"cancel"}'
+          hx-include=".job-check:checked"
+          hx-target="#job-list"
+          hx-swap="innerHTML"
+          hx-confirm="Cancel selected active jobs?">
+    Cancel selected
+  </button>
 </div>
 <div class="job-section">
   {% for job in active %}
@@ -44,6 +63,10 @@
 {% if completed %}
 <div class="section-title {% if review or active %}section-title--spaced{% endif %}">
   Completed
+  <button class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:11px"
+          hx-delete="/jobs/clear"
+          hx-target="#job-list"
+          hx-swap="innerHTML">Clear all done</button>
 </div>
 <div class="job-section">
   {% for job in completed %}

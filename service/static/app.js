@@ -154,6 +154,11 @@ window.clearJobChecks = function() {
   _updateBatchCount();
 };
 
+window.selectAllReview = function() {
+  document.querySelectorAll('.job-check').forEach(cb => { cb.checked = true; });
+  _updateBatchCount();
+};
+
 /* Reset after HTMX swaps */
 document.body.addEventListener('htmx:afterSwap', () => {
   _updateBatchCount();

@@ -365,10 +365,15 @@ async def batch_approve(
             done_count += 1
         except Exception as exc:
             logger.error("Batch approve failed for %s: %s", jid, exc)
-            row = await session.get(AcquisitionJobRow, jid)
-            if row:
-                row.error = str(exc)[:200]
-                await session.commit()
+            # Must rollback before reusing the session
+            try:
+                await session.rollback()
+                row = await session.get(AcquisitionJobRow, jid)
+                if row:
+                    row.error = str(exc)[:200]
+                    await session.commit()
+            except Exception:
+                pass
             fail_count += 1
 
     rows = (
@@ -488,6 +493,66 @@ async def reject_job(
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     await session.commit()
     return HTMLResponse("")
+
+
+@router.post("/jobs/bulk-action", response_class=HTMLResponse)
+async def jobs_bulk_action(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Reject or dismiss multiple selected jobs at once."""
+    form = await request.form()
+    job_ids: list[str] = list(form.getlist("job_id"))  # type: ignore[arg-type]
+    action: str = str(form.get("action", "reject"))
+
+    for jid in job_ids:
+        try:
+            row = await session.get(AcquisitionJobRow, jid)
+            if row is None:
+                continue
+            if action == "reject" and row.state in ("needs_review", "staged"):
+                if row.staging_path:
+                    try:
+                        p = Path(row.staging_path)
+                        if p.exists():
+                            safe_trash(p, settings.staging_dir / ".trash")
+                    except Exception:
+                        pass
+                row.state = "failed"
+                row.failure_class = "permanent"
+                row.error = "Rejected (bulk)"
+                row.staging_path = None
+            elif action == "cancel" and row.state in ("queued", "downloading", "processing", "tagging", "importing"):
+                try:
+                    from arq import create_pool
+                    from arq.connections import RedisSettings
+                    redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+                    await redis.zrem("arq:queue", f"acquire:{jid}")
+                    await redis.aclose()
+                except Exception:
+                    pass
+                row.state = "cancelled"
+                row.error = "Cancelled (bulk)"
+            elif action == "dismiss" and row.state in ("done", "failed", "cancelled"):
+                await session.delete(row)
+            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            await session.flush()
+        except Exception as exc:
+            logger.error("Bulk action %s failed for %s: %s", action, jid, exc)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+
+    await session.commit()
+    rows = (
+        await session.execute(
+            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
+        )
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request, "partials/job_list.html", _grouped_jobs(rows)
+    )
 
 
 @router.post("/jobs/{job_id}/requeue", response_class=HTMLResponse)
@@ -1190,9 +1255,17 @@ async def library_browse_results(
     request: Request,
     q: str = "",
     f: str = "",
+    sort: str = "artist",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.metadata.quality import LOW_QUALITY_THRESHOLD
+
+    order = {
+        "title":   Track.title,
+        "quality": Track.tag_quality_score.asc().nullslast(),  # type: ignore[union-attr]
+        "recent":  TrackFile.created_at.desc(),
+        "album":   (Album.title.nullslast(), Track.track_number),  # type: ignore[union-attr]
+    }.get(sort, (Artist.name, Track.title))
 
     stmt = (
         select(Track)
@@ -1200,9 +1273,12 @@ async def library_browse_results(
         .outerjoin(Track.album)
         .join(Track.file)
         .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-        .order_by(Artist.name, Track.title)
         .limit(300)
     )
+    if isinstance(order, tuple):
+        stmt = stmt.order_by(*order)
+    else:
+        stmt = stmt.order_by(order)
     if q.strip():
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Track.title.ilike(pattern) | Artist.name.ilike(pattern))
@@ -1229,7 +1305,7 @@ async def library_browse_results(
     rows = (await session.execute(stmt)).unique().scalars().all()
     return templates.TemplateResponse(
         request, "partials/browse_results.html",
-        {"tracks": rows, "q": q, "f": f},
+        {"tracks": rows, "q": q, "f": f, "sort": sort},
     )
 
 

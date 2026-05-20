@@ -7,51 +7,66 @@
   <a href="/library" class="btn btn-sm btn-ghost">Overview</a>
 </div>
 
-{# Search #}
-<form id="browse-form"
-      hx-get="/library/browse/results"
-      hx-trigger="input changed delay:300ms from:#bq, submit"
-      hx-target="#browse-results"
-      hx-include="#bq, #bf"
-      style="margin-bottom:14px">
-  <div class="search-bar" style="margin-bottom:0">
+{# Search + controls row #}
+<div class="browse-controls">
+  <form id="browse-form"
+        hx-get="/library/browse/results"
+        hx-trigger="input delay:300ms from:#bq, submit"
+        hx-target="#browse-results"
+        hx-include="#bq, #bf, #bs">
     <input id="bq" name="q" type="search"
            placeholder="Search title or artist…"
-           value="{{ q }}" autocomplete="off" autofocus>
+           value="{{ q }}" autocomplete="off" autofocus class="browse-search-input">
     <input type="hidden" id="bf" name="f" value="{{ f }}">
-  </div>
-</form>
+    <input type="hidden" id="bs" name="sort" value="{{ sort or 'artist' }}">
+  </form>
 
-{# Filter tabs #}
-<div class="filter-tabs" style="margin-bottom:16px">
+  {# Sort selector #}
+  <div class="browse-sort">
+    <span style="font-size:11px;color:var(--t3);white-space:nowrap">Sort:</span>
+    <select id="sort-select" class="browse-sort-select" onchange="setSort(this.value)">
+      <option value="artist" {% if not sort or sort=='artist' %}selected{% endif %}>Artist</option>
+      <option value="title"  {% if sort=='title'   %}selected{% endif %}>Title</option>
+      <option value="album"  {% if sort=='album'   %}selected{% endif %}>Album</option>
+      <option value="quality"{% if sort=='quality' %}selected{% endif %}>Quality ↑</option>
+      <option value="recent" {% if sort=='recent'  %}selected{% endif %}>Recent</option>
+    </select>
+  </div>
+</div>
+
+{# Filter chips #}
+<div class="filter-tabs" style="margin-bottom:14px">
   <button class="filter-tab {% if not f %}filter-tab--active{% endif %}"
-          onclick="setFilter('')">All</button>
+          onclick="setFilter(event,'')">All</button>
   <button class="filter-tab {% if f=='no_mb' %}filter-tab--active{% endif %}"
-          onclick="setFilter('no_mb')">No MB ID</button>
+          onclick="setFilter(event,'no_mb')">No MB ID</button>
   <button class="filter-tab {% if f=='no_art' %}filter-tab--active{% endif %}"
-          onclick="setFilter('no_art')">No Cover</button>
+          onclick="setFilter(event,'no_art')">No Cover</button>
   <button class="filter-tab {% if f=='low_quality' %}filter-tab--active{% endif %}"
-          onclick="setFilter('low_quality')">Low Quality</button>
+          onclick="setFilter(event,'low_quality')">Low Quality</button>
   <button class="filter-tab {% if f=='low_bitrate' %}filter-tab--active{% endif %}"
-          onclick="setFilter('low_bitrate')">Low Bitrate</button>
+          onclick="setFilter(event,'low_bitrate')">Low Bitrate</button>
 </div>
 
 <div id="browse-results"
-     hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}"
+     hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}&sort={{ sort or 'artist' }}"
      hx-trigger="load"
      hx-swap="innerHTML">
-  <div style="display:flex;align-items:center;gap:8px;color:var(--t3);font-size:13px;padding:20px 0">
+  <div style="color:var(--t3);font-size:13px;padding:20px 0;display:flex;gap:8px;align-items:center">
     <span class="spinner"></span> Loading…
   </div>
 </div>
 
 <script>
-function setFilter(val) {
+function setFilter(evt, val) {
   document.getElementById('bf').value = val;
-  htmx.trigger('#bq', 'input');
-  // Update active tab visually immediately
   document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('filter-tab--active'));
-  event.target.classList.add('filter-tab--active');
+  evt.target.classList.add('filter-tab--active');
+  htmx.trigger(document.getElementById('browse-form'), 'submit');
+}
+function setSort(val) {
+  document.getElementById('bs').value = val;
+  htmx.trigger(document.getElementById('browse-form'), 'submit');
 }
 </script>
 {% endblock %}

@@ -8,9 +8,9 @@
     <button class="btn btn-ghost btn-sm"
             hx-post="/api/enrich/all"
             hx-swap="none"
-            hx-on::after-request="this.textContent='Enrichment queued ✓'; this.disabled=true"
-            title="Queue MusicBrainz enrichment for all unmatched tracks">
-      Enrich library
+            hx-on::after-request="this.textContent='Queued ✓'; this.disabled=true"
+            title="Run MusicBrainz text-search for all library tracks that lack a MB Recording ID. Results are written directly to the placed files — does not go through the review queue.">
+      MB Enrich all
     </button>
     <button class="btn btn-ghost btn-sm" id="rescan-btn"
             hx-post="/library/rescan"
