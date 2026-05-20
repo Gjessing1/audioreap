@@ -39,7 +39,7 @@ _ALEMBIC_INI = Path(__file__).parent.parent / "alembic.ini"
 def _run_migrations() -> None:
     """Run alembic upgrade head synchronously (called in a thread on startup)."""
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(_ALEMBIC_INI), "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "-c", str(_ALEMBIC_INI), "upgrade", "heads"],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent),
