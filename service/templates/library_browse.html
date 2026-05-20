@@ -1,35 +1,57 @@
 {% extends "base.html" %}
-{% block title %}Browse Library — audioreap{% endblock %}
+{% block title %}Library — audioreap{% endblock %}
 {% block content %}
 
 <div class="page-toolbar">
-  <h2 class="page-title">Edit Metadata</h2>
-  <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
+  <h2 class="page-title">Library</h2>
+  <a href="/library" class="btn btn-sm btn-ghost">Overview</a>
 </div>
 
-<p style="color:var(--t2);font-size:13px;margin-bottom:18px">
-  Click any track to edit its tags inline. Changes are written to the file and synced to Navidrome.
-</p>
-
+{# Search #}
 <form id="browse-form"
       hx-get="/library/browse/results"
       hx-trigger="input changed delay:300ms from:#bq, submit"
       hx-target="#browse-results"
-      hx-include="#bq"
-      style="margin-bottom:18px">
+      hx-include="#bq, #bf"
+      style="margin-bottom:14px">
   <div class="search-bar" style="margin-bottom:0">
     <input id="bq" name="q" type="search"
-           placeholder="Filter by title or artist…"
+           placeholder="Search title or artist…"
            value="{{ q }}" autocomplete="off" autofocus>
+    <input type="hidden" id="bf" name="f" value="{{ f }}">
   </div>
 </form>
 
+{# Filter tabs #}
+<div class="filter-tabs" style="margin-bottom:16px">
+  <button class="filter-tab {% if not f %}filter-tab--active{% endif %}"
+          onclick="setFilter('')">All</button>
+  <button class="filter-tab {% if f=='no_mb' %}filter-tab--active{% endif %}"
+          onclick="setFilter('no_mb')">No MB ID</button>
+  <button class="filter-tab {% if f=='no_art' %}filter-tab--active{% endif %}"
+          onclick="setFilter('no_art')">No Cover</button>
+  <button class="filter-tab {% if f=='low_quality' %}filter-tab--active{% endif %}"
+          onclick="setFilter('low_quality')">Low Quality</button>
+  <button class="filter-tab {% if f=='low_bitrate' %}filter-tab--active{% endif %}"
+          onclick="setFilter('low_bitrate')">Low Bitrate</button>
+</div>
+
 <div id="browse-results"
-     hx-get="/library/browse/results?q={{ q|urlencode }}"
+     hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}"
      hx-trigger="load"
      hx-swap="innerHTML">
   <div style="display:flex;align-items:center;gap:8px;color:var(--t3);font-size:13px;padding:20px 0">
-    <span class="spinner"></span> Loading tracks…
+    <span class="spinner"></span> Loading…
   </div>
 </div>
+
+<script>
+function setFilter(val) {
+  document.getElementById('bf').value = val;
+  htmx.trigger('#bq', 'input');
+  // Update active tab visually immediately
+  document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('filter-tab--active'));
+  event.target.classList.add('filter-tab--active');
+}
+</script>
 {% endblock %}

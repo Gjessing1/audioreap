@@ -36,6 +36,7 @@ class TaggedFile:
     bitrate_kbps: int | None
     sample_rate_hz: int | None
     has_cover_art: bool = False
+    genre: str | None = None
 
 
 def _parse_tracknum(value: str | None) -> int | None:
@@ -150,6 +151,8 @@ def read_tags(path: Path) -> TaggedFile | None:
 
     tags = audio.tags
 
+    genre: str | None = None
+
     if isinstance(audio, MP4):
         # note: MP4 check must come before ID3 check
         title = (tags.get("©nam") or [None])[0] if tags else None
@@ -161,6 +164,8 @@ def read_tags(path: Path) -> TaggedFile | None:
         track_number = int(trkn) if trkn is not None else None
         disk = (tags.get("disk") or [(None, None)])[0][0] if tags else None
         disc_number = int(disk) if disk is not None else None
+        genre_raw = (tags.get("©gen") or [None])[0] if tags else None
+        genre = str(genre_raw).strip() if genre_raw else None
 
     elif isinstance(tags, ID3):
         # MP3, WAV, AIFF — all have ID3-based tags regardless of audio FileType
@@ -171,6 +176,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         year = _parse_year(_id3_str(tags, "TDRC") or _id3_str(tags, "TYER"))
         track_number = _parse_tracknum(_id3_str(tags, "TRCK"))
         disc_number = _parse_tracknum(_id3_str(tags, "TPOS"))
+        genre = _id3_str(tags, "TCON")
 
     else:
         # Vorbis comment: FLAC, OGG Vorbis, Opus
@@ -181,6 +187,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         year = _parse_year(_vorbis_str(tags, "date"))
         track_number = _parse_tracknum(_vorbis_str(tags, "tracknumber"))
         disc_number = _parse_tracknum(_vorbis_str(tags, "discnumber"))
+        genre = _vorbis_str(tags, "genre")
 
     cover = _check_cover_art(audio, tags)
 
@@ -199,7 +206,39 @@ def read_tags(path: Path) -> TaggedFile | None:
         bitrate_kbps=bitrate,
         sample_rate_hz=sample_rate,
         has_cover_art=cover,
+        genre=genre,
     )
+
+
+def read_cover_art_bytes(path: Path) -> bytes | None:
+    """Return the embedded cover art bytes from an audio file, or None."""
+    try:
+        audio = MutagenFile(path)
+        if audio is None:
+            return None
+        tags = audio.tags
+        if isinstance(audio, MP4):
+            covr = tags.get("covr") if tags else None
+            return bytes(covr[0]) if covr else None
+        elif isinstance(tags, ID3):
+            for key in tags.keys():
+                if key.startswith("APIC"):
+                    return tags[key].data  # type: ignore[union-attr]
+            return None
+        else:
+            from mutagen.flac import FLAC
+            if isinstance(audio, FLAC) and audio.pictures:
+                return audio.pictures[0].data
+            # OGG / Opus
+            import base64
+            from mutagen.flac import Picture
+            raw = (tags or {}).get("METADATA_BLOCK_PICTURE") or (tags or {}).get("metadata_block_picture")
+            if raw:
+                pic = Picture(base64.b64decode(raw[0] if isinstance(raw, list) else raw))
+                return pic.data
+            return None
+    except Exception:
+        return None
 
 
 def write_tags(
@@ -214,6 +253,7 @@ def write_tags(
     track_number: int | None = None,
     disc_number: int | None = None,
     artist_sort: str | None = None,
+    genre: str | None = None,
     compilation: bool = False,
     mb_recording_id: str | None = None,
     mb_release_id: str | None = None,
@@ -263,6 +303,8 @@ def write_tags(
             tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [  # type: ignore[index]
                 mb_artist_id.encode()
             ]
+        if genre is not None:
+            tags["©gen"] = [genre]  # type: ignore[index]
         if artwork_bytes is not None:
             from mutagen.mp4 import MP4Cover
             tags["covr"] = [MP4Cover(artwork_bytes, imageformat=MP4Cover.FORMAT_JPEG)]  # type: ignore[index]
@@ -304,6 +346,9 @@ def write_tags(
             tags["TXXX:MusicBrainz Artist Id"] = TXXX(
                 encoding=3, desc="MusicBrainz Artist Id", text=[mb_artist_id]
             )
+        if genre is not None:
+            from mutagen.id3 import TCON
+            tags["TCON"] = TCON(encoding=3, text=[genre])
         if artwork_bytes is not None:
             tags["APIC"] = APIC(
                 encoding=3,
@@ -344,6 +389,8 @@ def write_tags(
             tags["musicbrainz_albumid"] = [mb_release_id]  # type: ignore[index]
         if mb_artist_id is not None:
             tags["musicbrainz_artistid"] = [mb_artist_id]  # type: ignore[index]
+        if genre is not None:
+            tags["genre"] = [genre]  # type: ignore[index]
         if artwork_bytes is not None:
             _embed_vorbis_art(audio, artwork_bytes)
 

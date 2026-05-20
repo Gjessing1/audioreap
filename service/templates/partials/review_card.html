@@ -2,12 +2,12 @@
 
   {# ── Header ─────────────────────────────────────────────────────────── #}
   <div class="rv-header">
-    <div class="rv-art">
-      {% if meta.thumbnail_url %}
-      <img src="{{ meta.thumbnail_url }}" alt="" loading="lazy">
-      {% else %}
-      ♪
-      {% endif %}
+    <div class="rv-art rv-art--lg">
+      {# Try embedded art from staging file first, fall back to YouTube thumbnail #}
+      <img src="/jobs/{{ job_id }}/cover-art"
+           onerror="this.src='{{ meta.thumbnail_url or '' }}';this.onerror=function(){this.style.display='none';document.getElementById('rv-art-ph-{{ job_id }}').style.display='flex'}"
+           style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">
+      <div id="rv-art-ph-{{ job_id }}" style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:22px">♪</div>
     </div>
     <div class="rv-info">
       <div class="rv-badges">
@@ -20,14 +20,13 @@
         {% else %}
         <span class="badge badge-fail">✕ No MB match</span>
         {% endif %}
-
         {% if meta.mb_recording_id %}
         <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}"
-           target="_blank" class="badge badge-queued"
-           style="text-decoration:none" title="Open on MusicBrainz">↗ MB</a>
+           target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
         {% endif %}
-
-        {% if meta.force_staging_reason %}
+        {% if not staging_exists %}
+        <span class="badge badge-fail">File missing</span>
+        {% elif meta.force_staging_reason %}
         <span class="badge badge-warn">⚠ Mismatch</span>
         {% endif %}
       </div>
@@ -38,14 +37,19 @@
   </div>
 
   {# ── Alerts ─────────────────────────────────────────────────────────── #}
-  {% if meta.force_staging_reason %}
+  {% if not staging_exists %}
+  <div class="rv-alert rv-alert--error">
+    Staged file no longer exists at {{ meta.title }}. The file may have been cleaned up.
+    Use Re-download to fetch it again.
+  </div>
+  {% elif meta.force_staging_reason %}
   <div class="rv-alert rv-alert--warn">{{ meta.force_staging_reason }}</div>
   {% endif %}
   {% if error %}
   <div class="rv-alert rv-alert--error">{{ error }}</div>
   {% endif %}
 
-  {# ── Metadata form ───────────────────────────────────────────────────── #}
+  {# ── Metadata form (disabled if file missing) ────────────────────────── #}
   <form class="rv-form"
         hx-post="/jobs/{{ job_id }}/approve"
         hx-target="#job-{{ job_id }}"
@@ -54,58 +58,64 @@
     <div class="rv-grid">
       <div class="rv-field rv-field--full">
         <label class="rv-label">Title</label>
-        <input class="rv-input" name="title" value="{{ meta.title or '' }}" autocomplete="off">
+        <input class="rv-input" name="title" value="{{ meta.title or '' }}"
+               autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
       </div>
-
       <div class="rv-field rv-field--full">
         <label class="rv-label">Artist</label>
-        <input class="rv-input" name="artist" value="{{ meta.artist or '' }}" autocomplete="off">
+        <input class="rv-input" name="artist" value="{{ meta.artist or '' }}"
+               autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
       </div>
-
       <div class="rv-field rv-field--full">
         <label class="rv-label">Album</label>
         <input class="rv-input" name="album" value="{{ meta.album or '' }}"
-               placeholder="Leave blank for Singles" autocomplete="off">
+               placeholder="Leave blank for Singles" autocomplete="off"
+               {% if not staging_exists %}disabled{% endif %}>
       </div>
-
       <div class="rv-field">
         <label class="rv-label">Year</label>
         <input class="rv-input" name="year" type="number"
-               value="{{ meta.year or '' }}" placeholder="YYYY" autocomplete="off">
+               value="{{ meta.year or '' }}" placeholder="YYYY"
+               autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
       </div>
-
       <div class="rv-field">
         <label class="rv-label">Track #</label>
         <input class="rv-input" name="track_number" type="number"
-               value="{{ meta.track_number or '' }}" autocomplete="off">
+               value="{{ meta.track_number or '' }}"
+               autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
       </div>
-
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">Genre <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--t4)">(one genre preferred)</span></label>
+        <input class="rv-input" name="genre" value="{{ meta.genre or '' }}"
+               placeholder="e.g. Folk, Electronic, Jazz…"
+               autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+      </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">
           MB Recording ID
           {% if meta.mb_recording_id %}
-          <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}"
-             target="_blank">↗ view</a>
+          <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}" target="_blank">↗ view</a>
           {% endif %}
         </label>
         <input class="rv-input rv-input--mono" name="mb_recording_id"
                value="{{ meta.mb_recording_id or '' }}"
-               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
+               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+               autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
       </div>
     </div>
 
     <div class="rv-actions">
+      {% if staging_exists %}
       <button type="submit" class="btn btn-lg rv-approve">✓ Approve &amp; Place</button>
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="document.getElementById('mb-panel-{{ job_id }}').classList.toggle('hidden')">
         Search MB
       </button>
-      {% if error and 'missing' in error.lower() %}
-      <button type="button" class="btn btn-sm btn-ghost"
+      {% else %}
+      <button type="button" class="btn btn-lg btn-ghost"
               hx-post="/jobs/{{ job_id }}/requeue"
               hx-target="#job-{{ job_id }}"
-              hx-swap="outerHTML"
-              title="File was cleaned up — re-download from original source">
+              hx-swap="outerHTML">
         Re-download
       </button>
       {% endif %}
@@ -113,13 +123,14 @@
               hx-post="/jobs/{{ job_id }}/reject"
               hx-target="#job-{{ job_id }}"
               hx-swap="outerHTML"
-              hx-confirm="Reject and trash this staged file?">
+              hx-confirm="Reject and remove this job?">
         Reject
       </button>
     </div>
   </form>
 
   {# ── MB search panel ─────────────────────────────────────────────────── #}
+  {% if staging_exists %}
   <div id="mb-panel-{{ job_id }}" class="mb-panel {% if not show_mb_search %}hidden{% endif %}">
     <form class="mb-search-row"
           hx-get="/jobs/{{ job_id }}/mb-search"
@@ -134,5 +145,6 @@
     </form>
     <div id="mb-results-{{ job_id }}" class="mb-results"></div>
   </div>
+  {% endif %}
 
 </div>

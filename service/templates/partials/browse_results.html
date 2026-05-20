@@ -3,6 +3,16 @@
   {% for t in tracks %}
   {% set safe_id = t.id | replace(':', '_') %}
   <div class="browse-row" id="browse-{{ safe_id }}">
+    {# Cover art thumbnail #}
+    <div class="browse-art"
+         hx-get="/library/tracks/{{ t.id }}/edit-card"
+         hx-target="#browse-{{ safe_id }}"
+         hx-swap="outerHTML">
+      <img src="/library/tracks/{{ t.id }}/cover-art"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+           class="browse-art-img" loading="lazy" alt="">
+      <div class="browse-art-placeholder" style="display:none">♪</div>
+    </div>
     <div class="browse-info"
          hx-get="/library/tracks/{{ t.id }}/edit-card"
          hx-target="#browse-{{ safe_id }}"
@@ -25,7 +35,12 @@
       </span>
       {% endif %}
       {% if t.musicbrainz_recording_id %}
-      <span class="badge badge-done" title="Has MusicBrainz ID">MB</span>
+      <span class="badge badge-done" title="MusicBrainz matched">MB</span>
+      {% else %}
+      <span class="badge badge-queued" title="No MusicBrainz ID">—</span>
+      {% endif %}
+      {% if t.file and t.file.has_cover_art %}
+      <span class="badge badge-done" title="Has cover art">🎨</span>
       {% endif %}
       <button class="btn btn-sm btn-ghost"
               hx-get="/library/tracks/{{ t.id }}/edit-card"
@@ -35,8 +50,8 @@
   </div>
   {% endfor %}
 </div>
-{% elif q %}
-<p class="empty" style="text-align:left;padding:20px 0">No tracks matching "{{ q }}".</p>
+{% elif q or f %}
+<p class="empty" style="text-align:left;padding:20px 0">No tracks match this filter.</p>
 {% else %}
 <p class="empty" style="text-align:left;padding:20px 0">No tracks in library yet.</p>
 {% endif %}

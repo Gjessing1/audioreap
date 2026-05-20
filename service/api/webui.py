@@ -144,6 +144,8 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
     if staging_path and staging_path.exists():
         mb_release_id = _read_mb_release_id(staging_path)
 
+    genre = (tagged.genre if tagged else None) or None
+
     return {
         "title": title,
         "artist": artist,
@@ -165,6 +167,7 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
         "force_staging_reason": row.error,
         "quality_score": 0.0,
         "thumbnail_url": candidate.thumbnail_url if candidate else None,
+        "genre": genre,
     }
 
 
@@ -317,7 +320,6 @@ async def review_card(
     if row.state == "needs_review" and row.resolved_metadata_json:
         meta = json.loads(row.resolved_metadata_json)
     elif row.state in ("needs_review", "staged") and row.staging_path:
-        # Staged item from before Phase 13 — synthesize metadata and promote
         meta = await _synthesize_review_meta(row)
         row.resolved_metadata_json = json.dumps(meta)
         row.state = "needs_review"
@@ -326,9 +328,12 @@ async def review_card(
     else:
         raise HTTPException(400, "Job not reviewable")
 
+    staging_exists = bool(row.staging_path and Path(row.staging_path).exists())
+
     return templates.TemplateResponse(
         request, "partials/review_card.html",
-        {"job_id": job_id, "meta": meta, "query": row.query or ""},
+        {"job_id": job_id, "meta": meta, "query": row.query or "",
+         "staging_exists": staging_exists},
     )
 
 
@@ -417,12 +422,14 @@ async def approve_job(
         try:
             row = await session.get(AcquisitionJobRow, job_id)
             meta = json.loads(row.resolved_metadata_json) if row and row.resolved_metadata_json else {}
+            staging_exists = bool(row and row.staging_path and Path(row.staging_path).exists())
             return templates.TemplateResponse(
                 request, "partials/review_card.html",
                 {
                     "job_id": job_id, "meta": meta,
                     "query": row.query if row else "",
                     "error": str(exc),
+                    "staging_exists": staging_exists,
                 },
             )
         except Exception:
@@ -843,16 +850,66 @@ async def library_rescan(
     )
 
 
+@router.get("/library/tracks/{internal_id}/cover-art")
+async def track_cover_art(
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Return embedded cover art bytes for a track, or 404."""
+    from fastapi.responses import Response as Resp
+    from service.library.tagger import read_cover_art_bytes
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or not row.file:
+        raise HTTPException(404)
+    path = Path(row.file.path)
+    if not path.exists():
+        raise HTTPException(404)
+    art = await asyncio.to_thread(read_cover_art_bytes, path)
+    if not art:
+        raise HTTPException(404)
+    return Resp(content=art, media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=3600"})
+
+
+@router.get("/jobs/{job_id}/cover-art")
+async def job_cover_art(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Return embedded cover art from a staged review file."""
+    from fastapi.responses import Response as Resp
+    from service.library.tagger import read_cover_art_bytes
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    if not row or not row.staging_path:
+        raise HTTPException(404)
+    path = Path(row.staging_path)
+    if not path.exists():
+        raise HTTPException(404)
+    art = await asyncio.to_thread(read_cover_art_bytes, path)
+    if not art:
+        raise HTTPException(404)
+    return Resp(content=art, media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"})
+
+
 @router.get("/library/browse", response_class=HTMLResponse)
 async def library_browse(
     request: Request,
     q: str = "",
+    f: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Browse and edit all tracks in the library."""
+    """Unified library browser: search + quality review + metadata edit."""
     return templates.TemplateResponse(
         request, "library_browse.html",
-        {"active": "library", "q": q},
+        {"active": "library", "q": q, "f": f},
     )
 
 
@@ -860,8 +917,11 @@ async def library_browse(
 async def library_browse_results(
     request: Request,
     q: str = "",
+    f: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    from service.metadata.quality import LOW_QUALITY_THRESHOLD
+
     stmt = (
         select(Track)
         .join(Track.artist)
@@ -869,15 +929,35 @@ async def library_browse_results(
         .join(Track.file)
         .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
         .order_by(Artist.name, Track.title)
-        .limit(200)
+        .limit(300)
     )
     if q.strip():
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Track.title.ilike(pattern) | Artist.name.ilike(pattern))
+
+    # Filter tabs
+    if f == "no_mb":
+        stmt = stmt.where(Track.musicbrainz_recording_id.is_(None))
+    elif f == "no_art":
+        stmt = stmt.where(
+            (TrackFile.has_cover_art.is_(None)) | (TrackFile.has_cover_art == 0)
+        )
+    elif f == "low_quality":
+        stmt = stmt.where(
+            Track.tag_quality_score.isnot(None),
+            Track.tag_quality_score < LOW_QUALITY_THRESHOLD,
+        )
+    elif f == "low_bitrate":
+        min_br = settings.min_bitrate_kbps
+        stmt = stmt.where(
+            TrackFile.bitrate_kbps.isnot(None),
+            TrackFile.bitrate_kbps < min_br,
+        )
+
     rows = (await session.execute(stmt)).unique().scalars().all()
     return templates.TemplateResponse(
         request, "partials/browse_results.html",
-        {"tracks": rows, "q": q},
+        {"tracks": rows, "q": q, "f": f},
     )
 
 
@@ -887,6 +967,7 @@ async def track_edit_card(
     internal_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    from service.library.tagger import read_tags as _read_tags
     stmt = (
         select(Track)
         .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
@@ -895,9 +976,17 @@ async def track_edit_card(
     row = (await session.execute(stmt)).unique().scalar_one_or_none()
     if row is None:
         raise HTTPException(404)
+    # Read current genre from file tags (not stored in DB)
+    genre: str | None = None
+    if row.file:
+        fp = Path(row.file.path)
+        if fp.exists():
+            tagged = await asyncio.to_thread(_read_tags, fp)
+            if tagged:
+                genre = tagged.genre
     return templates.TemplateResponse(
         request, "partials/track_edit_card.html",
-        {"track": row},
+        {"track": row, "genre": genre},
     )
 
 
@@ -911,6 +1000,7 @@ async def save_track_tags(
     year: str = Form(""),
     track_number: str = Form(""),
     mb_recording_id: str = Form(""),
+    genre: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.library.tagger import write_tags as _write_tags, has_cover_art as _has_cover_art
@@ -938,6 +1028,7 @@ async def save_track_tags(
     artist_val = artist.strip() or row.artist.name
     album_val = album.strip() or (row.album.title if row.album else None)
     mbid_val = mb_recording_id.strip() or None
+    genre_val = genre.strip() or None
 
     # Write tags to file
     try:
@@ -951,6 +1042,7 @@ async def save_track_tags(
             year=year_val,
             track_number=track_num_val,
             mb_recording_id=mbid_val,
+            genre=genre_val,
         )
     except Exception as exc:
         logger.warning("save-tags write failed for %s: %s", file_path, exc)
