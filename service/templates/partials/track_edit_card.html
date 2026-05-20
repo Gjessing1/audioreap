@@ -106,7 +106,7 @@
         Search MB
       </button>
       <button type="button" class="btn btn-sm rv-reject"
-              hx-get="/library/browse/results"
+              hx-get="/library/tracks/{{ track.id }}/browse-row"
               hx-target="#browse-{{ safe_id }}"
               hx-swap="outerHTML">
         Cancel

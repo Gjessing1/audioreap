@@ -1241,12 +1241,13 @@ async def library_browse(
     request: Request,
     q: str = "",
     f: str = "",
+    sort: str = "artist",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Unified library browser: search + quality review + metadata edit."""
     return templates.TemplateResponse(
         request, "library_browse.html",
-        {"active": "library", "q": q, "f": f},
+        {"active": "library", "q": q, "f": f, "sort": sort},
     )
 
 
@@ -1306,6 +1307,27 @@ async def library_browse_results(
     return templates.TemplateResponse(
         request, "partials/browse_results.html",
         {"tracks": rows, "q": q, "f": f, "sort": sort},
+    )
+
+
+@router.get("/library/tracks/{internal_id}/browse-row", response_class=HTMLResponse)
+async def track_browse_row(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return a single browse-list row for a track (used by edit-card Cancel button)."""
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    return templates.TemplateResponse(
+        request, "partials/browse_row.html",
+        {"t": row},
     )
 
 

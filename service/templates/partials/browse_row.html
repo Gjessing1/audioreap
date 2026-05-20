@@ -1,0 +1,49 @@
+{% set safe_id = t.id | replace(':', '_') %}
+<div class="browse-row" id="browse-{{ safe_id }}">
+  {# Cover art — only request if we know the track has embedded art #}
+  <div class="browse-art"
+       hx-get="/library/tracks/{{ t.id }}/edit-card"
+       hx-target="#browse-{{ safe_id }}"
+       hx-swap="outerHTML">
+    {% if t.file and t.file.has_cover_art %}
+    <img src="/library/tracks/{{ t.id }}/cover-art"
+         onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+         class="browse-art-img" loading="eager" alt="">
+    {% endif %}
+    <div class="browse-art-placeholder" style="display:{% if t.file and t.file.has_cover_art %}none{% else %}flex{% endif %}">♪</div>
+  </div>
+
+  {# Main info (tappable on mobile) #}
+  <div class="browse-info"
+       hx-get="/library/tracks/{{ t.id }}/edit-card"
+       hx-target="#browse-{{ safe_id }}"
+       hx-swap="outerHTML">
+    <div class="browse-title">{{ t.title }}</div>
+    <div class="browse-meta">
+      <span>{{ t.artist.name }}</span>
+      {% if t.album %}<span class="muted">· {{ t.album.title }}{% if t.album.year %} ({{ t.album.year }}){% endif %}</span>{% endif %}
+    </div>
+    <div class="browse-meta browse-meta-2">
+      {% if t.file %}<span class="browse-codec">{{ t.file.codec }}{% if t.file.bitrate_kbps %} {{ t.file.bitrate_kbps }}k{% endif %}</span>{% endif %}
+      {% if t.tag_quality_score is not none %}
+      <span class="browse-quality {% if t.tag_quality_score >= 0.7 %}quality-good{% elif t.tag_quality_score >= 0.4 %}quality-mid{% else %}quality-low{% endif %}">
+        {{ "%.0f"|format(t.tag_quality_score * 100) }}%
+      </span>
+      {% endif %}
+      {% if t.musicbrainz_recording_id %}<span class="badge badge-done" style="font-size:10px;padding:2px 5px">MB</span>{% endif %}
+    </div>
+  </div>
+
+  {# Actions #}
+  <div class="browse-actions">
+    {% if t.file %}
+    <button class="play-btn" data-id="{{ t.id }}"
+            onclick="playTrack('{{ t.id }}','{{ t.title|e }}')"
+            title="Play">▶</button>
+    {% endif %}
+    <button class="btn btn-sm btn-ghost"
+            hx-get="/library/tracks/{{ t.id }}/edit-card"
+            hx-target="#browse-{{ safe_id }}"
+            hx-swap="outerHTML">Edit</button>
+  </div>
+</div>
