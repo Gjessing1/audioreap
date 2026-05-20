@@ -223,13 +223,14 @@ def lookup_recording(
 
 def search_recordings_free(
     query: str,
-    limit: int = 8,
+    limit: int = 10,
     cache_dir: Path | None = None,
 ) -> list[MBRecording]:
     """Free-form MB recording search for the manual review lookup.
 
-    Tries to split 'Artist - Title' prefix; otherwise treats whole string as title.
-    Returns up to `limit` results without similarity filtering.
+    Splits on ' - ' to extract 'Artist - Title' prefix; otherwise treats whole
+    string as the recording title with no artist filter. Results sorted by MB
+    relevance score descending.
     """
     if " - " in query:
         parts = query.split(" - ", 1)
@@ -237,7 +238,8 @@ def search_recordings_free(
     else:
         artist_q, title_q = "", query.strip()
 
-    key = f"free:{_cache_key(title_q or query, artist_q)}"
+    # Use limit in the cache key so "load more" fetches fresh results
+    key = f"free:{limit}:{_cache_key(title_q or query, artist_q)}"
     raw: dict[str, object] | None = None
     if cache_dir is not None:
         raw = _load_cache(cache_dir, key)
@@ -256,11 +258,14 @@ def search_recordings_free(
             logger.warning("MB free search failed for %r: %s", query, exc)
             return []
 
-    return [
+    records = [
         _parse_recording(rec)
         for rec in (raw.get("recording-list") or [])
         if isinstance(rec, dict)
-    ][:limit]
+    ]
+    # Sort by MB relevance score descending
+    records.sort(key=lambda r: r.score, reverse=True)
+    return records[:limit]
 
 
 def search_artists(

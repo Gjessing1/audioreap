@@ -90,7 +90,7 @@
           hx-target="#mb-edit-results-{{ safe_id }}"
           hx-trigger="submit">
       <input class="rv-input" name="q" type="text"
-             value="{{ track.artist.name }} {{ track.title }}"
+             value="{{ track.artist.name }} - {{ track.title }}"
              placeholder="Artist - Title" autocomplete="off">
       <button type="submit" class="btn btn-sm btn-ghost">
         Search <span class="htmx-indicator"><span class="spinner"></span></span>

@@ -100,6 +100,15 @@
               onclick="document.getElementById('mb-panel-{{ job_id }}').classList.toggle('hidden')">
         Search MB
       </button>
+      {% if error and 'missing' in error.lower() %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              hx-post="/jobs/{{ job_id }}/requeue"
+              hx-target="#job-{{ job_id }}"
+              hx-swap="outerHTML"
+              title="File was cleaned up — re-download from original source">
+        Re-download
+      </button>
+      {% endif %}
       <button type="button" class="btn btn-sm rv-reject"
               hx-post="/jobs/{{ job_id }}/reject"
               hx-target="#job-{{ job_id }}"
@@ -117,7 +126,7 @@
           hx-target="#mb-results-{{ job_id }}"
           hx-trigger="submit">
       <input class="rv-input" name="q" type="text"
-             value="{{ (meta.artist or '') ~ ' ' ~ (meta.title or '') }}"
+             value="{{ (meta.artist or '') ~ ' - ' ~ (meta.title or '') }}"
              placeholder="Artist - Title" autocomplete="off">
       <button type="submit" class="btn btn-sm btn-ghost">
         Search <span class="htmx-indicator"><span class="spinner"></span></span>

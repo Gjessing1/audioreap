@@ -3,9 +3,18 @@
   {% for rec in results %}
   <div class="mb-candidate">
     <div class="mb-candidate-info">
-      <div class="mb-candidate-title">{{ rec.title }}</div>
+      <div class="mb-candidate-title">
+        {{ rec.title }}
+        {% if rec.score >= 0.85 %}
+        <span class="badge badge-done" style="font-size:10px">{{ "%.0f"|format(rec.score * 100) }}%</span>
+        {% elif rec.score >= 0.6 %}
+        <span class="badge badge-busy" style="font-size:10px">{{ "%.0f"|format(rec.score * 100) }}%</span>
+        {% else %}
+        <span class="badge badge-queued" style="font-size:10px">{{ "%.0f"|format(rec.score * 100) }}%</span>
+        {% endif %}
+      </div>
       <div class="mb-candidate-sub">
-        {{ rec.artist }}{% if rec.album %} · {{ rec.album }}{% endif %}{% if rec.year %} · {{ rec.year }}{% endif %}
+        {{ rec.artist }}{% if rec.album %} · <em>{{ rec.album }}</em>{% endif %}{% if rec.year %} · {{ rec.year }}{% endif %}
       </div>
       <div class="mb-candidate-id">{{ rec.recording_id }}</div>
     </div>
@@ -18,13 +27,38 @@
     {% elif track_id %}
     {% set safe_track_id = track_id | replace(':', '_') %}
     <button class="btn btn-sm btn-ghost"
-            onclick="applyMbToLibraryEditor('{{ track_id | replace(':', '_') }}','{{ rec.recording_id }}','{{ rec.title|e }}','{{ rec.artist|e }}','{{ rec.album|e }}','{{ rec.year or '' }}')">
+            onclick="applyMbToLibraryEditor('{{ safe_track_id }}','{{ rec.recording_id }}','{{ rec.title|e }}','{{ rec.artist|e }}','{{ rec.album|e }}','{{ rec.year or '' }}')">
       Use
     </button>
     {% endif %}
   </div>
   {% endfor %}
 </div>
+
+{# Load more button #}
+{% set next_limit = (limit|default(10)|int) + 10 %}
+{% if results|length >= (limit|default(10)|int) %}
+<div style="text-align:center;padding:8px 0">
+  {% if job_id %}
+  <button class="btn btn-sm btn-ghost"
+          hx-get="/jobs/{{ job_id }}/mb-search?q={{ q|urlencode }}&limit={{ next_limit }}"
+          hx-target="closest .mb-results"
+          hx-swap="innerHTML">
+    Load {{ next_limit - (limit|default(10)|int) }} more results
+  </button>
+  {% elif track_id %}
+  <button class="btn btn-sm btn-ghost"
+          hx-get="/library/tracks/{{ track_id }}/mb-search?q={{ q|urlencode }}&limit={{ next_limit }}"
+          hx-target="closest .mb-results"
+          hx-swap="innerHTML">
+    Load {{ next_limit - (limit|default(10)|int) }} more results
+  </button>
+  {% endif %}
+</div>
+{% endif %}
+
 {% else %}
-<p class="muted" style="font-size:12px;padding:4px 0">No results — try a different search.</p>
+<p class="muted" style="font-size:12px;padding:6px 0">
+  No results — try including both artist and title, e.g. "John Lennon - Imagine".
+</p>
 {% endif %}

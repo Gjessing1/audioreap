@@ -1,9 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Quality Review — audioreap{% endblock %}
-
 {% block content %}
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-  <h2 style="font-size:18px">Quality Review</h2>
+  <h2 class="page-title">Quality Review</h2>
   <a href="/library" class="btn btn-ghost btn-sm">← Library</a>
 </div>
 
@@ -11,7 +10,7 @@
 <div class="section-title">Low bitrate (below {{ min_bitrate_kbps }} kbps)</div>
 {% if low_bitrate %}
 {% for t in low_bitrate %}
-<div class="card" id="qr-{{ t.internal_id }}" style="margin-bottom:6px">
+<div class="card">
   <div class="card-info">
     <div class="card-title">{{ t.title }}</div>
     <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}
@@ -22,11 +21,9 @@
     {% if t.provider_ref %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/library/tracks/{{ t.internal_id }}/reacquire"
-            hx-target="#qr-{{ t.internal_id }}"
+            hx-target="closest .card"
             hx-swap="outerHTML"
-            hx-confirm="Re-acquire this track at best available quality?">
-      Re-acquire
-    </button>
+            hx-confirm="Re-acquire this track at best available quality?">Re-acquire</button>
     {% else %}
     <a href="/search?q={{ (t.artist + ' ' + t.title)|urlencode }}"
        class="btn btn-sm btn-ghost">Search</a>
@@ -42,17 +39,17 @@
 <div class="section-title" style="margin-top:20px">Missing cover art (MB-matched tracks)</div>
 {% if no_art %}
 {% for t in no_art %}
-<div class="card" id="art-card-{{ t.internal_id }}" style="margin-bottom:6px">
+<div class="card">
   <div class="card-info">
     <div class="card-title">{{ t.title }}</div>
     <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
   </div>
   <div class="card-actions">
-    <span id="art-{{ t.internal_id }}">
+    <span class="fetch-art-btn">
       <button class="btn btn-sm btn-ghost"
               hx-post="/library/tracks/{{ t.internal_id }}/fetch-art"
-              hx-target="#art-{{ t.internal_id }}"
-              hx-swap="outerHTML">
+              hx-target="closest .fetch-art-btn"
+              hx-swap="innerHTML">
         Fetch art
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
@@ -68,7 +65,7 @@
 <div class="section-title" style="margin-top:20px">Missing files (in DB, not on disk)</div>
 {% if missing_files %}
 {% for t in missing_files %}
-<div class="card" id="mf-{{ t.internal_id }}" style="margin-bottom:6px">
+<div class="card">
   <div class="card-info">
     <div class="card-title">{{ t.title }}</div>
     <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
@@ -77,19 +74,17 @@
     {% if t.provider_ref %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/library/tracks/{{ t.internal_id }}/reacquire"
-            hx-target="#mf-{{ t.internal_id }}"
-            hx-swap="outerHTML">
-      Re-acquire
-    </button>
+            hx-target="closest .card"
+            hx-swap="outerHTML">Re-acquire</button>
     {% else %}
     <a href="/search?q={{ (t.artist + ' ' + t.title)|urlencode }}"
        class="btn btn-sm btn-ghost">Search</a>
     {% endif %}
     <button class="btn btn-sm btn-ghost"
             hx-delete="/library/tracks/{{ t.internal_id }}"
-            hx-target="#mf-{{ t.internal_id }}"
+            hx-target="closest .card"
             hx-swap="outerHTML swap:0.3s"
-            style="color:var(--muted)">Remove from DB</button>
+            style="color:var(--t4)">Remove from DB</button>
   </div>
 </div>
 {% endfor %}

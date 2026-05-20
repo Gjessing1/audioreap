@@ -91,11 +91,11 @@
 {% if low_quality_tracks %}
 <div class="section-title" style="margin-top:8px">Needs improvement</div>
 {% for t in low_quality_tracks %}
-<div class="card" id="qtrack-{{ t.internal_id }}">
+<div class="card">
   <div class="card-info">
     <div class="card-title">{{ t.title }}</div>
     <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
-    <div class="card-sub" style="font-size:11px;margin-top:2px;color:var(--muted)">
+    <div class="card-sub" style="font-size:11px;margin-top:2px">
       Quality {{ "%.0f"|format(t.quality_score * 100) }}%
       {% if not t.has_mbid %} · No MB ID{% endif %}
       {% if not t.has_art %} · No cover art{% endif %}
@@ -105,17 +105,15 @@
     {% if t.has_mbid %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/library/tracks/{{ t.internal_id }}/retag"
-            hx-target="#qtrack-{{ t.internal_id }}"
-            hx-swap="outerHTML">
-      Re-tag
-    </button>
+            hx-target="closest .card"
+            hx-swap="outerHTML">Re-tag</button>
     {% endif %}
     <button class="btn btn-sm btn-ghost"
             hx-delete="/library/tracks/{{ t.internal_id }}"
-            hx-target="#qtrack-{{ t.internal_id }}"
+            hx-target="closest .card"
             hx-swap="outerHTML swap:0.3s"
             hx-confirm="Move this track to trash?"
-            style="color:var(--muted)">✕</button>
+            style="color:var(--t4)">✕</button>
   </div>
 </div>
 {% endfor %}
@@ -124,7 +122,7 @@
 {% if recent %}
 <div class="section-title" style="margin-top:16px">Recent additions</div>
 {% for t in recent %}
-<div class="card" id="track-{{ t.internal_id }}">
+<div class="card">
   <button class="play-btn" data-id="{{ t.internal_id }}"
           onclick="playTrack('{{ t.internal_id }}', '{{ t.title|e }}')">▶</button>
   <div class="card-info">
@@ -134,10 +132,10 @@
   <div class="card-actions">
     <button class="btn btn-sm btn-ghost"
             hx-delete="/library/tracks/{{ t.internal_id }}"
-            hx-target="#track-{{ t.internal_id }}"
+            hx-target="closest .card"
             hx-swap="outerHTML swap:0.3s"
             hx-confirm="Move this track to trash?"
-            style="color:var(--muted)">✕</button>
+            style="color:var(--t4)">✕</button>
   </div>
 </div>
 {% endfor %}

@@ -483,21 +483,64 @@ async def reject_job(
     return HTMLResponse("")
 
 
+@router.post("/jobs/{job_id}/requeue", response_class=HTMLResponse)
+async def requeue_job(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Re-download a job whose staging file is missing. Resets to queued and enqueues."""
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise HTTPException(404)
+    if not row.candidate_json:
+        raise HTTPException(400, "No candidate data to re-queue")
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name=row.provider,
+            provider_ref=row.provider_ref,
+            candidate_json=row.candidate_json,
+            music_dir=str(settings.music_dir),
+            tmp_acquire_dir=str(settings.tmp_acquire_dir),
+            _job_id=f"acquire:{job_id}",
+        )
+        await redis.aclose()
+        row.state = "queued"
+        row.staging_path = None
+        row.resolved_metadata_json = None
+        row.error = None
+        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.commit()
+    except Exception as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    return templates.TemplateResponse(
+        request, "partials/job_card.html", {"job": _job_to_model(row)}
+    )
+
+
 @router.get("/jobs/{job_id}/mb-search", response_class=HTMLResponse)
 async def job_mb_search(
     request: Request,
     job_id: str,
     q: str = "",
+    limit: int = 10,
 ) -> HTMLResponse:
     if not q.strip():
         return HTMLResponse("")
     from service.metadata.musicbrainz import search_recordings_free
     results = await asyncio.to_thread(
-        search_recordings_free, q.strip(), 6, settings.cache_dir
+        search_recordings_free, q.strip(), limit, settings.cache_dir
     )
     return templates.TemplateResponse(
         request, "partials/mb_candidates.html",
-        {"results": results, "job_id": job_id},
+        {"results": results, "job_id": job_id, "q": q.strip(), "limit": limit},
     )
 
 
@@ -960,18 +1003,18 @@ async def library_track_mb_search(
     request: Request,
     internal_id: str,
     q: str = "",
+    limit: int = 10,
 ) -> HTMLResponse:
-    """Inline MB search for the library editor — reuses the same candidates partial
-    but targets the library editor's result div instead of job's."""
     if not q.strip():
         return HTMLResponse("")
     from service.metadata.musicbrainz import search_recordings_free
     results = await asyncio.to_thread(
-        search_recordings_free, q.strip(), 6, settings.cache_dir
+        search_recordings_free, q.strip(), limit, settings.cache_dir
     )
     return templates.TemplateResponse(
         request, "partials/mb_candidates.html",
-        {"results": results, "job_id": None, "track_id": internal_id},
+        {"results": results, "job_id": None, "track_id": internal_id,
+         "q": q.strip(), "limit": limit},
     )
 
 
@@ -1029,10 +1072,10 @@ async def retag_track(
 
     pct = int((row.tag_quality_score or 0) * 100)
     return HTMLResponse(
-        f'<div id="qtrack-{internal_id}" class="card" style="opacity:0.6">'
+        f'<div class="card" style="opacity:0.6">'
         f'<div class="card-info">'
         f'<div class="card-title">{row.title}</div>'
-        f'<div class="card-sub">{row.artist.name} · Re-tagged from MusicBrainz · Quality {pct}%</div>'
+        f'<div class="card-sub">{row.artist.name} · Re-tagged · Quality {pct}%</div>'
         f"</div></div>"
     )
 
@@ -1226,8 +1269,7 @@ async def fetch_track_art(
     )
     if not art:
         return HTMLResponse(
-            f'<div id="art-{internal_id}" class="card-sub" style="color:var(--warn)">'
-            f"No artwork found in Cover Art Archive for this track.</div>"
+            '<span class="badge badge-warn">No artwork found on Cover Art Archive</span>'
         )
 
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
@@ -1245,9 +1287,7 @@ async def fetch_track_art(
     )
     await session.commit()
 
-    return HTMLResponse(
-        f'<div id="art-{internal_id}" class="badge badge-done">Art embedded ✓</div>'
-    )
+    return HTMLResponse('<span class="badge badge-done">Art embedded ✓</span>')
 
 
 @router.get("/health", response_class=HTMLResponse)
