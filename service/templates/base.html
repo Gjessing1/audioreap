@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#7c3aed">
+  <meta name="theme-color" content="#7B5CF5">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -15,10 +15,12 @@
 </head>
 <body>
 <nav id="main-nav">
-  <a href="/search" class="brand">♪ audioreap</a>
+  <a href="/search" class="brand">audioreap</a>
   <button class="nav-toggle" id="nav-toggle" aria-label="Menu" aria-expanded="false">
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-      <line x1="2" y1="5" x2="16" y2="5"/><line x1="2" y1="9" x2="16" y2="9"/><line x1="2" y1="13" x2="16" y2="13"/>
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
+      <line x1="1" y1="4" x2="15" y2="4"/>
+      <line x1="1" y1="8" x2="15" y2="8"/>
+      <line x1="1" y1="12" x2="15" y2="12"/>
     </svg>
   </button>
   <div class="nav-links" id="nav-links">
@@ -32,9 +34,7 @@
   </div>
 </nav>
 
-<main>
-  {% block content %}{% endblock %}
-</main>
+<main>{% block content %}{% endblock %}</main>
 
 <div id="player-bar" class="hidden">
   <div id="player-info">
@@ -51,15 +51,15 @@
 <script src="/static/app.js"></script>
 <script>
   const toggle = document.getElementById('nav-toggle');
-  const nav = document.getElementById('main-nav');
-  const links = document.getElementById('nav-links');
+  const nav    = document.getElementById('main-nav');
+  const links  = document.getElementById('nav-links');
   toggle.addEventListener('click', () => {
     const open = nav.classList.toggle('nav-open');
-    toggle.setAttribute('aria-expanded', open);
+    toggle.setAttribute('aria-expanded', String(open));
   });
-  links.querySelectorAll('a').forEach(a => {
-    a.addEventListener('click', () => nav.classList.remove('nav-open'));
-  });
+  links.querySelectorAll('a').forEach(a =>
+    a.addEventListener('click', () => nav.classList.remove('nav-open'))
+  );
 </script>
 </body>
 </html>

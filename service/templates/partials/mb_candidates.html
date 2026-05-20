@@ -9,7 +9,7 @@
       </div>
       <div class="mb-candidate-id">{{ rec.recording_id }}</div>
     </div>
-    <button class="btn btn-ghost btn-sm"
+    <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/{{ job_id }}/mb-apply"
             hx-vals='{"recording_id": "{{ rec.recording_id }}"}'
             hx-target="#job-{{ job_id }}"
@@ -18,5 +18,5 @@
   {% endfor %}
 </div>
 {% else %}
-<p class="muted" style="margin-top:8px;font-size:13px">No results. Try a different search.</p>
+<p class="muted" style="font-size:12px;padding:4px 0">No results — try a different search.</p>
 {% endif %}

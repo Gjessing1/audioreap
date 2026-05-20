@@ -6,53 +6,64 @@
   'staged':       'badge-staged',
   'needs_review': 'badge-review',
 }.get(job.state, 'badge-busy') %}
-<div class="card" id="job-{{ job.id }}"
-     {% if job.state not in ('done', 'failed', 'cancelled', 'needs_review', 'staged') %}
+
+<div class="card"
+     id="job-{{ job.id }}"
+     data-state="{{ job.state }}"
+     {% if job.state not in ('done','failed','cancelled','needs_review','staged') %}
      hx-get="/jobs/status/{{ job.id }}"
      hx-trigger="every 3s"
      hx-target="#job-{{ job.id }}"
      hx-swap="outerHTML"
      {% endif %}>
+
   <div class="card-info">
     <div class="card-title">{{ job.track_ref.title }}</div>
-    <div class="card-sub">{{ job.track_ref.artist }} · {{ job.id[:8] }}</div>
+    <div class="card-sub">{{ job.track_ref.artist }}<span class="muted"> · {{ job.id[:8] }}</span></div>
     {% if job.error %}
-    <div class="card-sub" style="color:{% if job.state in ('needs_review', 'staged') %}var(--warn){% else %}var(--danger){% endif %}">
-      {{ job.error[:120] }}
+    <div class="card-error {% if job.state not in ('needs_review','staged') %}card-error--danger{% endif %}">
+      {{ job.error[:140] }}
     </div>
     {% endif %}
   </div>
+
   <div class="card-actions">
-    <span class="badge {{ state_badge }}">{{ job.state.replace('_', ' ') }}</span>
+    <span class="badge {{ state_badge }}">{{ job.state.replace('_',' ') }}</span>
+
     {% if job.state == 'done' and job.track_ref.status == 'available' %}
-    <button class="play-btn" data-id="{{ job.track_ref.internal_id }}"
-            onclick="playTrack('{{ job.track_ref.internal_id }}', '{{ job.track_ref.title|e }}')">▶</button>
+    <button class="play-btn"
+            data-id="{{ job.track_ref.internal_id }}"
+            onclick="playTrack('{{ job.track_ref.internal_id }}','{{ job.track_ref.title|e }}')">▶</button>
     {% endif %}
+
     {% if job.state == 'needs_review' %}
-    <button class="btn btn-sm btn-primary"
+    <button class="btn btn-sm"
             hx-get="/jobs/{{ job.id }}/review-card"
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML">Review →</button>
     {% endif %}
-    {% if job.state in ('failed', 'queued') %}
+
+    {% if job.state in ('failed','queued') %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/retry/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML">Retry</button>
     {% endif %}
-    {% if job.state in ('queued', 'downloading', 'processing', 'tagging', 'importing') %}
+
+    {% if job.state in ('queued','downloading','processing','tagging','importing') %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/cancel/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML"
             hx-confirm="Cancel this job?">Cancel</button>
     {% endif %}
-    {% if job.state in ('done', 'failed', 'cancelled') %}
+
+    {% if job.state in ('done','failed','cancelled') %}
     <button class="btn btn-sm btn-ghost"
             hx-delete="/jobs/dismiss/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
-            hx-swap="outerHTML swap:0.3s"
-            style="color:var(--muted)">✕</button>
+            hx-swap="outerHTML swap:0.25s"
+            style="color:var(--t4)">✕</button>
     {% endif %}
   </div>
 </div>

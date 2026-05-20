@@ -1,116 +1,129 @@
 <div class="card card-review" id="job-{{ job_id }}">
 
-  {# Header: thumbnail + match confidence #}
-  <div class="review-header">
-    {% if meta.thumbnail_url %}
-    <img class="review-thumb" src="{{ meta.thumbnail_url }}" alt="" loading="lazy">
-    {% else %}
-    <div class="review-thumb review-thumb-empty">♪</div>
-    {% endif %}
-    <div class="review-header-info">
-      <div class="review-badges">
+  {# ── Header ─────────────────────────────────────────────────────────── #}
+  <div class="rv-header">
+    <div class="rv-art">
+      {% if meta.thumbnail_url %}
+      <img src="{{ meta.thumbnail_url }}" alt="" loading="lazy">
+      {% else %}
+      ♪
+      {% endif %}
+    </div>
+    <div class="rv-info">
+      <div class="rv-badges">
         {% if meta.mb_match_source == 'acoustid' %}
-        <span class="badge badge-done">AcoustID ✓ {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}%</span>
+        <span class="badge badge-done">✓ AcoustID {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}%</span>
         {% elif meta.mb_match_source == 'text_search' %}
-        <span class="badge badge-busy">Text match</span>
+        <span class="badge badge-busy">≈ Text match</span>
         {% elif meta.mb_match_source == 'manual' %}
-        <span class="badge badge-done">Manual MB link</span>
+        <span class="badge badge-done">✓ Manual link</span>
         {% else %}
-        <span class="badge badge-fail">No MB match</span>
+        <span class="badge badge-fail">✕ No MB match</span>
         {% endif %}
+
         {% if meta.mb_recording_id %}
         <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}"
-           target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
+           target="_blank" class="badge badge-queued"
+           style="text-decoration:none" title="Open on MusicBrainz">↗ MB</a>
         {% endif %}
+
         {% if meta.force_staging_reason %}
         <span class="badge badge-warn">⚠ Mismatch</span>
         {% endif %}
       </div>
       {% if query %}
-      <div class="review-source-query">{{ query }}</div>
+      <div class="rv-source">{{ query }}</div>
       {% endif %}
     </div>
   </div>
 
-  {# Mismatch warning #}
+  {# ── Alerts ─────────────────────────────────────────────────────────── #}
   {% if meta.force_staging_reason %}
-  <div class="review-warning">
-    ⚠ {{ meta.force_staging_reason }}
-  </div>
+  <div class="rv-alert rv-alert--warn">{{ meta.force_staging_reason }}</div>
   {% endif %}
-
-  {# Error from failed approve attempt #}
   {% if error %}
-  <div class="review-warning review-warning-error">Error: {{ error }}</div>
+  <div class="rv-alert rv-alert--error">{{ error }}</div>
   {% endif %}
 
-  {# Editable metadata form #}
-  <form hx-post="/jobs/{{ job_id }}/approve"
+  {# ── Metadata form ───────────────────────────────────────────────────── #}
+  <form class="rv-form"
+        hx-post="/jobs/{{ job_id }}/approve"
         hx-target="#job-{{ job_id }}"
         hx-swap="outerHTML">
 
-    <div class="review-fields">
-      <div class="review-field">
-        <label class="field-label">Title</label>
-        <input name="title" value="{{ meta.title or '' }}" class="review-input" autocomplete="off">
+    <div class="rv-grid">
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">Title</label>
+        <input class="rv-input" name="title" value="{{ meta.title or '' }}" autocomplete="off">
       </div>
-      <div class="review-field">
-        <label class="field-label">Artist</label>
-        <input name="artist" value="{{ meta.artist or '' }}" class="review-input" autocomplete="off">
+
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">Artist</label>
+        <input class="rv-input" name="artist" value="{{ meta.artist or '' }}" autocomplete="off">
       </div>
-      <div class="review-field">
-        <label class="field-label">Album</label>
-        <input name="album" value="{{ meta.album or '' }}" class="review-input" autocomplete="off"
-               placeholder="Leave blank for Singles">
+
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">Album</label>
+        <input class="rv-input" name="album" value="{{ meta.album or '' }}"
+               placeholder="Leave blank for Singles" autocomplete="off">
       </div>
-      <div class="review-field-row">
-        <div class="review-field">
-          <label class="field-label">Year</label>
-          <input name="year" value="{{ meta.year or '' }}" type="number"
-                 class="review-input" autocomplete="off" placeholder="YYYY">
-        </div>
-        <div class="review-field">
-          <label class="field-label">Track #</label>
-          <input name="track_number" value="{{ meta.track_number or '' }}" type="number"
-                 class="review-input" autocomplete="off">
-        </div>
+
+      <div class="rv-field">
+        <label class="rv-label">Year</label>
+        <input class="rv-input" name="year" type="number"
+               value="{{ meta.year or '' }}" placeholder="YYYY" autocomplete="off">
       </div>
-      <div class="review-field">
-        <label class="field-label">MB Recording ID</label>
-        <input name="mb_recording_id" value="{{ meta.mb_recording_id or '' }}"
-               class="review-input review-input-mono" autocomplete="off"
-               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+
+      <div class="rv-field">
+        <label class="rv-label">Track #</label>
+        <input class="rv-input" name="track_number" type="number"
+               value="{{ meta.track_number or '' }}" autocomplete="off">
+      </div>
+
+      <div class="rv-field rv-field--full">
+        <label class="rv-label">
+          MB Recording ID
+          {% if meta.mb_recording_id %}
+          <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}"
+             target="_blank">↗ view</a>
+          {% endif %}
+        </label>
+        <input class="rv-input rv-input--mono" name="mb_recording_id"
+               value="{{ meta.mb_recording_id or '' }}"
+               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
       </div>
     </div>
 
-    <div class="review-actions">
-      <button type="submit" class="btn">Approve &amp; Place</button>
-      <button type="button" class="btn btn-ghost btn-sm"
+    <div class="rv-actions">
+      <button type="submit" class="btn btn-lg rv-approve">✓ Approve &amp; Place</button>
+      <button type="button" class="btn btn-sm btn-ghost"
               onclick="document.getElementById('mb-panel-{{ job_id }}').classList.toggle('hidden')">
         Search MB
       </button>
-      <button type="button" class="btn btn-ghost btn-sm review-reject-btn"
+      <button type="button" class="btn btn-sm rv-reject"
               hx-post="/jobs/{{ job_id }}/reject"
               hx-target="#job-{{ job_id }}"
               hx-swap="outerHTML"
-              hx-confirm="Reject this track? The staged file will be trashed.">
+              hx-confirm="Reject and trash this staged file?">
         Reject
       </button>
     </div>
   </form>
 
-  {# Inline MB search — hidden until Search MB is clicked #}
-  <div id="mb-panel-{{ job_id }}" class="mb-search-panel {% if not show_mb_search %}hidden{% endif %}">
-    <form class="mb-search-bar"
+  {# ── MB search panel ─────────────────────────────────────────────────── #}
+  <div id="mb-panel-{{ job_id }}" class="mb-panel {% if not show_mb_search %}hidden{% endif %}">
+    <form class="mb-search-row"
           hx-get="/jobs/{{ job_id }}/mb-search"
           hx-target="#mb-results-{{ job_id }}"
           hx-trigger="submit">
-      <input name="q" type="text" class="review-input"
+      <input class="rv-input" name="q" type="text"
              value="{{ (meta.artist or '') ~ ' ' ~ (meta.title or '') }}"
              placeholder="Artist - Title" autocomplete="off">
-      <button type="submit" class="btn btn-ghost btn-sm">Search</button>
+      <button type="submit" class="btn btn-sm btn-ghost">
+        Search <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
     </form>
-    <div id="mb-results-{{ job_id }}"></div>
+    <div id="mb-results-{{ job_id }}" class="mb-results"></div>
   </div>
 
 </div>

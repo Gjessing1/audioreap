@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Search — audioreap{% endblock %}
-
 {% block content %}
+
 <form id="search-form" class="search-bar"
       hx-get="/search/results"
       hx-trigger="input changed delay:350ms from:#q, submit"
@@ -24,23 +24,22 @@
 
 <div class="search-columns">
   <div class="search-col">
-    <div class="section-title">In your library</div>
+    <div class="section-title">Library</div>
     <div id="local-results">
       {% if q %}
         {% include "partials/local_results.html" %}
       {% else %}
-        <p class="empty" style="padding:24px 0;text-align:left">Search your library above.</p>
+        <p class="empty" style="text-align:left;padding:20px 0">Your library matches appear here.</p>
       {% endif %}
     </div>
   </div>
-
   <div class="search-col">
     <div class="section-title">YouTube</div>
     <div id="cloud-results">
       {% if q %}
         {% include "partials/cloud_results.html" %}
       {% else %}
-        <p class="empty" style="padding:24px 0;text-align:left">Hit <strong>Search</strong> to find music on YouTube.</p>
+        <p class="empty" style="text-align:left;padding:20px 0">Hit <strong>Search</strong> to find music on YouTube.</p>
       {% endif %}
     </div>
   </div>
