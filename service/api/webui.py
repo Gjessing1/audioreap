@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
@@ -211,6 +212,178 @@ async def cancel_job(
 
     return templates.TemplateResponse(
         request, "partials/job_card.html", {"job": _job_to_model(row)}
+    )
+
+
+# ── Review workflow (needs_review state) ─────────────────────────────────────
+
+
+@router.get("/jobs/{job_id}/review-card", response_class=HTMLResponse)
+async def review_card(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise HTTPException(404)
+    if row.state != "needs_review" or not row.resolved_metadata_json:
+        raise HTTPException(400, "Job not in needs_review state")
+    meta = json.loads(row.resolved_metadata_json)
+    return templates.TemplateResponse(
+        request, "partials/review_card.html",
+        {"job_id": job_id, "meta": meta, "query": row.query or ""},
+    )
+
+
+@router.post("/jobs/{job_id}/approve", response_class=HTMLResponse)
+async def approve_job(
+    request: Request,
+    job_id: str,
+    title: str = Form(""),
+    artist: str = Form(""),
+    album: str = Form(""),
+    year: str = Form(""),
+    track_number: str = Form(""),
+    mb_recording_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from service.acquisition.pipeline import place_approved_track
+
+    overrides: dict[str, str | None] = {
+        "title": title or None,
+        "artist": artist or None,
+        "album": album or None,
+        "year": year or None,
+        "track_number": track_number or None,
+        "mb_recording_id": mb_recording_id or None,
+    }
+
+    try:
+        await place_approved_track(job_id, overrides, session)
+        await session.commit()
+    except Exception as exc:
+        logger.error("Approve job %s failed: %s", job_id, exc)
+        row = await session.get(AcquisitionJobRow, job_id)
+        if row:
+            row.error = str(exc)[:200]
+            await session.commit()
+        row = await session.get(AcquisitionJobRow, job_id)
+        meta = json.loads(row.resolved_metadata_json) if row and row.resolved_metadata_json else {}
+        return templates.TemplateResponse(
+            request, "partials/review_card.html",
+            {
+                "job_id": job_id, "meta": meta,
+                "query": row.query if row else "",
+                "error": str(exc),
+            },
+        )
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    return templates.TemplateResponse(
+        request, "partials/job_card.html", {"job": _job_to_model(row)}
+    )
+
+
+@router.post("/jobs/{job_id}/reject", response_class=HTMLResponse)
+async def reject_job(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise HTTPException(404)
+
+    if row.staging_path:
+        try:
+            p = Path(row.staging_path)
+            if p.exists():
+                safe_trash(p, settings.staging_dir / ".trash")
+            parent = p.parent
+            for _ in range(3):
+                if parent == settings.staging_dir or not parent.exists():
+                    break
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+        except Exception as exc:
+            logger.debug("Reject cleanup failed: %s", exc)
+
+    row.state = "failed"
+    row.failure_class = "permanent"
+    row.error = "Rejected by user"
+    row.staging_path = None
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.commit()
+    return HTMLResponse("")
+
+
+@router.get("/jobs/{job_id}/mb-search", response_class=HTMLResponse)
+async def job_mb_search(
+    request: Request,
+    job_id: str,
+    q: str = "",
+) -> HTMLResponse:
+    if not q.strip():
+        return HTMLResponse("")
+    from service.metadata.musicbrainz import search_recordings_free
+    results = await asyncio.to_thread(
+        search_recordings_free, q.strip(), 6, settings.cache_dir
+    )
+    return templates.TemplateResponse(
+        request, "partials/mb_candidates.html",
+        {"results": results, "job_id": job_id},
+    )
+
+
+@router.post("/jobs/{job_id}/mb-apply", response_class=HTMLResponse)
+async def job_mb_apply(
+    request: Request,
+    job_id: str,
+    recording_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Fetch a specific MB recording and update this job's resolved metadata."""
+    if not recording_id.strip():
+        raise HTTPException(400, "recording_id required")
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None or not row.resolved_metadata_json:
+        raise HTTPException(404)
+
+    from service.metadata.musicbrainz import get_recording_by_id
+    mb = await asyncio.to_thread(
+        get_recording_by_id, recording_id.strip(), settings.cache_dir
+    )
+    if mb is None:
+        raise HTTPException(502, "Could not fetch recording from MusicBrainz")
+
+    meta = json.loads(row.resolved_metadata_json)
+    meta["mb_recording_id"] = mb.recording_id
+    meta["mb_release_id"] = mb.release_id
+    meta["mb_artist_id"] = mb.artist_id
+    meta["mb_artist_sort"] = mb.artist_sort
+    meta["mb_match_source"] = "manual"
+    meta["title"] = mb.title or meta.get("title")
+    meta["artist"] = mb.artist or meta.get("artist")
+    meta["albumartist"] = mb.artist or meta.get("albumartist")
+    if mb.album:
+        meta["album"] = mb.album
+    if mb.year:
+        meta["year"] = mb.year
+    if mb.track_number:
+        meta["track_number"] = mb.track_number
+
+    row.resolved_metadata_json = json.dumps(meta)
+    row.error = None
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.commit()
+
+    return templates.TemplateResponse(
+        request, "partials/review_card.html",
+        {"job_id": job_id, "meta": meta, "query": row.query or "", "show_mb_search": True},
     )
 
 
@@ -1217,9 +1390,20 @@ async def staging_page(
             .order_by(AcquisitionJobRow.updated_at.desc())
         )
     ).scalars().all()
+    needs_review_count = (
+        await session.execute(
+            select(func.count(AcquisitionJobRow.id))
+            .where(AcquisitionJobRow.state == "needs_review")
+        )
+    ).scalar_one()
     return templates.TemplateResponse(
         request, "staging.html",
-        {"active": "staging", "staged": rows, "threshold": settings.staging_quality_threshold},
+        {
+            "active": "staging",
+            "staged": rows,
+            "threshold": settings.staging_quality_threshold,
+            "needs_review_count": needs_review_count,
+        },
     )
 
 

@@ -1,0 +1,116 @@
+<div class="card card-review" id="job-{{ job_id }}">
+
+  {# Header: thumbnail + match confidence #}
+  <div class="review-header">
+    {% if meta.thumbnail_url %}
+    <img class="review-thumb" src="{{ meta.thumbnail_url }}" alt="" loading="lazy">
+    {% else %}
+    <div class="review-thumb review-thumb-empty">♪</div>
+    {% endif %}
+    <div class="review-header-info">
+      <div class="review-badges">
+        {% if meta.mb_match_source == 'acoustid' %}
+        <span class="badge badge-done">AcoustID ✓ {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}%</span>
+        {% elif meta.mb_match_source == 'text_search' %}
+        <span class="badge badge-busy">Text match</span>
+        {% elif meta.mb_match_source == 'manual' %}
+        <span class="badge badge-done">Manual MB link</span>
+        {% else %}
+        <span class="badge badge-fail">No MB match</span>
+        {% endif %}
+        {% if meta.mb_recording_id %}
+        <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}"
+           target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
+        {% endif %}
+        {% if meta.force_staging_reason %}
+        <span class="badge badge-warn">⚠ Mismatch</span>
+        {% endif %}
+      </div>
+      {% if query %}
+      <div class="review-source-query">{{ query }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Mismatch warning #}
+  {% if meta.force_staging_reason %}
+  <div class="review-warning">
+    ⚠ {{ meta.force_staging_reason }}
+  </div>
+  {% endif %}
+
+  {# Error from failed approve attempt #}
+  {% if error %}
+  <div class="review-warning review-warning-error">Error: {{ error }}</div>
+  {% endif %}
+
+  {# Editable metadata form #}
+  <form hx-post="/jobs/{{ job_id }}/approve"
+        hx-target="#job-{{ job_id }}"
+        hx-swap="outerHTML">
+
+    <div class="review-fields">
+      <div class="review-field">
+        <label class="field-label">Title</label>
+        <input name="title" value="{{ meta.title or '' }}" class="review-input" autocomplete="off">
+      </div>
+      <div class="review-field">
+        <label class="field-label">Artist</label>
+        <input name="artist" value="{{ meta.artist or '' }}" class="review-input" autocomplete="off">
+      </div>
+      <div class="review-field">
+        <label class="field-label">Album</label>
+        <input name="album" value="{{ meta.album or '' }}" class="review-input" autocomplete="off"
+               placeholder="Leave blank for Singles">
+      </div>
+      <div class="review-field-row">
+        <div class="review-field">
+          <label class="field-label">Year</label>
+          <input name="year" value="{{ meta.year or '' }}" type="number"
+                 class="review-input" autocomplete="off" placeholder="YYYY">
+        </div>
+        <div class="review-field">
+          <label class="field-label">Track #</label>
+          <input name="track_number" value="{{ meta.track_number or '' }}" type="number"
+                 class="review-input" autocomplete="off">
+        </div>
+      </div>
+      <div class="review-field">
+        <label class="field-label">MB Recording ID</label>
+        <input name="mb_recording_id" value="{{ meta.mb_recording_id or '' }}"
+               class="review-input review-input-mono" autocomplete="off"
+               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+      </div>
+    </div>
+
+    <div class="review-actions">
+      <button type="submit" class="btn">Approve &amp; Place</button>
+      <button type="button" class="btn btn-ghost btn-sm"
+              onclick="document.getElementById('mb-panel-{{ job_id }}').classList.toggle('hidden')">
+        Search MB
+      </button>
+      <button type="button" class="btn btn-ghost btn-sm review-reject-btn"
+              hx-post="/jobs/{{ job_id }}/reject"
+              hx-target="#job-{{ job_id }}"
+              hx-swap="outerHTML"
+              hx-confirm="Reject this track? The staged file will be trashed.">
+        Reject
+      </button>
+    </div>
+  </form>
+
+  {# Inline MB search — hidden until Search MB is clicked #}
+  <div id="mb-panel-{{ job_id }}" class="mb-search-panel {% if not show_mb_search %}hidden{% endif %}">
+    <form class="mb-search-bar"
+          hx-get="/jobs/{{ job_id }}/mb-search"
+          hx-target="#mb-results-{{ job_id }}"
+          hx-trigger="submit">
+      <input name="q" type="text" class="review-input"
+             value="{{ (meta.artist or '') ~ ' ' ~ (meta.title or '') }}"
+             placeholder="Artist - Title" autocomplete="off">
+      <button type="submit" class="btn btn-ghost btn-sm">Search</button>
+    </form>
+    <div id="mb-results-{{ job_id }}"></div>
+  </div>
+
+</div>

@@ -1,12 +1,13 @@
 {% set state_badge = {
-  'done': 'badge-done',
-  'failed': 'badge-fail',
-  'queued': 'badge-queued',
-  'cancelled': 'badge-fail',
-  'staged': 'badge-staged',
+  'done':         'badge-done',
+  'failed':       'badge-fail',
+  'queued':       'badge-queued',
+  'cancelled':    'badge-fail',
+  'staged':       'badge-staged',
+  'needs_review': 'badge-review',
 }.get(job.state, 'badge-busy') %}
 <div class="card" id="job-{{ job.id }}"
-     {% if job.state not in ('done', 'failed', 'cancelled') %}
+     {% if job.state not in ('done', 'failed', 'cancelled', 'needs_review', 'staged') %}
      hx-get="/jobs/status/{{ job.id }}"
      hx-trigger="every 3s"
      hx-target="#job-{{ job.id }}"
@@ -16,16 +17,22 @@
     <div class="card-title">{{ job.track_ref.title }}</div>
     <div class="card-sub">{{ job.track_ref.artist }} · {{ job.id[:8] }}</div>
     {% if job.error %}
-    <div class="card-sub" style="color:{% if job.state == 'staged' %}var(--warn){% else %}var(--danger){% endif %}">
+    <div class="card-sub" style="color:{% if job.state in ('needs_review', 'staged') %}var(--warn){% else %}var(--danger){% endif %}">
       {{ job.error[:120] }}
     </div>
     {% endif %}
   </div>
   <div class="card-actions">
-    <span class="badge {{ state_badge }}">{{ job.state }}</span>
+    <span class="badge {{ state_badge }}">{{ job.state.replace('_', ' ') }}</span>
     {% if job.state == 'done' and job.track_ref.status == 'available' %}
     <button class="play-btn" data-id="{{ job.track_ref.internal_id }}"
             onclick="playTrack('{{ job.track_ref.internal_id }}', '{{ job.track_ref.title|e }}')">▶</button>
+    {% endif %}
+    {% if job.state == 'needs_review' %}
+    <button class="btn btn-sm btn-primary"
+            hx-get="/jobs/{{ job.id }}/review-card"
+            hx-target="#job-{{ job.id }}"
+            hx-swap="outerHTML">Review →</button>
     {% endif %}
     {% if job.state in ('failed', 'queued') %}
     <button class="btn btn-sm btn-ghost"
@@ -33,7 +40,7 @@
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML">Retry</button>
     {% endif %}
-    {% if job.state in ('queued', 'downloading', 'processing') %}
+    {% if job.state in ('queued', 'downloading', 'processing', 'tagging', 'importing') %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/cancel/{{ job.id }}"
             hx-target="#job-{{ job.id }}"

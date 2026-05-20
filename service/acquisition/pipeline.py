@@ -1,12 +1,15 @@
-"""Acquisition pipeline: download → remux → tag → place → index → scan.
+"""Acquisition pipeline: download → identify (needs_review) → approve → place → index → scan.
 
-Each stage updates the job row so the UI can show live progress.
-All filesystem operations happen under /tmp-acquire, then a single atomic
-os.rename moves the finished file into /music.
+Phase 1 (run_acquisition): download, remux, fingerprint, MB lookup, place in staging,
+store resolved_metadata_json on job row, set state needs_review.
+
+Phase 2 (place_approved_track): called from the API when the user approves the review.
+Writes final tags, moves file from staging to /music, indexes, triggers Navidrome scan.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -22,12 +25,9 @@ from service.core.models import TrackCandidate
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
 from service.library.layout import track_path
-from service.library.tagger import (
-    compute_replaygain, has_cover_art, read_tags,
-    write_cover_jpg, write_replaygain, write_tags,
-)
-from service.metadata.quality import compute_quality_score
+from service.library.tagger import has_cover_art, read_tags, write_cover_jpg, write_tags
 from service.library.writer import atomic_place
+from service.metadata.quality import compute_quality_score
 from service.providers.base import Provider
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,6 @@ async def _find_local_match(
     from service.db.schema import Track
     from service.search.matcher import is_confident_match
 
-    # Normalize the candidate title to strip noise before searching the DB
     norm_title = normalize(candidate.title)
     first_word = norm_title.split()[0] if norm_title.split() else norm_title
     stmt = (
@@ -123,35 +122,28 @@ async def run_acquisition(
     tmp_acquire_dir: Path,
     session: AsyncSession,
     scan_trigger: ScanTrigger | None = None,
-) -> Path | None:
-    """Returns the final library path on success, None on failure/staging."""
-    """Execute the full acquisition pipeline for one track.
+) -> None:
+    """Phase 1 (identify): download, fingerprint, MB lookup, stage for review.
 
-    Updates the AcquisitionJobRow at each stage. Never raises — all errors
-    are written to the job row so the caller can move on.
+    Places the file in /music-staging and stores resolved_metadata_json on the
+    job row. Sets state to needs_review. Never raises — errors go to the job row.
     """
-    if scan_trigger is None:
-        from service.navidrome.client import trigger_scan
-        scan_trigger = trigger_scan
-
-    tmp_acquire_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── 0. Dedup check — skip if confident local match exists ──────────────
+    # ── 0. Dedup check ────────────────────────────────────────────────────────
     try:
         local_match = await _find_local_match(session, candidate)
         if local_match is not None:
-            logger.info(
-                "Dedup: skipping acquisition — local match exists: %s", local_match
-            )
+            logger.info("Dedup: skipping — local match exists: %s", local_match)
             await _set_state(session, job_id, "done", track_id=local_match)
             return
-    except Exception as dedup_exc:
-        logger.debug("Dedup check failed (continuing): %s", dedup_exc)
+    except Exception as exc:
+        logger.debug("Dedup check failed (continuing): %s", exc)
+
+    tmp_acquire_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(dir=tmp_acquire_dir) as tmp_str:
         tmp_dir = Path(tmp_str)
 
-        # ── 1. Download ────────────────────────────────────────────────────
+        # ── 1. Download ────────────────────────────────────────────────────────
         await _set_state(session, job_id, "downloading")
         try:
             fetch_result = await provider.fetch(provider_ref, tmp_dir)
@@ -162,9 +154,6 @@ async def run_acquisition(
             return
 
         audio_path = fetch_result.file_path
-
-        # Extract richer metadata from yt-dlp's full download info dict.
-        # The flat search extract often lacks artist/album; full info is authoritative.
         _rm = fetch_result.raw_metadata
 
         def _rm_str(key: str) -> str | None:
@@ -172,16 +161,14 @@ async def run_acquisition(
             s = str(v).strip() if v is not None else ""
             return s if s and s.lower() not in ("none", "unknown") else None
 
-        _artist_from_meta = _rm_str("artist")   # only set for YouTube Music
+        _artist_from_meta = _rm_str("artist")
         _title_raw = _rm_str("track") or _rm_str("title")
         _uploader = _rm_str("uploader") or _rm_str("channel")
 
         if _artist_from_meta:
-            # YouTube Music: trust the dedicated artist/track fields
             _fetch_title = _title_raw
             _fetch_artist = _artist_from_meta
         elif _title_raw and " - " in _title_raw:
-            # Regular YouTube: split "Artist - Title" convention in video title
             _split = _title_raw.split(" - ", 1)
             _fetch_artist = _split[0].strip()
             _fetch_title = _split[1].strip()
@@ -193,7 +180,7 @@ async def run_acquisition(
         _ry = _rm.get("release_year")
         _fetch_year: int | None = int(_ry) if isinstance(_ry, (int, float)) and _ry else None
 
-        # ── 2. Remux if needed ─────────────────────────────────────────────
+        # ── 2. Remux if needed ─────────────────────────────────────────────────
         await _set_state(session, job_id, "processing")
         if audio_path.suffix.lower() in _REMUX_CONTAINERS:
             try:
@@ -203,8 +190,7 @@ async def run_acquisition(
                 logger.error("Remux failed %s: %s", job_id, exc)
                 return
 
-        # ── 3. Read tags and decide final metadata ─────────────────────────
-        # Priority: file tags > yt-dlp full info > search candidate
+        # ── 3. Read tags + merge ───────────────────────────────────────────────
         await _set_state(session, job_id, "tagging")
         tagged = read_tags(audio_path)
         title = (tagged.title if tagged else None) or _fetch_title or candidate.title
@@ -215,32 +201,23 @@ async def run_acquisition(
         disc_number = (tagged.disc_number if tagged else None)
         duration = (tagged.duration_seconds if tagged else None) or candidate.duration_seconds
 
-        # ── 3a. MusicBrainz lookup — AcoustID first, text search fallback ────
-        #
-        # When the candidate already has album+track_number (set by the album
-        # coordinator job from MB discography data), those are authoritative for
-        # path placement. MB match is still done for recording_id/artwork, but
-        # we never let it move the file to a different album folder.
+        # When album coordinator locked album+track_number, treat them as authoritative
         candidate_album_locked = bool(candidate.album and candidate.track_number)
 
-        # ── 3b. Track identity validation ─────────────────────────────────────
-        # When the album coordinator locked duration from MB, a large discrepancy
-        # means we almost certainly downloaded the wrong video (edit, different song, clip).
-        force_staging = False
+        # ── 3a. Wrong-track detection (duration delta) ─────────────────────────
         force_staging_reason: str | None = None
         _got_dur = tagged.duration_seconds if tagged else None
         if candidate_album_locked and candidate.duration_seconds and _got_dur:
             _delta = abs(_got_dur - candidate.duration_seconds)
             _tol = max(30, int(candidate.duration_seconds * 0.2))
             if _delta > _tol:
-                force_staging = True
                 force_staging_reason = (
-                    f"duration mismatch: expected ~{candidate.duration_seconds}s, "
-                    f"got {_got_dur}s — likely wrong track"
+                    f"Duration mismatch: expected ~{candidate.duration_seconds}s, "
+                    f"got {_got_dur}s — may be wrong track"
                 )
                 logger.warning("Job %s %r: %s", job_id, candidate.title, force_staging_reason)
 
-        # Apply candidate's pre-resolved fields as defaults before MB lookup
+        # Apply candidate's pre-resolved fields (from album coordinator)
         if candidate.album:
             album = candidate.album
         if candidate.year:
@@ -253,29 +230,36 @@ async def run_acquisition(
         mb_artist_id: str | None = None
         mb_artist_sort: str | None = None
         mb_original_year: int | None = None
-        artwork_bytes: bytes | None = None
+        acoustid_confidence: float | None = None
+        mb_match_source: str | None = None
+
+        # ── 3b. AcoustID fingerprint + MB lookup ───────────────────────────────
         try:
             from service.metadata.acoustid import acoustid_to_mbid
             from service.metadata.musicbrainz import get_recording_by_id, lookup_recording
 
             mb: object = None
             mb_from_acoustid = False
-            acoustid_mbid: str | None = None
+
             if settings.acoustid_api_key:
-                acoustid_mbid = await acoustid_to_mbid(audio_path, settings.acoustid_api_key)
-                if acoustid_mbid:
+                acoustid_result = await acoustid_to_mbid(audio_path, settings.acoustid_api_key)
+                if acoustid_result:
+                    acoustid_mbid, acoustid_confidence = acoustid_result
                     mb = await asyncio.to_thread(
                         get_recording_by_id, acoustid_mbid, settings.cache_dir
                     )
                     if mb is not None:
                         mb_from_acoustid = True
-                    # AcoustID fingerprint says this is a different recording than expected
+                        mb_match_source = "acoustid"
+                    # Fingerprint says different recording than album coordinator expected
                     if candidate.mb_recording_id and acoustid_mbid != candidate.mb_recording_id:
-                        force_staging = True
-                        force_staging_reason = (
-                            f"fingerprint mismatch: expected recording "
-                            f"{candidate.mb_recording_id[:8]}…, "
+                        mismatch_note = (
+                            f"Fingerprint mismatch: expected {candidate.mb_recording_id[:8]}…, "
                             f"got {acoustid_mbid[:8]}…"
+                        )
+                        force_staging_reason = (
+                            f"{force_staging_reason} | {mismatch_note}"
+                            if force_staging_reason else mismatch_note
                         )
                         logger.warning(
                             "Job %s %r: AcoustID mismatch (expected %s, got %s)",
@@ -284,17 +268,14 @@ async def run_acquisition(
 
             if mb is None:
                 mb = await asyncio.to_thread(
-                    lookup_recording, title, artist, duration,
-                    cache_dir=settings.cache_dir,
+                    lookup_recording, title, artist, duration, cache_dir=settings.cache_dir,
                 )
+                if mb is not None:
+                    mb_match_source = "text_search"
 
             if mb is not None:
                 resolved_recording_id = mb.recording_id  # type: ignore[union-attr]
-
-                # When the candidate has a recording ID locked by the album coordinator
-                # (from MB discography), only trust a different result from AcoustID
-                # fingerprinting — text search routinely returns the same song from a
-                # different release and must not silently swap a track's identity.
+                # When album coordinator locked a recording ID, only override via AcoustID fingerprint
                 if candidate.mb_recording_id and not mb_from_acoustid:
                     if resolved_recording_id != candidate.mb_recording_id:
                         logger.info(
@@ -309,58 +290,35 @@ async def run_acquisition(
                 mb_artist_id = mb.artist_id  # type: ignore[union-attr]
                 mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
                 mb_original_year = mb.original_year  # type: ignore[union-attr]
-                # Always take title/artist corrections from MB
                 title = mb.title or title  # type: ignore[union-attr]
                 artist = mb.artist or artist  # type: ignore[union-attr]
-                # Only take album/year/track_number from MB when candidate doesn't
-                # have them locked (i.e., came from a discography album acquire).
                 if not candidate_album_locked:
                     album = mb.album or album  # type: ignore[union-attr]
                     year = mb.year or year  # type: ignore[union-attr]
                     track_number = mb.track_number or track_number  # type: ignore[union-attr]
-                try:
-                    from service.metadata.artwork import fetch_artwork
-                    artwork_bytes = await fetch_artwork(
-                        release_mbid=mb_release_id,
-                        thumbnail_url=candidate.thumbnail_url,
-                        cache_dir=settings.cache_dir,
-                    )
-                except Exception as art_exc:
-                    logger.debug("Artwork fetch failed: %s", art_exc)
+
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
 
-        # Determine albumartist (always set — prevents Navidrome album splits).
-        # For album-locked candidates (from MB discography coordinator), lock albumartist
-        # to candidate.artist so all tracks land in the same folder even when MB corrects
-        # an individual track's artist to something like "George Harrison" on a Beatles album.
         albumartist = candidate.artist if candidate_album_locked else artist
         is_compilation = (album is not None) and albumartist.lower() in ("various artists", "various")
 
-        # Always write the final resolved tags (candidate fallback or MB-enriched)
-        try:
-            write_tags(
-                audio_path,
-                title=title,
-                artist=artist,
-                albumartist=albumartist,
-                album=album,
-                year=year,
-                original_year=mb_original_year,
-                track_number=track_number,
-                disc_number=disc_number,
-                artist_sort=mb_artist_sort,
-                compilation=is_compilation,
-                mb_recording_id=mb_recording_id,
-                mb_release_id=mb_release_id,
-                mb_artist_id=mb_artist_id,
-            )
-        except Exception as tag_exc:
-            logger.warning("Tag write failed for %s: %s", audio_path, tag_exc)
+        quality_score = compute_quality_score(
+            title=title,
+            artist=artist,
+            album=album,
+            year=year,
+            track_number=track_number,
+            musicbrainz_recording_id=mb_recording_id,
+            has_cover_art=False,
+        )
+
+        # ── 4. Place in staging (holding area for review) ─────────────────────
+        await _set_state(session, job_id, "importing")
 
         ext = audio_path.suffix.lstrip(".")
-        dest = track_path(
-            music_dir,
+        staging_dest = track_path(
+            settings.staging_dir,
             artist=artist,
             album=album,
             year=year,
@@ -371,125 +329,230 @@ async def run_acquisition(
             albumartist=albumartist,
         )
 
-        # ── 4. Idempotency check ───────────────────────────────────────────
-        if dest.exists():
-            logger.info("Track already exists at %s, skipping", dest)
-            track_id = make_id(artist=artist, title=title, duration_seconds=duration)
-            await _set_state(session, job_id, "done", track_id=track_id)
+        try:
+            await asyncio.to_thread(atomic_place, audio_path, staging_dest)
+        except Exception as exc:
+            await _set_state(session, job_id, "failed", failure_class="transient", error=str(exc))
+            logger.error("Staging placement failed %s: %s", job_id, exc)
             return
 
-        # ── 4b. Pre-placement quality score for staging decision ───────────
-        pre_score = compute_quality_score(
+        # ── 5. Store resolved metadata → needs_review ─────────────────────────
+        resolved_metadata = {
+            "title": title,
+            "artist": artist,
+            "albumartist": albumartist,
+            "album": album,
+            "year": year,
+            "original_year": mb_original_year,
+            "track_number": track_number,
+            "disc_number": disc_number,
+            "duration_seconds": duration,
+            "ext": ext,
+            "mb_recording_id": mb_recording_id,
+            "mb_release_id": mb_release_id,
+            "mb_artist_id": mb_artist_id,
+            "mb_artist_sort": mb_artist_sort,
+            "acoustid_confidence": acoustid_confidence,
+            "mb_match_source": mb_match_source,
+            "is_compilation": is_compilation,
+            "force_staging_reason": force_staging_reason,
+            "quality_score": quality_score,
+            "thumbnail_url": candidate.thumbnail_url,
+        }
+
+        row = await session.get(AcquisitionJobRow, job_id)
+        if row is not None:
+            row.state = "needs_review"
+            row.staging_path = str(staging_dest)
+            row.resolved_metadata_json = json.dumps(resolved_metadata)
+            if force_staging_reason:
+                row.error = force_staging_reason
+            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            await session.flush()
+
+        logger.info(
+            "Identify done (source=%s, quality=%.0f%%): %s → staged at %s",
+            mb_match_source or "none", quality_score * 100, job_id, staging_dest,
+        )
+
+
+async def place_approved_track(
+    job_id: str,
+    overrides: dict[str, str | None],
+    session: AsyncSession,
+    scan_trigger: ScanTrigger | None = None,
+) -> Path:
+    """Phase 2 (place): write tags, move staging → /music, index, scan.
+
+    Called from the API when the user approves a needs_review job.
+    User overrides from the review form take precedence over stored metadata.
+    Raises on file errors so the caller can keep the job in needs_review for retry.
+    """
+    from service.db.schema import Track as _Track
+    from service.navidrome.client import trigger_scan as _trigger_scan
+
+    if scan_trigger is None:
+        scan_trigger = _trigger_scan
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise ValueError(f"Job {job_id} not found")
+    if row.state != "needs_review":
+        raise ValueError(f"Job {job_id} is in state {row.state!r}, expected needs_review")
+    if not row.resolved_metadata_json:
+        raise ValueError(f"Job {job_id} has no resolved metadata")
+    if not row.staging_path:
+        raise ValueError(f"Job {job_id} has no staging path")
+
+    staging_path = Path(row.staging_path)
+    if not staging_path.exists():
+        raise FileNotFoundError(f"Staged file missing: {staging_path}")
+
+    meta: dict[str, object] = json.loads(row.resolved_metadata_json)
+
+    # Apply user-supplied overrides — non-empty string values win
+    for k in ("title", "artist", "album", "mb_recording_id", "mb_release_id"):
+        if k in overrides:
+            val = (overrides[k] or "").strip()
+            meta[k] = val or None
+    for k in ("year", "track_number", "disc_number"):
+        if k in overrides:
+            raw = (overrides[k] or "").strip()
+            if raw:
+                try:
+                    meta[k] = int(raw)
+                except (ValueError, TypeError):
+                    pass
+            else:
+                meta[k] = None
+
+    # Sync albumartist when artist was overridden but albumartist wasn't
+    if "artist" in overrides and "albumartist" not in overrides:
+        meta["albumartist"] = meta.get("artist")
+
+    title: str = str(meta.get("title") or "Unknown")
+    artist: str = str(meta.get("artist") or "Unknown")
+    albumartist: str = str(meta.get("albumartist") or artist)
+    album: str | None = meta.get("album") or None  # type: ignore[assignment]
+    year: int | None = meta.get("year")  # type: ignore[assignment]
+    original_year: int | None = meta.get("original_year")  # type: ignore[assignment]
+    track_number: int | None = meta.get("track_number")  # type: ignore[assignment]
+    disc_number: int | None = meta.get("disc_number")  # type: ignore[assignment]
+    mb_recording_id: str | None = meta.get("mb_recording_id") or None  # type: ignore[assignment]
+    mb_release_id: str | None = meta.get("mb_release_id") or None  # type: ignore[assignment]
+    mb_artist_id: str | None = meta.get("mb_artist_id") or None  # type: ignore[assignment]
+    mb_artist_sort: str | None = meta.get("mb_artist_sort") or None  # type: ignore[assignment]
+    is_compilation: bool = bool(meta.get("is_compilation", False))
+    duration_seconds: int | None = meta.get("duration_seconds")  # type: ignore[assignment]
+    ext: str = str(meta.get("ext") or staging_path.suffix.lstrip("."))
+
+    # Write final tags to the staging file
+    try:
+        await asyncio.to_thread(
+            write_tags,
+            staging_path,
             title=title,
             artist=artist,
+            albumartist=albumartist,
             album=album,
             year=year,
+            original_year=original_year,
             track_number=track_number,
-            musicbrainz_recording_id=mb_recording_id,
-            has_cover_art=artwork_bytes is not None,
+            disc_number=disc_number,
+            artist_sort=mb_artist_sort,
+            compilation=is_compilation,
+            mb_recording_id=mb_recording_id,
+            mb_release_id=mb_release_id,
+            mb_artist_id=mb_artist_id,
         )
-        threshold = settings.staging_quality_threshold
-        use_staging = settings.staging_dir != music_dir and (
-            force_staging
-            or (threshold > 0 and pre_score < threshold)
-        )
+    except Exception as exc:
+        logger.warning("Approve: tag write failed for %s: %s", staging_path, exc)
 
-        # ── 5. Atomic place (music or staging) ────────────────────────────
-        await _set_state(session, job_id, "importing")
+    # Compute final /music destination
+    dest = track_path(
+        settings.music_dir,
+        artist=artist,
+        album=album,
+        year=year,
+        track_number=track_number,
+        disc_number=disc_number,
+        title=title,
+        ext=ext,
+        albumartist=albumartist,
+    )
 
-        if use_staging:
-            # Place in staging — Navidrome won't see this until approved
-            staging_dest = track_path(
-                settings.staging_dir,
+    # Idempotency: file already in place
+    if dest.exists():
+        logger.info("Approve: track already at %s — marking done", dest)
+        hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
+        row.state = "done"
+        row.track_id = hash_track_id
+        row.staging_path = None
+        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.flush()
+        return dest
+
+    # Atomic place: staging → music
+    await asyncio.to_thread(atomic_place, staging_path, dest)
+
+    # Fetch and embed artwork (cached — cheap on second call)
+    artwork_bytes: bytes | None = None
+    if mb_release_id:
+        try:
+            from service.metadata.artwork import fetch_artwork
+            artwork_bytes = await fetch_artwork(
+                release_mbid=mb_release_id,
+                thumbnail_url=meta.get("thumbnail_url"),  # type: ignore[arg-type]
+                cache_dir=settings.cache_dir,
+            )
+        except Exception as exc:
+            logger.debug("Approve: artwork fetch failed: %s", exc)
+
+    if artwork_bytes:
+        try:
+            await asyncio.to_thread(write_tags, dest, artwork_bytes=artwork_bytes)
+        except Exception as exc:
+            logger.debug("Approve: artwork embed failed: %s", exc)
+        write_cover_jpg(dest.parent, artwork_bytes)
+
+    # Index in DB using a savepoint so failures don't roll back the outer transaction
+    hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
+    try:
+        async with session.begin_nested():
+            await index_file(session, dest)
+        hca = await asyncio.to_thread(has_cover_art, dest)
+        track_row = await session.get(_Track, hash_track_id)
+        if track_row is not None:
+            if mb_recording_id:
+                track_row.musicbrainz_recording_id = mb_recording_id
+            if track_row.file:
+                track_row.file.has_cover_art = hca
+            track_row.tag_quality_score = compute_quality_score(
+                title=title,
                 artist=artist,
                 album=album,
                 year=year,
                 track_number=track_number,
-                disc_number=disc_number,
-                title=title,
-                ext=ext,
-                albumartist=albumartist,
+                musicbrainz_recording_id=mb_recording_id,
+                has_cover_art=hca,
             )
-            try:
-                atomic_place(audio_path, staging_dest)
-            except Exception as exc:
-                await _set_state(session, job_id, "failed", failure_class="transient", error=str(exc))
-                logger.error("Staging placement failed %s: %s", job_id, exc)
-                return
-            if artwork_bytes:
-                try:
-                    write_tags(staging_dest, artwork_bytes=artwork_bytes)
-                except Exception:
-                    pass
-                write_cover_jpg(staging_dest.parent, artwork_bytes)
-            row = await session.get(AcquisitionJobRow, job_id)
-            if row is not None:
-                row.state = "staged"
-                row.staging_path = str(staging_dest)
-                if force_staging_reason:
-                    row.error = force_staging_reason
-                row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-                await session.flush()
-            if force_staging_reason:
-                logger.info("Staged (%s): %s → %s", force_staging_reason, job_id, staging_dest)
-            else:
-                logger.info(
-                    "Staged (quality=%.0f%% < %.0f%%): %s → %s",
-                    pre_score * 100, threshold * 100, job_id, staging_dest,
-                )
-            return
+            await session.flush()
+    except Exception as exc:
+        logger.warning("Approve: DB index failed for %s: %s", dest, exc)
 
-        try:
-            atomic_place(audio_path, dest)
-        except Exception as exc:
-            await _set_state(session, job_id, "failed", failure_class="transient", error=str(exc))
-            logger.error("Placement failed %s: %s", job_id, exc)
-            return
+    # Navidrome scan
+    try:
+        await scan_trigger()
+    except Exception as exc:
+        logger.warning("Approve: Navidrome scan failed: %s", exc)
 
-        # ── 5b. Embed artwork + write cover.jpg sidecar ────────────────────
-        if artwork_bytes:
-            try:
-                write_tags(dest, artwork_bytes=artwork_bytes)
-            except Exception as art_exc:
-                logger.debug("Artwork embed failed: %s", art_exc)
-            write_cover_jpg(dest.parent, artwork_bytes)
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is not None:
+        row.state = "done"
+        row.track_id = hash_track_id
+        row.staging_path = None
+        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.flush()
 
-        # ── 6. Index in DB ─────────────────────────────────────────────────
-        # Use a savepoint so index failures don't roll back the outer transaction
-        # (which is needed for the final _set_state call).
-        hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration)
-        try:
-            async with session.begin_nested():
-                await index_file(session, dest)
-
-            if mb_recording_id or artwork_bytes is not None:
-                from service.db.schema import Track as _Track
-                track_row = await session.get(_Track, hash_track_id)
-                if track_row is not None:
-                    if mb_recording_id:
-                        track_row.musicbrainz_recording_id = mb_recording_id
-                    hca = await asyncio.to_thread(has_cover_art, dest)
-                    if track_row.file:
-                        track_row.file.has_cover_art = hca
-                    track_row.tag_quality_score = compute_quality_score(
-                        title=title,
-                        artist=artist,
-                        album=album,
-                        year=year,
-                        track_number=track_number,
-                        musicbrainz_recording_id=mb_recording_id,
-                        has_cover_art=hca,
-                    )
-                    await session.flush()
-        except Exception as exc:
-            logger.warning("DB index failed for %s: %s", dest, exc)
-
-        # ── 7. Trigger Navidrome scan ──────────────────────────────────────
-        try:
-            await scan_trigger()
-        except Exception as exc:
-            logger.warning("Navidrome scan trigger failed: %s", exc)
-
-        await _set_state(session, job_id, "done", track_id=hash_track_id)
-        logger.info("Acquisition done: %s → %s", job_id, dest)
-        return dest
+    logger.info("Approved and placed: %s → %s", job_id, dest)
+    return dest

@@ -221,6 +221,48 @@ def lookup_recording(
     return best
 
 
+def search_recordings_free(
+    query: str,
+    limit: int = 8,
+    cache_dir: Path | None = None,
+) -> list[MBRecording]:
+    """Free-form MB recording search for the manual review lookup.
+
+    Tries to split 'Artist - Title' prefix; otherwise treats whole string as title.
+    Returns up to `limit` results without similarity filtering.
+    """
+    if " - " in query:
+        parts = query.split(" - ", 1)
+        artist_q, title_q = parts[0].strip(), parts[1].strip()
+    else:
+        artist_q, title_q = "", query.strip()
+
+    key = f"free:{_cache_key(title_q or query, artist_q)}"
+    raw: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw = _load_cache(cache_dir, key)
+
+    if raw is None:
+        try:
+            result = musicbrainzngs.search_recordings(
+                recording=title_q or query,
+                artistname=artist_q or None,
+                limit=limit,
+            )
+            raw = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MB free search failed for %r: %s", query, exc)
+            return []
+
+    return [
+        _parse_recording(rec)
+        for rec in (raw.get("recording-list") or [])
+        if isinstance(rec, dict)
+    ][:limit]
+
+
 def search_artists(
     name: str,
     limit: int = 10,

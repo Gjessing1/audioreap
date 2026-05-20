@@ -3,8 +3,15 @@
 {% block content %}
 <div class="page-header">
   <h1>Staging Queue</h1>
-  <p class="muted">Tracks below the quality threshold ({{ "%.0f"|format(threshold * 100) }}%) land here for review before Navidrome sees them.</p>
+  <p class="muted">Legacy staging queue (quality threshold). New downloads go through the inline review on the <a href="/jobs">Jobs</a> page.</p>
 </div>
+
+{% if needs_review_count %}
+<div class="review-warning" style="margin-bottom:16px">
+  {{ needs_review_count }} track{% if needs_review_count != 1 %}s{% endif %} waiting for review →
+  <a href="/jobs" style="color:inherit;font-weight:600">Go to Jobs</a>
+</div>
+{% endif %}
 
 {% if not staged %}
 <div class="empty-state">

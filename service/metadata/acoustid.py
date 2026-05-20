@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 _CONFIDENCE_THRESHOLD = 0.85
 
 
-async def acoustid_to_mbid(path: Path, api_key: str) -> str | None:
-    """Return the best MB recording MBID for the audio file, or None.
+async def acoustid_to_mbid(path: Path, api_key: str) -> tuple[str, float] | None:
+    """Return (mbid, confidence) for the best AcoustID match, or None.
 
     Wraps pyacoustid's blocking match() call in asyncio.to_thread.
     Confidence below 0.85 is treated as no match.
@@ -31,7 +31,7 @@ async def acoustid_to_mbid(path: Path, api_key: str) -> str | None:
     if not api_key:
         return None
 
-    def _sync() -> str | None:
+    def _sync() -> tuple[str, float] | None:
         try:
             import acoustid  # type: ignore[import-untyped]
         except ImportError:
@@ -57,7 +57,7 @@ async def acoustid_to_mbid(path: Path, api_key: str) -> str | None:
 
         if best_rid and best_score >= _CONFIDENCE_THRESHOLD:
             logger.info("AcoustID match: %s (score=%.2f)", best_rid, best_score)
-            return best_rid
+            return best_rid, best_score
 
         logger.debug("AcoustID: no confident match (best score=%.2f)", best_score)
         return None
