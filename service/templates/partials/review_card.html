@@ -108,8 +108,14 @@
       {% if staging_exists %}
       <button type="submit" class="btn btn-lg rv-approve">✓ Approve &amp; Place</button>
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="document.getElementById('mb-panel-{{ job_id }}').classList.toggle('hidden')">
+              onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}')">
         Search MB
+      </button>
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview staged file">▶ Play</button>
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="togglePanel('src-panel-{{ job_id }}','mb-panel-{{ job_id }}')">
+        Different source
       </button>
       {% else %}
       <button type="button" class="btn btn-lg btn-ghost"
@@ -132,6 +138,7 @@
   {# ── MB search panel ─────────────────────────────────────────────────── #}
   {% if staging_exists %}
   <div id="mb-panel-{{ job_id }}" class="mb-panel {% if not show_mb_search %}hidden{% endif %}">
+    <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Search MusicBrainz</div>
     <form class="mb-search-row"
           hx-get="/jobs/{{ job_id }}/mb-search"
           hx-target="#mb-results-{{ job_id }}"
@@ -144,6 +151,23 @@
       </button>
     </form>
     <div id="mb-results-{{ job_id }}" class="mb-results"></div>
+  </div>
+
+  {# ── Source replacement panel ──────────────────────────────────────────── #}
+  <div id="src-panel-{{ job_id }}" class="mb-panel hidden">
+    <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find a different YouTube version</div>
+    <form class="mb-search-row"
+          hx-get="/jobs/{{ job_id }}/search-source"
+          hx-target="#src-results-{{ job_id }}"
+          hx-trigger="submit">
+      <input class="rv-input" name="q" type="text"
+             value="{{ (meta.artist or '') ~ ' ' ~ (meta.title or '') }}"
+             placeholder="Search YouTube…" autocomplete="off">
+      <button type="submit" class="btn btn-sm btn-ghost">
+        Search <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </form>
+    <div id="src-results-{{ job_id }}"></div>
   </div>
   {% endif %}
 

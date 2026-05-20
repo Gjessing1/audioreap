@@ -1,0 +1,34 @@
+{% if candidates %}
+<div style="display:flex;flex-direction:column;gap:6px">
+  {% for c in candidates %}
+  <div class="card" style="padding:10px 12px">
+    {% if c.thumbnail_url %}
+    <img class="result-thumb" src="{{ c.thumbnail_url }}" alt="" loading="lazy">
+    {% else %}
+    <div class="result-thumb result-thumb-empty">♪</div>
+    {% endif %}
+    <div class="card-info">
+      <div class="card-title" style="font-size:13px">{{ c.title }}</div>
+      <div class="card-sub">
+        {{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}{% endif %}
+      </div>
+    </div>
+    <div class="card-actions">
+      <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
+      <form hx-post="/jobs/{{ job_id }}/replace-source"
+            hx-target="#job-{{ job_id }}"
+            hx-swap="outerHTML"
+            style="display:contents">
+        <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
+        <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
+        <button type="submit" class="btn btn-sm rv-approve" style="height:30px;font-size:12px"
+                hx-confirm="Replace staged file and re-download this version?">
+          Use this
+        </button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+{% elif q %}
+<p class="muted" style="font-size:12px;padding:4px 0">No results for "{{ q }}".</p>
+{% endif %}

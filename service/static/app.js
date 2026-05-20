@@ -110,6 +110,26 @@ window.acquireTrack = async function(btn) {
   }
 };
 
+/* ── Play staged (review) files ─────────────────────────────────────────── */
+window.playJobStaged = function(jobId, title) {
+  const key = 'staged:' + jobId;
+  if (currentId === key) { togglePlay(); return; }
+  currentId = key;
+  audio.src = '/jobs/' + jobId + '/stream';
+  playerTitle.textContent = title + ' (staged)';
+  playerBar.classList.remove('hidden');
+  audio.play().catch(() => {});
+  updatePlayBtns();
+};
+
+/* ── Toggle panels mutually exclusive ───────────────────────────────────── */
+window.togglePanel = function(showId, hideId) {
+  const show = document.getElementById(showId);
+  const hide = document.getElementById(hideId);
+  if (hide) hide.classList.add('hidden');
+  if (show) show.classList.toggle('hidden');
+};
+
 /* ── Batch approve checkboxes ────────────────────────────────────────────── */
 function _updateBatchCount() {
   const toolbar = document.getElementById('batch-toolbar');

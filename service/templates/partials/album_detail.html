@@ -1,0 +1,138 @@
+{% set ntracks = album.tracks|length %}
+{% set cover_track = namespace(value=None) %}
+{% for t in album.tracks %}{% if t.file and cover_track.value is none %}{% set cover_track.value = t %}{% endif %}{% endfor %}
+
+<div class="card card-review" id="album-{{ album.id }}">
+
+  {# ── Album header ──────────────────────────────────────────────────────── #}
+  <div class="rv-header">
+    <div class="rv-art rv-art--lg">
+      {% if cover_track.value %}
+      <img src="/library/tracks/{{ cover_track.value.id }}/cover-art"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+           style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">
+      <div style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
+      {% else %}
+      <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
+      {% endif %}
+    </div>
+    <div class="rv-info">
+      <div class="rv-badges">
+        {% if album.musicbrainz_release_id %}
+        <span class="badge badge-done">MB ✓</span>
+        <a href="https://musicbrainz.org/release/{{ album.musicbrainz_release_id }}"
+           target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
+        {% endif %}
+        <span class="badge badge-queued">{{ ntracks }} track{% if ntracks != 1 %}s{% endif %}</span>
+        {% if saved %}<span class="badge badge-done">Saved ✓</span>{% endif %}
+      </div>
+      <div style="font-size:13px;color:var(--t2);margin-top:4px">{{ album.artist.name }}</div>
+      {# Fetch cover button #}
+      {% if album.musicbrainz_release_id %}
+      <div style="margin-top:8px">
+        <span class="fetch-art-btn">
+          <button class="btn btn-sm btn-ghost"
+                  hx-post="/library/albums/{{ album.id }}/cover/fetch"
+                  hx-target="closest .fetch-art-btn"
+                  hx-swap="innerHTML" style="font-size:11px">
+            Fetch cover from MusicBrainz
+            <span class="htmx-indicator"><span class="spinner"></span></span>
+          </button>
+        </span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Edit album metadata ───────────────────────────────────────────────── #}
+  <form class="rv-form" style="padding-top:0;border-top:1px solid var(--b1)"
+        hx-post="/library/albums/{{ album.id }}/update-meta"
+        hx-target="#album-{{ album.id }}"
+        hx-swap="outerHTML">
+    <div class="rv-grid" style="grid-template-columns:1fr 80px;gap:10px 12px">
+      <div class="rv-field" style="grid-column:1">
+        <label class="rv-label">Album title</label>
+        <input class="rv-input" name="title" value="{{ album.title }}" autocomplete="off">
+      </div>
+      <div class="rv-field">
+        <label class="rv-label">Year</label>
+        <input class="rv-input" name="year" type="number" value="{{ album.year or '' }}" autocomplete="off">
+      </div>
+    </div>
+    <div class="rv-actions">
+      <button type="submit" class="btn rv-approve" style="height:36px;font-size:13px">Save album</button>
+      <button type="button" class="btn btn-sm btn-ghost"
+              hx-delete="/library/albums/{{ album.id }}"
+              hx-target="#album-{{ album.id }}"
+              hx-swap="outerHTML swap:0.3s"
+              hx-confirm="Trash all tracks in this album?"
+              style="color:var(--danger)">Delete album</button>
+      <button type="button" class="btn btn-sm rv-reject"
+              hx-get="/library/albums/list"
+              hx-target="#album-{{ album.id }}"
+              hx-swap="outerHTML">Close</button>
+    </div>
+  </form>
+
+  {# ── Track list ────────────────────────────────────────────────────────── #}
+  <div style="border-top:1px solid var(--b1);padding:14px 16px">
+    <div class="section-title" style="margin:0 0 10px">Tracks</div>
+    <div class="track-list">
+      {% for track in album.tracks | sort(attribute='track_number') %}
+      {% set safe_id = track.id | replace(':', '_') %}
+      <div class="track-row" id="altrack-{{ safe_id }}">
+        <span class="track-num">{{ track.track_number or '—' }}</span>
+        {% if track.file %}
+        <button class="play-btn" style="width:26px;height:26px;min-width:26px;min-height:26px;font-size:10px"
+                onclick="playTrack('{{ track.id }}', '{{ track.title|e }}')">▶</button>
+        {% endif %}
+        <span class="track-name">{{ track.title }}</span>
+        <span class="track-dur" style="font-family:var(--font-mono);font-size:11px">
+          {% if track.file and track.file.bitrate_kbps %}{{ track.file.bitrate_kbps }}k{% endif %}
+        </span>
+        <button class="btn btn-sm btn-ghost"
+                hx-get="/library/tracks/{{ track.id }}/edit-card"
+                hx-target="#altrack-{{ safe_id }}"
+                hx-swap="outerHTML"
+                style="flex-shrink:0">Edit</button>
+      </div>
+      {% else %}
+      <p class="muted" style="font-size:13px">No tracks.</p>
+      {% endfor %}
+    </div>
+
+    {# Compare with MB if release ID known #}
+    {% if album.musicbrainz_release_id %}
+    <div style="margin-top:12px">
+      <button class="btn btn-sm btn-ghost"
+              hx-get="/library/albums/{{ album.id }}/mb-compare"
+              hx-target="#mb-compare-{{ album.id }}"
+              hx-swap="innerHTML">
+        Compare with MusicBrainz tracklist
+        <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+      <div id="mb-compare-{{ album.id }}" style="margin-top:10px"></div>
+    </div>
+    {% endif %}
+
+    {# Merge with another album #}
+    <div style="margin-top:12px">
+      <button class="btn btn-sm btn-ghost"
+              onclick="document.getElementById('merge-panel-{{ album.id }}').classList.toggle('hidden')"
+              style="font-size:11px">Merge another album into this one</button>
+      <div id="merge-panel-{{ album.id }}" class="hidden" style="margin-top:8px">
+        <form hx-get="/library/albums/list"
+              hx-trigger="input changed delay:400ms from:#merge-q-{{ album.id }}"
+              hx-target="#merge-results-{{ album.id }}"
+              hx-include="#merge-q-{{ album.id }}">
+          <input id="merge-q-{{ album.id }}" name="q" type="search" class="rv-input"
+                 placeholder="Search album to merge into this one…" style="margin-bottom:8px">
+        </form>
+        <div id="merge-results-{{ album.id }}" class="muted" style="font-size:12px">
+          Type to search…
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>

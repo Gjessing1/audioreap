@@ -804,6 +804,16 @@ async def library_page(
         )
     ).scalar_one()
 
+    low_bitrate_count = (
+        await session.execute(
+            select(func.count(TrackFile.id))
+            .where(
+                TrackFile.bitrate_kbps.isnot(None),
+                TrackFile.bitrate_kbps < settings.min_bitrate_kbps,
+            )
+        )
+    ).scalar_one()
+
     return templates.TemplateResponse(
         request, "library.html",
         {
@@ -813,13 +823,275 @@ async def library_page(
                 "no_mbid": no_mbid_count,
                 "no_art": no_art_count,
                 "low_quality": low_quality_count,
+                "low_bitrate": low_bitrate_count,
             },
-            "low_quality_tracks": low_quality,
             "recent": [_track_to_ref(r) for r in recent_rows],
             "settings_music_dir": str(settings.music_dir),
             "needs_review_count": needs_review_count,
         },
     )
+
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_staged_job(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Stream a staged audio file for preview during review."""
+    from fastapi.responses import FileResponse
+    row = await session.get(AcquisitionJobRow, job_id)
+    if not row or not row.staging_path:
+        raise HTTPException(404)
+    path = Path(row.staging_path)
+    if not path.exists():
+        raise HTTPException(404)
+    ext = path.suffix.lower()
+    media_map = {".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac",
+                 ".opus": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac"}
+    return FileResponse(path, media_type=media_map.get(ext, "audio/ogg"))
+
+
+@router.get("/jobs/{job_id}/search-source", response_class=HTMLResponse)
+async def job_search_source(
+    request: Request,
+    job_id: str,
+    q: str = "",
+) -> HTMLResponse:
+    """Search YouTube for an alternative source to replace the staged file."""
+    candidates: list[dict[str, object]] = []
+    if q.strip():
+        try:
+            from service.core.models import SearchQuery
+            from service.providers import get as get_provider
+            import service.providers.ytdlp  # noqa
+            provider = get_provider("ytdlp")()
+            async for c in provider.search(SearchQuery(q=q.strip(), limit=8)):
+                candidates.append({
+                    "title": c.title, "artist": c.artist,
+                    "duration_seconds": c.duration_seconds,
+                    "provider_ref": c.provider_ref,
+                    "thumbnail_url": c.thumbnail_url,
+                    "candidate_json": c.model_dump_json(),
+                })
+        except Exception as exc:
+            logger.warning("Source search failed: %s", exc)
+    return templates.TemplateResponse(
+        request, "partials/source_replace_results.html",
+        {"candidates": candidates, "q": q, "job_id": job_id},
+    )
+
+
+@router.post("/jobs/{job_id}/replace-source", response_class=HTMLResponse)
+async def replace_job_source(
+    request: Request,
+    job_id: str,
+    provider_ref: str = Form(...),
+    candidate_json: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Trash staged file, update provider_ref, re-queue download."""
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise HTTPException(404)
+    # Trash existing staged file
+    if row.staging_path:
+        try:
+            p = Path(row.staging_path)
+            if p.exists():
+                safe_trash(p, settings.staging_dir / ".trash")
+        except Exception:
+            pass
+    # Update candidate if provided
+    if candidate_json:
+        row.candidate_json = candidate_json
+    row.provider_ref = provider_ref
+    row.staging_path = None
+    row.resolved_metadata_json = None
+    row.state = "queued"
+    row.error = None
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.flush()
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name=row.provider,
+            provider_ref=provider_ref,
+            candidate_json=row.candidate_json or "{}",
+            music_dir=str(settings.music_dir),
+            tmp_acquire_dir=str(settings.tmp_acquire_dir),
+            _job_id=f"acquire:{job_id}",
+        )
+        await redis.aclose()
+        await session.commit()
+    except Exception as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return templates.TemplateResponse(
+        request, "partials/job_card.html", {"job": _job_to_model(row)}
+    )
+
+
+@router.get("/library/albums", response_class=HTMLResponse)
+async def library_albums_page(
+    request: Request,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "library_albums.html",
+        {"active": "library", "q": q},
+    )
+
+
+@router.get("/library/albums/list", response_class=HTMLResponse)
+async def library_albums_list(
+    request: Request,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from sqlalchemy.orm import joinedload as _jl
+    stmt = (
+        select(Album)
+        .join(Album.artist)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
+        .order_by(Artist.name, Album.year, Album.title)
+        .limit(300)
+    )
+    if q.strip():
+        pattern = f"%{q.strip()}%"
+        stmt = stmt.where(Album.title.ilike(pattern) | Artist.name.ilike(pattern))
+    albums = (await session.execute(stmt)).unique().scalars().all()
+    return templates.TemplateResponse(
+        request, "partials/album_list.html",
+        {"albums": albums, "q": q},
+    )
+
+
+@router.get("/library/albums/{album_id}/detail", response_class=HTMLResponse)
+async def album_detail(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from sqlalchemy.orm import joinedload as _jl
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file).joinedload(TrackFile.track))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+    # Find cover art path (sidecar or embedded)
+    cover_track = next((t for t in album.tracks if t.file and Path(t.file.path).exists()), None)
+    return templates.TemplateResponse(
+        request, "partials/album_detail.html",
+        {"album": album, "cover_track": cover_track},
+    )
+
+
+@router.post("/library/albums/{album_id}/update-meta", response_class=HTMLResponse)
+async def album_update_meta(
+    request: Request,
+    album_id: str,
+    title: str = Form(""),
+    year: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from sqlalchemy.orm import joinedload as _jl
+    from service.library.tagger import write_tags as _write_tags
+    from service.navidrome.client import trigger_scan
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    title_val = title.strip() or album.title
+    year_val: int | None = int(year) if year.strip().isdigit() else album.year
+
+    # Update DB
+    album.title = title_val
+    album.year = year_val
+    album.updated_at = datetime.now(UTC).replace(tzinfo=None)
+
+    # Write to all track files
+    for track in album.tracks:
+        if track.file:
+            fp = Path(track.file.path)
+            if fp.exists():
+                try:
+                    await asyncio.to_thread(_write_tags, fp, album=title_val, year=year_val)
+                except Exception as exc:
+                    logger.warning("album update-meta tag write failed: %s", exc)
+
+    await session.commit()
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    album_reloaded = (await session.execute(
+        select(Album)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    cover_track = next((t for t in album_reloaded.tracks if t.file and Path(t.file.path).exists()), None)
+    return templates.TemplateResponse(
+        request, "partials/album_detail.html",
+        {"album": album_reloaded, "cover_track": cover_track, "saved": True},
+    )
+
+
+@router.get("/library/albums/{album_id}/mb-compare", response_class=HTMLResponse)
+async def album_mb_compare(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Compare local tracks in this album against the MB release tracklist."""
+    from sqlalchemy.orm import joinedload as _jl
+    from service.metadata.musicbrainz import get_release_group_tracks
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None or not album.musicbrainz_release_id:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No MB release ID.</p>')
+
+    try:
+        _, _, _, mb_tracks = await asyncio.to_thread(
+            get_release_group_tracks, album.musicbrainz_release_id, settings.cache_dir
+        )
+    except Exception as exc:
+        return HTMLResponse(f'<p class="muted" style="font-size:12px">MB fetch failed: {exc}</p>')
+
+    local_titles = {t.title.lower().strip() for t in album.tracks}
+    local_rids = {t.musicbrainz_recording_id for t in album.tracks if t.musicbrainz_recording_id}
+
+    lines = []
+    for mt in mb_tracks:
+        owned = (mt.recording_id in local_rids) if mt.recording_id else (mt.title.lower().strip() in local_titles)
+        icon = "✓" if owned else "✕"
+        color = "var(--success)" if owned else "var(--danger)"
+        lines.append(
+            f'<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:12px">'
+            f'<span style="color:{color};font-weight:700;min-width:14px">{icon}</span>'
+            f'<span style="color:var(--t3);min-width:20px">{mt.number}.</span>'
+            f'<span style="color:{"var(--t1)" if owned else "var(--t3)"}">{mt.title}</span>'
+            + (f'<a href="/search?q={mt.title}" class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:10px">Acquire</a>' if not owned else '')
+            + '</div>'
+        )
+    if not lines:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found in MB tracklist.</p>')
+    return HTMLResponse('<div style="border:1px solid var(--b1);border-radius:var(--radius-s);padding:10px">' + ''.join(lines) + '</div>')
 
 
 @router.post("/library/rescan", response_class=HTMLResponse)

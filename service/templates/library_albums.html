@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Albums — audioreap{% endblock %}
+{% block content %}
+
+<div class="page-toolbar">
+  <h2 class="page-title">Albums</h2>
+  <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
+</div>
+
+<form id="album-search-form"
+      hx-get="/library/albums/list"
+      hx-trigger="input changed delay:300ms from:#aq, submit"
+      hx-target="#album-list"
+      hx-include="#aq"
+      style="margin-bottom:16px">
+  <div class="search-bar" style="margin-bottom:0">
+    <input id="aq" name="q" type="search"
+           placeholder="Search albums or artists…"
+           value="{{ q }}" autocomplete="off" autofocus>
+  </div>
+</form>
+
+<div id="album-list"
+     hx-get="/library/albums/list?q={{ q|urlencode }}"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <div style="color:var(--t3);font-size:13px;padding:20px 0;display:flex;gap:8px;align-items:center">
+    <span class="spinner"></span> Loading albums…
+  </div>
+</div>
+{% endblock %}
