@@ -352,9 +352,8 @@ async def acquire_track(
             logger.info("Job %s was cancelled before pickup; skipping", job_id)
             return
 
-    dest_path: Path | None = None
     async with session_factory() as session, session.begin():
-        dest_path = await run_acquisition(
+        await run_acquisition(
             job_id=job_id,
             provider=provider,
             provider_ref=provider_ref,
@@ -363,16 +362,3 @@ async def acquire_track(
             tmp_acquire_dir=Path(tmp_acquire_dir),
             session=session,
         )
-
-    # ReplayGain runs after the session is committed — avoids the SQLAlchemy
-    # greenlet conflict that happens when subprocess.run() is called inside a session.
-    if dest_path is not None and dest_path.exists():
-        try:
-            from service.library.tagger import compute_replaygain, write_replaygain
-            import asyncio as _asyncio
-            rg_gain = await _asyncio.to_thread(compute_replaygain, dest_path)
-            if rg_gain is not None:
-                await _asyncio.to_thread(write_replaygain, dest_path, rg_gain)
-                logger.debug("ReplayGain: %s gain=%+.2f dB", dest_path.name, rg_gain)
-        except Exception as rg_exc:
-            logger.debug("ReplayGain failed for %s: %s", dest_path, rg_exc)

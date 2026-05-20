@@ -215,6 +215,22 @@ async def cancel_job(
     )
 
 
+@router.get("/nav/review-count", response_class=HTMLResponse)
+async def nav_review_count(
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Returns a badge span with the needs_review job count for the nav bar."""
+    count = (
+        await session.execute(
+            select(func.count(AcquisitionJobRow.id))
+            .where(AcquisitionJobRow.state == "needs_review")
+        )
+    ).scalar_one()
+    if count:
+        return HTMLResponse(f'<span class="nav-badge" hx-get="/nav/review-count" hx-trigger="every 30s" hx-swap="outerHTML">{count}</span>')
+    return HTMLResponse('<span hx-get="/nav/review-count" hx-trigger="every 30s" hx-swap="outerHTML"></span>')
+
+
 # ── Review workflow (needs_review state) ─────────────────────────────────────
 
 
@@ -259,8 +275,9 @@ async def approve_job(
         "mb_recording_id": mb_recording_id or None,
     }
 
+    dest: Path | None = None
     try:
-        await place_approved_track(job_id, overrides, session)
+        dest = await place_approved_track(job_id, overrides, session)
         await session.commit()
     except Exception as exc:
         logger.error("Approve job %s failed: %s", job_id, exc)
@@ -278,6 +295,17 @@ async def approve_job(
                 "error": str(exc),
             },
         )
+
+    # ReplayGain after commit — subprocess inside a session causes greenlet conflict
+    if dest is not None and dest.exists():
+        try:
+            from service.library.tagger import compute_replaygain, write_replaygain
+            rg_gain = await asyncio.to_thread(compute_replaygain, dest)
+            if rg_gain is not None:
+                await asyncio.to_thread(write_replaygain, dest, rg_gain)
+                logger.debug("ReplayGain: %s gain=%+.2f dB", dest.name, rg_gain)
+        except Exception as rg_exc:
+            logger.debug("ReplayGain failed for %s: %s", dest, rg_exc)
 
     row = await session.get(AcquisitionJobRow, job_id)
     return templates.TemplateResponse(
@@ -584,6 +612,13 @@ async def library_page(
         )
     ).unique().scalars().all()
 
+    needs_review_count = (
+        await session.execute(
+            select(func.count(AcquisitionJobRow.id))
+            .where(AcquisitionJobRow.state == "needs_review")
+        )
+    ).scalar_one()
+
     return templates.TemplateResponse(
         request, "library.html",
         {
@@ -597,7 +632,36 @@ async def library_page(
             "low_quality_tracks": low_quality,
             "recent": [_track_to_ref(r) for r in recent_rows],
             "settings_music_dir": str(settings.music_dir),
+            "needs_review_count": needs_review_count,
         },
+    )
+
+
+@router.post("/library/rescan", response_class=HTMLResponse)
+async def library_rescan(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Full rescan of /music: adds new files, removes missing ones from DB."""
+    from service.index.scanner import scan
+    from service.navidrome.client import trigger_scan
+
+    try:
+        result = await scan(session, settings.music_dir, incremental=False)
+        await session.commit()
+    except Exception as exc:
+        logger.error("Library rescan failed: %s", exc)
+        return HTMLResponse(f'<span class="badge badge-fail">Rescan failed: {exc}</span>')
+
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    return HTMLResponse(
+        f'<span class="badge badge-done">'
+        f'Rescan done — {result.added} added, {result.removed} removed, {result.updated} updated'
+        f'</span>'
     )
 
 
@@ -921,7 +985,7 @@ async def health_page(
     return templates.TemplateResponse(
         request, "health.html",
         {
-            "active": "health",
+            "active": "sys-health",
             "health": {
                 "navidrome_ok": navidrome_ok,
                 "redis_ok": redis_ok,
@@ -1686,7 +1750,7 @@ async def library_health_page(
     return templates.TemplateResponse(
         request, "library_health.html",
         {
-            "active": "health",
+            "active": "lib-health",
             "dupe_count": dupe_count,
             "no_cover_count": no_cover_count,
         },

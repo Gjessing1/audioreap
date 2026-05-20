@@ -135,6 +135,7 @@ async def run_album_acquisition(
         )
 
     # ── Evaluate outcomes ─────────────────────────────────────────────────
+    # needs_review counts as success — track downloaded OK, awaiting user approval
     failed_ids: list[str] = []
     for child_id in child_job_ids:
         row = await session.get(AcquisitionJobRow, child_id)

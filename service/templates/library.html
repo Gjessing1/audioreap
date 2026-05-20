@@ -13,14 +13,23 @@
             title="Queue MusicBrainz enrichment for all unmatched tracks">
       Enrich library
     </button>
-    <button class="btn" id="scan-btn"
-            hx-post="/api/scan"
-            hx-swap="none"
-            hx-on::after-request="this.textContent='Scanning…'; this.disabled=true; setTimeout(() => { window.location.reload(); }, 15000)">
-      Scan library
+    <button class="btn btn-ghost btn-sm" id="rescan-btn"
+            hx-post="/library/rescan"
+            hx-target="#rescan-result"
+            hx-on::before-request="this.disabled=true;this.textContent='Scanning…'">
+      Rescan
     </button>
   </div>
 </div>
+
+<div id="rescan-result"></div>
+
+{% if needs_review_count %}
+<div class="review-warning" style="margin-bottom:14px">
+  {{ needs_review_count }} track{% if needs_review_count != 1 %}s{% endif %} waiting for review before they reach the library →
+  <a href="/jobs" style="color:inherit;font-weight:600">Go to Jobs</a>
+</div>
+{% endif %}
 
 {% if stats.tracks == 0 %}
 <div class="card" style="flex-direction:column;align-items:flex-start;gap:8px;padding:20px">

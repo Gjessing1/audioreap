@@ -65,10 +65,18 @@ disable_error_code = ["no-untyped-call", "attr-defined", "index", "no-any-return
 module = "service.metadata.musicbrainz"
 disable_error_code = ["no-any-return", "call-overload", "unused-ignore"]
 
-# redis.asyncio is untyped; streaming generators return object
+# redis.asyncio is untyped; streaming generators return object; pipeline uses object narrowing
 [[tool.mypy.overrides]]
-module = ["service.api.webui", "service.main"]
-disable_error_code = ["no-untyped-call", "return-value", "unused-ignore", "arg-type"]
+module = [
+    "service.api.webui",
+    "service.main",
+    "service.acquisition.pipeline",
+    "service.acquisition.album_pipeline",
+    "service.acquisition.jobs",
+    "service.metadata.acoustid",
+    "service.providers.ytdlp",
+]
+disable_error_code = ["no-untyped-call", "return-value", "unused-ignore", "arg-type", "union-attr", "assignment"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

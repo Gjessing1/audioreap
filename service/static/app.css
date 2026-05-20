@@ -44,6 +44,22 @@ nav {
   gap: 4px;
 }
 
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 99px;
+  padding: 1px 5px;
+  min-width: 16px;
+  line-height: 1.4;
+  vertical-align: middle;
+  margin-left: 3px;
+}
+
 nav .brand {
   font-weight: 700;
   color: var(--primary);
@@ -100,7 +116,7 @@ main { max-width: 780px; margin: 0 auto; padding: 24px 18px; }
   margin-bottom: 22px;
 }
 
-input[type="search"], input[type="text"] {
+input[type="search"], input[type="text"], input[type="number"] {
   flex: 1;
   background: var(--surface);
   border: 1px solid var(--border);
