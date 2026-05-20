@@ -1,19 +1,19 @@
 {% if candidates %}
 {% for c in candidates %}
-<div class="card" id="cloud-{{ (offset|default(0)) + loop.index }}">
+<div class="card result-card" id="cloud-{{ (offset|default(0)) + loop.index }}">
+  {% if c.thumbnail_url %}
+  <img class="result-thumb" src="{{ c.thumbnail_url }}" alt="" loading="lazy">
+  {% else %}
+  <div class="result-thumb result-thumb-empty">♪</div>
+  {% endif %}
   <div class="card-info">
     <div class="card-title">{{ c.title }}</div>
     <div class="card-sub">
-      {{ c.artist }}
-      {% if c.duration_seconds %}
-        · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}
-      {% endif %}
+      {{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}{% endif %}
     </div>
   </div>
   <div class="card-actions">
-    <button class="play-btn"
-            onclick="playPreview('{{ c.provider_ref|e }}', '{{ c.title|e }}')">▶</button>
-    <a href="{{ c.provider_ref }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" title="Open on YouTube">↗</a>
+    <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}', '{{ c.title|e }}')" title="Preview">▶</button>
     <form hx-post="/api/acquire"
           hx-target="#cloud-{{ (offset|default(0)) + loop.index }}"
           hx-swap="outerHTML"
@@ -22,23 +22,24 @@
       <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
       <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
       <input type="hidden" name="query" value="{{ q|e }}">
-      <button type="submit" class="btn btn-sm">Acquire</button>
+      <button type="submit" class="btn btn-sm">Get</button>
     </form>
   </div>
 </div>
 {% endfor %}
+
 {% if candidates|length >= (limit|default(5)) %}
-<div id="cloud-load-more" style="text-align:center;margin-top:8px">
+<div id="cloud-load-more" style="text-align:center;padding:12px 0">
   <button class="btn btn-ghost btn-sm"
           hx-get="/search/cloud?q={{ q|urlencode }}&offset={{ (offset|default(0)) + (limit|default(5)) }}"
           hx-target="#cloud-load-more"
           hx-swap="outerHTML"
-          hx-indicator="#cloud-more-spinner">
-    Load more
-    <span id="cloud-more-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+          hx-indicator="#cloud-spin">
+    More results <span id="cloud-spin" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
 </div>
 {% endif %}
+
 {% elif q %}
-<p class="empty">No results found on YouTube for "{{ q }}".</p>
+<p class="empty">No YouTube results for "{{ q }}".</p>
 {% endif %}

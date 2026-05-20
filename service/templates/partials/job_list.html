@@ -1,7 +1,37 @@
-{% if jobs %}
-{% for job in jobs %}
-{% include "partials/job_card.html" %}
-{% endfor %}
+{% if not review and not active and not completed %}
+<div class="empty-state">
+  <p>No jobs yet — search for music and hit <strong>Acquire</strong>.</p>
+</div>
+
 {% else %}
-<p class="empty">No acquisition jobs yet.</p>
+
+{% if review %}
+<div class="section-title section-title--review">
+  Needs Review <span class="badge badge-review">{{ review|length }}</span>
+</div>
+<div class="job-section">
+  {% for job in review %}
+  {% include "partials/job_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if active %}
+<div class="section-title {% if review %}section-title--spaced{% endif %}">Active</div>
+<div class="job-section">
+  {% for job in active %}
+  {% include "partials/job_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if completed %}
+<div class="section-title {% if review or active %}section-title--spaced{% endif %}">Completed</div>
+<div class="job-section">
+  {% for job in completed %}
+  {% include "partials/job_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+
 {% endif %}

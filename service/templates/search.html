@@ -4,31 +4,32 @@
 {% block content %}
 <form id="search-form" class="search-bar"
       hx-get="/search/results"
-      hx-trigger="input changed delay:400ms from:#q, submit"
+      hx-trigger="input changed delay:350ms from:#q, submit"
       hx-target="#local-results"
       hx-include="#q">
-  <input id="q" name="q" type="search" placeholder="Search by track or artist…"
+  <input id="q" name="q" type="search"
+         placeholder="Search tracks, artists…"
          value="{{ q|default('') }}"
-         inputmode="search" enterkeyhint="search" autocomplete="off"
-         autofocus>
+         inputmode="search" enterkeyhint="search" autocomplete="off" autofocus>
   <button type="submit"
           hx-get="/search/cloud"
           hx-include="#q"
           hx-target="#cloud-results"
-          hx-swap="innerHTML">
+          hx-swap="innerHTML"
+          hx-indicator="#search-spin">
     Search
-    <span class="htmx-indicator"><span class="spinner"></span></span>
+    <span id="search-spin" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
 </form>
 
 <div class="search-columns">
   <div class="search-col">
-    <div class="section-title">Library</div>
+    <div class="section-title">In your library</div>
     <div id="local-results">
       {% if q %}
         {% include "partials/local_results.html" %}
       {% else %}
-        <p class="empty">Type a name to search your library.</p>
+        <p class="empty" style="padding:24px 0;text-align:left">Search your library above.</p>
       {% endif %}
     </div>
   </div>
@@ -39,7 +40,7 @@
       {% if q %}
         {% include "partials/cloud_results.html" %}
       {% else %}
-        <p class="empty">Press Search to query YouTube.</p>
+        <p class="empty" style="padding:24px 0;text-align:left">Hit <strong>Search</strong> to find music on YouTube.</p>
       {% endif %}
     </div>
   </div>

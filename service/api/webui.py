@@ -100,6 +100,21 @@ async def search_results(
 
 
 
+def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, list]:
+    """Split job rows into review / active / completed groups for the UI."""
+    from sqlalchemy import case
+    review, active, completed = [], [], []
+    for r in rows:
+        j = _job_to_model(r)
+        if r.state == "needs_review":
+            review.append(j)
+        elif r.state in ("done", "failed", "cancelled", "staged"):
+            completed.append(j)
+        else:
+            active.append(j)
+    return {"review": review, "active": active, "completed": completed}
+
+
 @router.get("/jobs", response_class=HTMLResponse)
 async def jobs_page(
     request: Request,
@@ -107,11 +122,12 @@ async def jobs_page(
 ) -> HTMLResponse:
     rows = (
         await session.execute(
-            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(50)
+            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
         )
     ).scalars().all()
-    jobs = [_job_to_model(r) for r in rows]
-    return templates.TemplateResponse(request, "jobs.html", {"active": "jobs", "jobs": jobs})
+    return templates.TemplateResponse(
+        request, "jobs.html", {"active": "jobs", **_grouped_jobs(rows)}
+    )
 
 
 @router.get("/jobs/list", response_class=HTMLResponse)
@@ -121,11 +137,12 @@ async def jobs_list_partial(
 ) -> HTMLResponse:
     rows = (
         await session.execute(
-            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(50)
+            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
         )
     ).scalars().all()
-    jobs = [_job_to_model(r) for r in rows]
-    return templates.TemplateResponse(request, "partials/job_list.html", {"jobs": jobs})
+    return templates.TemplateResponse(
+        request, "partials/job_list.html", _grouped_jobs(rows)
+    )
 
 
 @router.get("/jobs/status/{job_id}", response_class=HTMLResponse)
@@ -456,8 +473,7 @@ async def clear_done_jobs(
             select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(50)
         )
     ).scalars().all()
-    jobs = [_job_to_model(r) for r in rows]
-    return templates.TemplateResponse(request, "partials/job_list.html", {"jobs": jobs})
+    return templates.TemplateResponse(request, "partials/job_list.html", _grouped_jobs(rows))
 
 
 @router.delete("/library/tracks/{internal_id}", response_class=HTMLResponse)
@@ -514,6 +530,7 @@ async def cloud_search_page(
                     "artist": c.artist,
                     "duration_seconds": c.duration_seconds,
                     "provider_ref": c.provider_ref,
+                    "thumbnail_url": c.thumbnail_url,
                     "candidate_json": c.model_dump_json(),
                     "_score": _explicit_score(c.title),
                 })

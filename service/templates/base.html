@@ -15,16 +15,20 @@
 </head>
 <body>
 <nav id="main-nav">
-  <span class="brand">♪ audioreap</span>
-  <button class="nav-toggle" onclick="document.getElementById('main-nav').classList.toggle('nav-open')" aria-label="Menu">☰</button>
-  <div class="nav-links">
-    <a href="/search"         {% if active == 'search'      %}class="active"{% endif %}>Search</a>
-    <a href="/jobs"           {% if active == 'jobs'        %}class="active"{% endif %}>Jobs <span hx-get="/nav/review-count" hx-trigger="load, every 30s" hx-swap="outerHTML"></span></a>
-    <a href="/discography"    {% if active == 'discography' %}class="active"{% endif %}>Discography</a>
-    <a href="/playlists"      {% if active == 'playlists'   %}class="active"{% endif %}>Playlists</a>
-    <a href="/library"        {% if active == 'library'     %}class="active"{% endif %}>Library</a>
-    <a href="/library/health" {% if active == 'lib-health'  %}class="active"{% endif %}>Health</a>
-    <a href="/health"         {% if active == 'sys-health'  %}class="active"{% endif %}>System</a>
+  <a href="/search" class="brand">♪ audioreap</a>
+  <button class="nav-toggle" id="nav-toggle" aria-label="Menu" aria-expanded="false">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <line x1="2" y1="5" x2="16" y2="5"/><line x1="2" y1="9" x2="16" y2="9"/><line x1="2" y1="13" x2="16" y2="13"/>
+    </svg>
+  </button>
+  <div class="nav-links" id="nav-links">
+    <a href="/search"      {% if active == 'search'      %}class="active"{% endif %}>Search</a>
+    <a href="/jobs"        {% if active == 'jobs'        %}class="active"{% endif %}>
+      Jobs <span hx-get="/nav/review-count" hx-trigger="load, every 30s" hx-swap="outerHTML"></span>
+    </a>
+    <a href="/discography" {% if active == 'discography' %}class="active"{% endif %}>Discover</a>
+    <a href="/playlists"   {% if active == 'playlists'   %}class="active"{% endif %}>Playlists</a>
+    <a href="/library"     {% if active == 'library'     %}class="active"{% endif %}>Library</a>
   </div>
 </nav>
 
@@ -32,11 +36,12 @@
   {% block content %}{% endblock %}
 </main>
 
-<!-- Fixed audio player -->
 <div id="player-bar" class="hidden">
-  <span id="player-title">—</span>
+  <div id="player-info">
+    <span id="player-title">—</span>
+  </div>
   <div id="player-controls">
-    <button id="player-play" class="btn-ghost btn-sm">▶</button>
+    <button id="player-play" class="player-btn">▶</button>
     <input id="player-progress" type="range" min="0" max="100" value="0" step="0.1">
   </div>
 </div>
@@ -44,5 +49,17 @@
 
 <script src="/static/htmx.min.js"></script>
 <script src="/static/app.js"></script>
+<script>
+  const toggle = document.getElementById('nav-toggle');
+  const nav = document.getElementById('main-nav');
+  const links = document.getElementById('nav-links');
+  toggle.addEventListener('click', () => {
+    const open = nav.classList.toggle('nav-open');
+    toggle.setAttribute('aria-expanded', open);
+  });
+  links.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => nav.classList.remove('nav-open'));
+  });
+</script>
 </body>
 </html>
