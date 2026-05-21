@@ -437,12 +437,18 @@ async def review_card(
                     f" but {len(other_aas)} other track(s) in this batch differ."
                 )
 
+    from service.library.tagger import parse_artists as _parse_artists
+    parsed_artists = _parse_artists(meta.get("artist") or "")
+    show_multi_artists = len(parsed_artists) > 1
+
     return templates.TemplateResponse(
         request, "partials/review_card.html",
         {"job_id": job_id, "meta": meta, "query": row.query or "",
          "staging_exists": staging_exists, "genres": genres,
          "is_enrichment": is_enrichment,
-         "album_consistency_warning": album_consistency_warning},
+         "album_consistency_warning": album_consistency_warning,
+         "parsed_artists": parsed_artists,
+         "show_multi_artists": show_multi_artists},
     )
 
 

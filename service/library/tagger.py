@@ -18,6 +18,35 @@ SUPPORTED_EXTENSIONS = frozenset(
 )
 
 _TRACKNUM_RE = re.compile(r"^(\d+)")
+_FEAT_RE = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+", re.IGNORECASE)
+_COLLAB_RE = re.compile(r"\s*[,&]\s*")
+
+
+def parse_artists(artist: str) -> list[str]:
+    """Split a combined artist string into individual artists.
+
+    Handles: "Artist feat. X", "A & B", "A, B, C".
+    Returns the list deduplicated and ordered as they appear.
+    """
+    if not artist:
+        return []
+    parts = _FEAT_RE.split(artist, maxsplit=1)
+    primary = parts[0].strip()
+    featured = parts[1].strip() if len(parts) > 1 else ""
+
+    primaries = [p.strip() for p in _COLLAB_RE.split(primary) if p.strip()]
+    if not primaries:
+        primaries = [primary]
+
+    featureds = [p.strip() for p in _COLLAB_RE.split(featured) if p.strip()] if featured else []
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for a in primaries + featureds:
+        if a and a not in seen:
+            seen.add(a)
+            result.append(a)
+    return result or [artist]
 
 
 @dataclass
@@ -382,7 +411,12 @@ def write_tags(
         if title is not None:
             tags["title"] = [title]  # type: ignore[index]
         if artist is not None:
-            tags["artist"] = [artist]  # type: ignore[index]
+            artists_list = parse_artists(artist)
+            tags["artist"] = [artist]  # type: ignore[index]  # primary (full string)
+            if len(artists_list) > 1:
+                tags["artists"] = artists_list  # type: ignore[index]  # multi-value
+            elif "artists" in tags:
+                del tags["artists"]  # type: ignore[operator]
         if albumartist is not None:
             tags["albumartist"] = [albumartist]  # type: ignore[index]
         if album is not None:

@@ -76,6 +76,15 @@
         <label class="rv-label">Artist</label>
         <input class="rv-input" name="artist" value="{{ meta.artist or '' }}"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        {% if show_multi_artists %}
+        <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+          <span style="font-size:11px;color:var(--t4)">→ ARTISTS:</span>
+          {% for a in parsed_artists %}
+          <span class="badge badge-queued" style="font-size:11px">{{ a }}</span>
+          {% endfor %}
+          <span style="font-size:11px;color:var(--t4)">(written as separate Vorbis entries)</span>
+        </div>
+        {% endif %}
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">Album</label>
