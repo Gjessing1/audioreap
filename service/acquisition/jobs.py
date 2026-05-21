@@ -341,6 +341,10 @@ async def acquire_album_from_mb(
     )
 
 
+_RETRY_DELAYS = [30, 120, 600]  # seconds: 30s, 2 min, 10 min
+_MAX_RETRIES = len(_RETRY_DELAYS)
+
+
 async def acquire_track(
     ctx: dict[str, object],
     *,
@@ -352,6 +356,13 @@ async def acquire_track(
     tmp_acquire_dir: str,
 ) -> None:
     """arq job: run the full acquisition pipeline for one track."""
+    from datetime import timedelta
+
+    from arq import create_pool
+    from arq.connections import RedisSettings
+
+    from service.config import settings as _settings
+
     session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
     provider_registry: dict[str, Provider] = ctx["providers"]  # type: ignore[assignment]
 
@@ -378,3 +389,84 @@ async def acquire_track(
             tmp_acquire_dir=Path(tmp_acquire_dir),
             session=session,
         )
+
+    # Auto-retry on transient failures
+    retry_attempt: int | None = None
+    delay_seconds: int = 0
+    async with session_factory() as session, session.begin():
+        row = await session.get(AcquisitionJobRow, job_id)
+        if row is None or row.state != "failed" or row.failure_class != "transient":
+            return
+        if row.retry_count >= _MAX_RETRIES:
+            logger.warning("Job %s: max retries reached (%d), leaving as failed", job_id, row.retry_count)
+            return
+
+        delay_seconds = _RETRY_DELAYS[row.retry_count]
+        row.retry_count += 1
+        retry_attempt = row.retry_count
+        row.state = "queued"
+        row.error = f"Transient failure — retry {retry_attempt}/{_MAX_RETRIES} in {delay_seconds}s"
+        row.updated_at = _now()
+
+    if retry_attempt is None:
+        return
+
+    logger.info("Job %s: transient failure, scheduling retry %d/%d in %ds", job_id, retry_attempt, _MAX_RETRIES, delay_seconds)
+    redis = await create_pool(RedisSettings.from_dsn(_settings.redis_url))
+    try:
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name=provider_name,
+            provider_ref=provider_ref,
+            candidate_json=candidate_json,
+            music_dir=music_dir,
+            tmp_acquire_dir=tmp_acquire_dir,
+            _job_id=f"acquire:{job_id}:r{retry_attempt}",
+            _defer_by=timedelta(seconds=delay_seconds),
+        )
+    finally:
+        await redis.aclose()
+
+
+_GC_TERMINAL_STATES = frozenset({"done", "failed", "rejected", "cancelled"})
+_GC_MAX_AGE_DAYS = 7
+
+
+async def gc_staging(ctx: dict[str, object]) -> None:
+    """Periodic job: trash staging files for terminal jobs older than 7 days."""
+    import os
+    from datetime import timedelta
+
+    from sqlalchemy import select as _select
+
+    from service.config import settings as _settings
+    from service.library.writer import safe_trash
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+    cutoff = _now() - timedelta(days=_GC_MAX_AGE_DAYS)
+    trash_dir = _settings.music_dir / ".trash"
+    trashed = 0
+    cleared = 0
+
+    async with session_factory() as session, session.begin():
+        rows = (await session.execute(
+            _select(AcquisitionJobRow).where(
+                AcquisitionJobRow.state.in_(list(_GC_TERMINAL_STATES)),
+                AcquisitionJobRow.staging_path.isnot(None),
+                AcquisitionJobRow.updated_at < cutoff,
+            )
+        )).scalars().all()
+
+        for row in rows:
+            path = Path(row.staging_path)  # type: ignore[arg-type]
+            if path.exists():
+                try:
+                    safe_trash(path, trash_dir)
+                    trashed += 1
+                except Exception as exc:
+                    logger.warning("gc_staging: could not trash %s: %s", path, exc)
+            row.staging_path = None
+            cleared += 1
+
+    logger.info("gc_staging: cleared %d staging paths (%d files trashed)", cleared, trashed)

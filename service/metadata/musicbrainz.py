@@ -48,10 +48,11 @@ class MBRecording:
     year: int | None
     track_number: int | None
     score: float
-    release_id: str | None = None      # first release's MB release MBID (for CAA artwork)
-    artist_id: str | None = None       # MB artist MBID (for MUSICBRAINZ_ARTISTID tag)
-    artist_sort: str | None = None     # e.g. "Beatles, The" (for ARTISTSORT tag)
-    original_year: int | None = None   # first-ever release year (for ORIGINALDATE tag)
+    release_id: str | None = None           # first release's MB release MBID (for CAA artwork)
+    artist_id: str | None = None            # MB artist MBID (for MUSICBRAINZ_ARTISTID tag)
+    artist_sort: str | None = None          # e.g. "Beatles, The" (for ARTISTSORT tag)
+    original_year: int | None = None        # first-ever release year (for ORIGINALDATE tag)
+    release_group_id: str | None = None     # MB release group MBID (for genre lookup)
 
 
 def _cache_key(title: str, artist: str) -> str:
@@ -116,6 +117,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
     original_year: int | None = None
     track_number: int | None = None
     release_id: str | None = None
+    release_group_id: str | None = None
 
     releases = rec.get("release-list") or []
     if isinstance(releases, list) and releases:
@@ -126,6 +128,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
             release_id = str(release.get("id") or "") or None
             rg = release.get("release-group") or {}
             if isinstance(rg, dict):
+                release_group_id = str(rg.get("id") or "") or None
                 rg_date = str(rg.get("first-release-date") or "")
                 if rg_date and len(rg_date) >= 4:
                     try:
@@ -159,6 +162,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
         artist_id=artist_id,
         artist_sort=artist_sort,
         original_year=original_year,
+        release_group_id=release_group_id,
     )
 
 
@@ -387,6 +391,55 @@ def get_recording_by_id(
     if not rec or not isinstance(rec, dict):
         return None
     return _parse_recording(rec)
+
+
+def get_release_group_genres(
+    release_group_id: str,
+    cache_dir: Path | None = None,
+    max_genres: int = 5,
+) -> list[str]:
+    """Return the top folksonomy genre tags for a MB release group, sorted by vote count.
+
+    Returns an empty list on any error.
+    """
+    key = f"rg_tags:{release_group_id}"
+
+    raw: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw = _load_cache(cache_dir, key)
+
+    if raw is None:
+        try:
+            result = musicbrainzngs.get_release_group_by_id(
+                release_group_id,
+                includes=["tags"],
+            )
+            raw = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MB release group tags fetch failed for %s: %s", release_group_id, exc)
+            return []
+
+    rg = raw.get("release-group") or {}
+    if not isinstance(rg, dict):
+        return []
+
+    tags = rg.get("tag-list") or []
+    if not isinstance(tags, list):
+        return []
+
+    scored: list[tuple[int, str]] = []
+    for tag in tags:
+        if not isinstance(tag, dict):
+            continue
+        name = str(tag.get("name") or "").strip()
+        count = int(tag.get("count") or 0)
+        if name and count > 0:
+            scored.append((count, name))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [name for _, name in scored[:max_genres]]
 
 
 @dataclass

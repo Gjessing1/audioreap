@@ -18,6 +18,12 @@
     <div class="stat-label">Redis / Queue</div>
   </div>
   <div class="stat">
+    <div class="stat-val" style="color:{% if health.worker_ok %}var(--success){% else %}var(--danger){% endif %}">
+      {% if health.worker_ok %}✓{% else %}✗{% endif %}
+    </div>
+    <div class="stat-label">Worker</div>
+  </div>
+  <div class="stat">
     <div class="stat-val">{{ health.disk_free_gb }}GB</div>
     <div class="stat-label">Disk free</div>
   </div>

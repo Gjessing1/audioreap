@@ -230,6 +230,7 @@ async def run_acquisition(
         mb_artist_id: str | None = None
         mb_artist_sort: str | None = None
         mb_original_year: int | None = None
+        mb_release_group_id: str | None = None
         acoustid_confidence: float | None = None
         mb_match_source: str | None = None
 
@@ -290,6 +291,7 @@ async def run_acquisition(
                 mb_artist_id = mb.artist_id  # type: ignore[union-attr]
                 mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
                 mb_original_year = mb.original_year  # type: ignore[union-attr]
+                mb_release_group_id = mb.release_group_id  # type: ignore[union-attr]
                 title = mb.title or title  # type: ignore[union-attr]
                 artist = mb.artist or artist  # type: ignore[union-attr]
                 if not candidate_album_locked:
@@ -299,6 +301,17 @@ async def run_acquisition(
 
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
+
+        # Fetch MB folksonomy genres for the review card
+        mb_genres: list[str] = []
+        if mb_release_group_id:
+            try:
+                from service.metadata.musicbrainz import get_release_group_genres
+                mb_genres = await asyncio.to_thread(
+                    get_release_group_genres, mb_release_group_id, settings.cache_dir
+                )
+            except Exception as genre_exc:
+                logger.debug("Genre fetch skipped: %s", genre_exc)
 
         albumartist = candidate.artist if candidate_album_locked else artist
         is_compilation = (album is not None) and albumartist.lower() in ("various artists", "various")
@@ -358,6 +371,7 @@ async def run_acquisition(
             "force_staging_reason": force_staging_reason,
             "quality_score": quality_score,
             "thumbnail_url": candidate.thumbnail_url,
+            "mb_genres": mb_genres,
         }
 
         row = await session.get(AcquisitionJobRow, job_id)

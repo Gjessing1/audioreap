@@ -100,7 +100,7 @@ async def search_results(
 
 
 
-def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, list]:
+def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
     """Split job rows into review / active / completed groups for the UI."""
     review, active, completed = [], [], []
     for r in rows:
@@ -111,7 +111,13 @@ def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, list]:
             completed.append(j)
         else:
             active.append(j)
-    return {"review": review, "active": active, "completed": completed}
+    return {
+        "review": review,
+        "active": active,
+        "completed": completed,
+        "completed_has_more": False,
+        "completed_next_offset": 0,
+    }
 
 
 async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
@@ -176,28 +182,92 @@ async def jobs_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    rows = (
+    active_rows = (
         await session.execute(
-            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
+            select(AcquisitionJobRow)
+            .where(AcquisitionJobRow.state.notin_(["done", "failed", "cancelled"]))
+            .order_by(AcquisitionJobRow.created_at.desc())
+            .limit(200)
         )
     ).scalars().all()
+    completed_rows = (
+        await session.execute(
+            select(AcquisitionJobRow)
+            .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+            .order_by(AcquisitionJobRow.created_at.desc())
+            .limit(_JOBS_COMPLETED_PAGE + 1)
+        )
+    ).scalars().all()
+    has_more_completed = len(completed_rows) > _JOBS_COMPLETED_PAGE
+    rows = list(active_rows) + list(completed_rows[:_JOBS_COMPLETED_PAGE])
+    ctx = _grouped_jobs(rows)
+    ctx["completed_has_more"] = has_more_completed
+    ctx["completed_next_offset"] = _JOBS_COMPLETED_PAGE
     return templates.TemplateResponse(
-        request, "jobs.html", {"active": "jobs", **_grouped_jobs(rows)}
+        request, "jobs.html", {"active": "jobs", **ctx}
     )
+
+
+_JOBS_COMPLETED_PAGE = 50
 
 
 @router.get("/jobs/list", response_class=HTMLResponse)
 async def jobs_list_partial(
     request: Request,
+    completed_offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    rows = (
+    # Active/review: fetch all (they're typically few)
+    active_rows = (
         await session.execute(
-            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
+            select(AcquisitionJobRow)
+            .where(AcquisitionJobRow.state.notin_(["done", "failed", "cancelled"]))
+            .order_by(AcquisitionJobRow.created_at.desc())
+            .limit(200)
         )
     ).scalars().all()
+    # Completed: paginated
+    completed_rows = (
+        await session.execute(
+            select(AcquisitionJobRow)
+            .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+            .order_by(AcquisitionJobRow.created_at.desc())
+            .offset(completed_offset)
+            .limit(_JOBS_COMPLETED_PAGE + 1)
+        )
+    ).scalars().all()
+    has_more_completed = len(completed_rows) > _JOBS_COMPLETED_PAGE
+    rows = list(active_rows) + list(completed_rows[:_JOBS_COMPLETED_PAGE])
+    ctx = _grouped_jobs(rows)
+    ctx["completed_has_more"] = has_more_completed
+    ctx["completed_next_offset"] = completed_offset + _JOBS_COMPLETED_PAGE
     return templates.TemplateResponse(
-        request, "partials/job_list.html", _grouped_jobs(rows)
+        request, "partials/job_list.html", ctx
+    )
+
+
+@router.get("/jobs/completed/more", response_class=HTMLResponse)
+async def jobs_completed_more(
+    request: Request,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return additional completed job cards for the Load more button."""
+    rows = (
+        await session.execute(
+            select(AcquisitionJobRow)
+            .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+            .order_by(AcquisitionJobRow.created_at.desc())
+            .offset(offset)
+            .limit(_JOBS_COMPLETED_PAGE + 1)
+        )
+    ).scalars().all()
+    has_more = len(rows) > _JOBS_COMPLETED_PAGE
+    jobs = [_job_to_model(r) for r in rows[:_JOBS_COMPLETED_PAGE]]
+    return templates.TemplateResponse(
+        request, "partials/jobs_completed_more.html",
+        {"completed": jobs, "completed_has_more": has_more,
+         "completed_next_offset": offset + _JOBS_COMPLETED_PAGE},
     )
 
 
@@ -1338,12 +1408,16 @@ async def library_browse(
     )
 
 
+_BROWSE_PAGE = 75
+
+
 @router.get("/library/browse/results", response_class=HTMLResponse)
 async def library_browse_results(
     request: Request,
     q: str = "",
     f: str = "",
     sort: str = "artist",
+    offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.metadata.quality import LOW_QUALITY_THRESHOLD
@@ -1361,7 +1435,8 @@ async def library_browse_results(
         .outerjoin(Track.album)
         .join(Track.file)
         .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-        .limit(300)
+        .offset(offset)
+        .limit(_BROWSE_PAGE + 1)
     )
     if isinstance(order, tuple):
         stmt = stmt.order_by(*order)
@@ -1390,10 +1465,13 @@ async def library_browse_results(
             TrackFile.bitrate_kbps < min_br,
         )
 
-    rows = (await session.execute(stmt)).unique().scalars().all()
+    all_rows = (await session.execute(stmt)).unique().scalars().all()
+    has_more = len(all_rows) > _BROWSE_PAGE
+    rows = all_rows[:_BROWSE_PAGE]
     return templates.TemplateResponse(
         request, "partials/browse_results.html",
-        {"tracks": rows, "q": q, "f": f, "sort": sort},
+        {"tracks": rows, "q": q, "f": f, "sort": sort,
+         "offset": offset, "has_more": has_more, "next_offset": offset + _BROWSE_PAGE},
     )
 
 
@@ -1873,12 +1951,19 @@ async def health_page(
         pass
 
     redis_ok = False
+    worker_ok = False
     try:
         import redis.asyncio as aioredis
+        from datetime import timedelta
         rc = aioredis.from_url(settings.redis_url)
         await rc.ping()
-        await rc.aclose()
         redis_ok = True
+        hb = await rc.get("audioreap:worker:heartbeat")
+        if hb:
+            from datetime import datetime as _dt
+            hb_time = _dt.fromisoformat(hb.decode())
+            worker_ok = (_dt.utcnow() - hb_time) < timedelta(minutes=2)
+        await rc.aclose()
     except Exception:
         pass
 
@@ -1896,6 +1981,7 @@ async def health_page(
             "health": {
                 "navidrome_ok": navidrome_ok,
                 "redis_ok": redis_ok,
+                "worker_ok": worker_ok,
                 "disk_free_gb": disk_free_gb,
                 "active_jobs": active_jobs,
                 "music_dir": str(settings.music_dir),

@@ -183,6 +183,42 @@ window.applyMbToLibraryEditor = function(trackId, recordingId, title, artist, al
   if (panel) panel.classList.add('hidden');
 };
 
+/* ── Review card keyboard shortcuts (a=approve, r=reject, s=MB search, p=play) ── */
+let _hoveredCard = null;
+
+document.body.addEventListener("mouseover", function(e) {
+  const card = e.target.closest(".card-review");
+  if (card) _hoveredCard = card;
+});
+document.body.addEventListener("mouseleave", function(e) {
+  if (!e.relatedTarget || !e.relatedTarget.closest(".card-review")) _hoveredCard = null;
+}, true);
+
+document.addEventListener("keydown", function(e) {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const card = _hoveredCard;
+  if (!card) return;
+
+  if (e.key === "a") {
+    e.preventDefault();
+    const btn = card.querySelector(".rv-approve");
+    if (btn && !btn.disabled) btn.click();
+  } else if (e.key === "r") {
+    e.preventDefault();
+    const btn = card.querySelector(".rv-reject");
+    if (btn) btn.click();
+  } else if (e.key === "s") {
+    e.preventDefault();
+    const mbBtn = Array.from(card.querySelectorAll(".rv-actions button")).find(b => b.textContent.trim().startsWith("Search MB"));
+    if (mbBtn) mbBtn.click();
+  } else if (e.key === "p") {
+    e.preventDefault();
+    const playBtn = Array.from(card.querySelectorAll(".rv-actions button")).find(b => b.textContent.trim().startsWith("▶"));
+    if (playBtn) playBtn.click();
+  }
+});
+
 /* ── Service worker registration ─────────────────────────────────────────── */
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/static/sw.js").catch(() => {});

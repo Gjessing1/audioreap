@@ -94,13 +94,23 @@
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">Genre <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--t4)">(one genre preferred)</span></label>
-        <input class="rv-input" name="genre" value="{{ meta.genre or '' }}"
+        <input class="rv-input" name="genre" id="genre-input-{{ job_id }}" value="{{ meta.genre or '' }}"
                list="genre-list-rv-{{ job_id }}"
                placeholder="e.g. Folk, Electronic, Jazz…"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
         <datalist id="genre-list-rv-{{ job_id }}">
           {% for g in genres|default([]) %}<option value="{{ g }}">{% endfor %}
         </datalist>
+        {% if meta.mb_genres %}
+        <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">
+          <span style="font-size:11px;color:var(--t4);align-self:center">MB:</span>
+          {% for g in meta.mb_genres %}
+          <button type="button" class="badge badge-queued"
+                  style="cursor:pointer;border:none;font-size:11px"
+                  onclick="document.getElementById('genre-input-{{ job_id }}').value='{{ g|e }}'">{{ g }}</button>
+          {% endfor %}
+        </div>
+        {% endif %}
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">

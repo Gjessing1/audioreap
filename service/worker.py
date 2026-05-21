@@ -82,12 +82,31 @@ async def shutdown(ctx: dict[str, object]) -> None:
     logger.info("audioreap worker stopped")
 
 
-from service.acquisition.jobs import acquire_album, acquire_album_from_mb, acquire_track, enrich_track  # noqa: E402
+async def worker_heartbeat(ctx: dict[str, object]) -> None:
+    """Write a heartbeat timestamp to Redis so /health can detect a dead worker."""
+    import redis.asyncio as aioredis
+
+    ts = datetime.utcnow().isoformat()
+    try:
+        rc = aioredis.from_url(settings.redis_url)
+        await rc.set("audioreap:worker:heartbeat", ts, ex=300)
+        await rc.aclose()
+    except Exception as exc:
+        logger.warning("heartbeat write failed: %s", exc)
+
+
+from arq.cron import cron  # noqa: E402
+
+from service.acquisition.jobs import acquire_album, acquire_album_from_mb, acquire_track, enrich_track, gc_staging  # noqa: E402
 
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track]
+    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track, gc_staging, worker_heartbeat]
+    cron_jobs = [
+        cron(gc_staging, hour=3, minute=0),
+        cron(worker_heartbeat, minute=None, second=0),  # every minute
+    ]
     max_jobs = settings.worker_concurrency
     on_startup = startup
     on_shutdown = shutdown

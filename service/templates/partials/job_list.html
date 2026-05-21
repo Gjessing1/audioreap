@@ -73,6 +73,20 @@
   {% include "partials/job_card.html" %}
   {% endfor %}
 </div>
+{% if completed_has_more %}
+{% set _no = completed_next_offset %}
+<div id="jobs-more-btn"
+     hx-get="/jobs/completed/more?offset={{ _no }}"
+     hx-trigger="click"
+     hx-target="#jobs-more-btn"
+     hx-swap="outerHTML"
+     style="padding:12px 0;text-align:center">
+  <button class="btn btn-ghost" style="font-size:13px">
+    Load older jobs
+    <span class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+{% endif %}
 {% endif %}
 
 {% endif %}

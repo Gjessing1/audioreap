@@ -1,14 +1,27 @@
+{% if offset == 0 %}
 {% if tracks %}
 <div class="browse-header-row">
-  <span style="font-size:12px;color:var(--t3)">{{ tracks|length }} track{% if tracks|length != 1 %}s{% endif %}</span>
+  <span style="font-size:12px;color:var(--t3)" id="browse-count">{{ tracks|length }}{% if has_more %}+{% endif %} track{% if tracks|length != 1 %}s{% endif %}</span>
 </div>
-<div class="browse-list">
+<div class="browse-list" id="browse-list-inner">
   {% for t in tracks %}
   {% include "partials/browse_row.html" %}
   {% endfor %}
+  {% if has_more %}
+  {% include "partials/browse_loadmore.html" %}
+  {% endif %}
 </div>
 {% elif q or f %}
 <p class="empty" style="text-align:left;padding:24px 0">No tracks match this filter.</p>
 {% else %}
 <p class="empty" style="text-align:left;padding:24px 0">No tracks in library yet.</p>
+{% endif %}
+{% else %}
+{# Subsequent page: rows only + new load-more button (outerHTML-swapped into .browse-list) #}
+{% for t in tracks %}
+{% include "partials/browse_row.html" %}
+{% endfor %}
+{% if has_more %}
+{% include "partials/browse_loadmore.html" %}
+{% endif %}
 {% endif %}
