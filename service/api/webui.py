@@ -1638,6 +1638,39 @@ async def artist_acquire_missing(
     )
 
 
+@router.get("/library/artists", response_class=HTMLResponse)
+async def library_artists_page(
+    request: Request,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from sqlalchemy import func as _func
+    stmt = (
+        select(
+            Artist,
+            _func.count(Track.id.distinct()).label("track_count"),
+            _func.count(Album.id.distinct()).label("album_count"),
+        )
+        .outerjoin(Artist.tracks)
+        .outerjoin(Track.album)
+        .group_by(Artist.id)
+        .order_by(Artist.sort_name, Artist.name)
+        .limit(500)
+    )
+    if q.strip():
+        stmt = stmt.where(Artist.name.ilike(f"%{q.strip()}%"))
+    rows = (await session.execute(stmt)).all()
+    artists = [
+        {"artist": r.Artist, "track_count": r.track_count, "album_count": r.album_count}
+        for r in rows
+    ]
+    ctx = {"active": "library", "artists": artists, "q": q}
+    # HTMX partial reload: return only the list block
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(request, "partials/artist_list.html", ctx)
+    return templates.TemplateResponse(request, "library_artists.html", ctx)
+
+
 @router.get("/library/browse", response_class=HTMLResponse)
 async def library_browse(
     request: Request,
@@ -1715,6 +1748,66 @@ async def library_browse_results(
         {"tracks": rows, "q": q, "f": f, "sort": sort,
          "offset": offset, "has_more": has_more, "next_offset": offset + _BROWSE_PAGE},
     )
+
+
+@router.post("/library/browse/bulk-edit", response_class=HTMLResponse)
+async def library_bulk_edit(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Apply genre and/or year to a batch of selected tracks."""
+    from service.library.tagger import write_tags as _write_tags
+    from service.navidrome.client import trigger_scan
+
+    form = await request.form()
+    track_ids: list[str] = list(form.getlist("track_id"))  # type: ignore[arg-type]
+    genre_val = (form.get("genre") or "").strip() or None  # type: ignore[union-attr]
+    year_str = (form.get("year") or "").strip()  # type: ignore[union-attr]
+    year_val: int | None = int(year_str) if year_str.isdigit() else None  # type: ignore[arg-type]
+
+    if not track_ids:
+        return HTMLResponse('<span class="badge-warn">No tracks selected</span>')
+    if genre_val is None and year_val is None:
+        return HTMLResponse('<span class="badge-warn">Enter at least one field to update</span>')
+
+    updated = 0
+    failed = 0
+    for tid in track_ids:
+        stmt = (
+            select(Track)
+            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+            .where(Track.id == tid)
+        )
+        row = (await session.execute(stmt)).unique().scalar_one_or_none()
+        if row is None or not row.file:
+            continue
+        file_path = Path(row.file.path)
+        if not file_path.exists():
+            continue
+        try:
+            kwargs: dict[str, object] = {}
+            if genre_val is not None:
+                kwargs["genre"] = genre_val
+                row.genre = genre_val
+            if year_val is not None:
+                kwargs["year"] = year_val
+            if kwargs:
+                await asyncio.to_thread(_write_tags, file_path, **kwargs)
+            updated += 1
+        except Exception as exc:
+            logger.warning("bulk-edit: write_tags failed for %s: %s", file_path, exc)
+            failed += 1
+
+    await session.commit()
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    msg = f"Updated {updated} track{'s' if updated != 1 else ''}"
+    if failed:
+        msg += f", {failed} failed"
+    return HTMLResponse(f'<span class="badge-ok">{msg} ✓</span>')
 
 
 @router.get("/library/tracks/{internal_id}/browse-row", response_class=HTMLResponse)

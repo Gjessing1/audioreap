@@ -45,5 +45,9 @@
             hx-get="/library/tracks/{{ t.id }}/edit-card"
             hx-target="#browse-{{ safe_id }}"
             hx-swap="outerHTML">Edit</button>
+    <input type="checkbox" class="browse-check" name="track_id" value="{{ t.id }}"
+           title="Select for bulk edit"
+           onchange="updateBulkBar()"
+           style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;flex-shrink:0">
   </div>
 </div>

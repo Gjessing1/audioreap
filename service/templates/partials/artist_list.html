@@ -1,0 +1,29 @@
+{% if not artists %}
+<p class="empty" style="padding:16px 0">No artists found{% if q %} for "{{ q }}"{% endif %}.</p>
+{% else %}
+{% for entry in artists %}
+<a href="/library/artists/{{ entry.artist.id }}"
+   style="text-decoration:none;color:inherit;display:block">
+<div class="card" style="padding:10px 14px;gap:12px">
+  <div style="flex:1;min-width:0">
+    <div style="font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      {{ entry.artist.name }}
+    </div>
+    {% if entry.artist.sort_name and entry.artist.sort_name != entry.artist.name %}
+    <div style="font-size:11px;color:var(--t3)">{{ entry.artist.sort_name }}</div>
+    {% endif %}
+  </div>
+  <div style="font-size:12px;color:var(--t3);white-space:nowrap">
+    {{ entry.album_count }} album{% if entry.album_count != 1 %}s{% endif %}
+    · {{ entry.track_count }} track{% if entry.track_count != 1 %}s{% endif %}
+    {% if entry.artist.musicbrainz_artist_id %}
+    <span class="badge badge-done" style="font-size:10px;padding:2px 5px;margin-left:4px">MB</span>
+    {% endif %}
+  </div>
+</div>
+</a>
+{% endfor %}
+{% if artists|length >= 500 %}
+<p class="empty" style="padding:12px 0;font-size:12px">Showing first 500 — use search to narrow.</p>
+{% endif %}
+{% endif %}

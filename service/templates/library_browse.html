@@ -48,6 +48,31 @@
           onclick="setFilter(event,'low_bitrate')">Low Bitrate</button>
 </div>
 
+{# Bulk edit toolbar — hidden until tracks are checked #}
+<div id="bulk-toolbar" style="display:none;margin-bottom:12px">
+  <form id="bulk-edit-form"
+        hx-post="/library/browse/bulk-edit"
+        hx-target="#bulk-edit-result"
+        hx-swap="innerHTML"
+        hx-include=".browse-check:checked"
+        style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--b2);border-radius:var(--radius);padding:10px 12px">
+    <span id="bulk-count-label" style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap">0 selected</span>
+    <input type="text" name="genre" id="bulk-genre" placeholder="Genre (leave blank to skip)"
+           list="bulk-genre-list"
+           autocomplete="off"
+           style="flex:1;min-width:120px;max-width:200px">
+    <datalist id="bulk-genre-list"></datalist>
+    <input type="text" name="year" placeholder="Year" inputmode="numeric"
+           style="width:70px">
+    <button type="submit" class="btn btn-sm">
+      Apply
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+    <button type="button" class="btn btn-sm btn-ghost" onclick="clearBulkSelection()">Clear</button>
+  </form>
+  <div id="bulk-edit-result" style="margin-top:6px"></div>
+</div>
+
 <div id="browse-results"
      hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}&sort={{ sort or 'artist' }}"
      hx-trigger="load"
@@ -68,5 +93,32 @@ function setSort(val) {
   document.getElementById('bs').value = val;
   htmx.trigger(document.getElementById('browse-form'), 'submit');
 }
+function updateBulkBar() {
+  const checked = document.querySelectorAll('.browse-check:checked');
+  const toolbar = document.getElementById('bulk-toolbar');
+  toolbar.style.display = checked.length > 0 ? '' : 'none';
+  document.getElementById('bulk-count-label').textContent = checked.length + ' selected';
+  // Populate genre datalist from existing inputs if not already done
+  const dl = document.getElementById('bulk-genre-list');
+  if (dl.children.length === 0) {
+    document.querySelectorAll('datalist[id^="genre-list-"]').forEach(src => {
+      Array.from(src.options).forEach(o => {
+        if (!Array.from(dl.options).some(x => x.value === o.value)) {
+          dl.appendChild(o.cloneNode(true));
+        }
+      });
+    });
+  }
+}
+function clearBulkSelection() {
+  document.querySelectorAll('.browse-check:checked').forEach(cb => cb.checked = false);
+  updateBulkBar();
+}
+// Hide toolbar after results reload (selections lost on HTMX swap)
+document.addEventListener('htmx:afterSwap', function(e) {
+  if (e.target.id === 'browse-results') {
+    document.getElementById('bulk-toolbar').style.display = 'none';
+  }
+});
 </script>
 {% endblock %}

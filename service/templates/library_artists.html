@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Artists — audioreap{% endblock %}
+{% block content %}
+
+<div class="page-toolbar">
+  <h2 class="page-title">Artists</h2>
+  <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
+</div>
+
+<form hx-get="/library/artists"
+      hx-target="#artist-list"
+      hx-swap="innerHTML"
+      hx-trigger="input changed delay:300ms from:input[name='q'], submit"
+      style="margin-bottom:16px">
+  <div class="search-bar" style="margin-bottom:0">
+    <input name="q" type="search"
+           placeholder="Search artists…"
+           value="{{ q }}" autocomplete="off" autofocus>
+  </div>
+</form>
+
+<div id="artist-list">
+{% include "partials/artist_list.html" %}
+</div>
+{% endblock %}
