@@ -37,6 +37,7 @@ class TaggedFile:
     sample_rate_hz: int | None
     has_cover_art: bool = False
     genre: str | None = None
+    artist_sort: str | None = None
 
 
 def _parse_tracknum(value: str | None) -> int | None:
@@ -152,6 +153,7 @@ def read_tags(path: Path) -> TaggedFile | None:
     tags = audio.tags
 
     genre: str | None = None
+    artist_sort: str | None = None
 
     if isinstance(audio, MP4):
         # note: MP4 check must come before ID3 check
@@ -166,6 +168,8 @@ def read_tags(path: Path) -> TaggedFile | None:
         disc_number = int(disk) if disk is not None else None
         genre_raw = (tags.get("©gen") or [None])[0] if tags else None
         genre = str(genre_raw).strip() if genre_raw else None
+        soar_raw = (tags.get("soar") or [None])[0] if tags else None
+        artist_sort = str(soar_raw).strip() if soar_raw else None
 
     elif isinstance(tags, ID3):
         # MP3, WAV, AIFF — all have ID3-based tags regardless of audio FileType
@@ -177,6 +181,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         track_number = _parse_tracknum(_id3_str(tags, "TRCK"))
         disc_number = _parse_tracknum(_id3_str(tags, "TPOS"))
         genre = _id3_str(tags, "TCON")
+        artist_sort = _id3_str(tags, "TSOP")
 
     else:
         # Vorbis comment: FLAC, OGG Vorbis, Opus
@@ -188,6 +193,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         track_number = _parse_tracknum(_vorbis_str(tags, "tracknumber"))
         disc_number = _parse_tracknum(_vorbis_str(tags, "discnumber"))
         genre = _vorbis_str(tags, "genre")
+        artist_sort = _vorbis_str(tags, "artistsort")
 
     cover = _check_cover_art(audio, tags)
 
@@ -207,6 +213,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         sample_rate_hz=sample_rate,
         has_cover_art=cover,
         genre=genre,
+        artist_sort=artist_sort,
     )
 
 

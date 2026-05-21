@@ -47,17 +47,21 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-async def _upsert_artist(session: AsyncSession, name: str) -> str:
+async def _upsert_artist(session: AsyncSession, name: str, sort_name: str | None = None) -> str:
     aid = _artist_id(name)
     row = await session.get(Artist, aid)
     if row is None:
         row = Artist(
             id=aid,
             name=name,
+            sort_name=sort_name,
             created_at=_now(),
             updated_at=_now(),
         )
         session.add(row)
+    elif sort_name and not row.sort_name:
+        row.sort_name = sort_name
+        row.updated_at = _now()
     return aid
 
 
@@ -153,7 +157,7 @@ async def _process_file(
     title = tagged.title or path.stem
     album_title = tagged.album
 
-    artist_id = await _upsert_artist(session, artist_name)
+    artist_id = await _upsert_artist(session, artist_name, sort_name=tagged.artist_sort)
 
     album_id: str | None = None
     if album_title:

@@ -13,6 +13,7 @@ class Artist(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    sort_name: Mapped[str | None] = mapped_column(String, nullable=True)
     musicbrainz_artist_id: Mapped[str | None] = mapped_column(String, nullable=True)
     id_algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     normalize_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -125,6 +126,7 @@ class AcquisitionJobRow(Base):
     track_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     staging_path: Mapped[str | None] = mapped_column(String, nullable=True)
     resolved_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
