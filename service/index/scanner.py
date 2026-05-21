@@ -47,7 +47,12 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-async def _upsert_artist(session: AsyncSession, name: str, sort_name: str | None = None) -> str:
+async def _upsert_artist(
+    session: AsyncSession,
+    name: str,
+    sort_name: str | None = None,
+    mb_artist_id: str | None = None,
+) -> str:
     aid = _artist_id(name)
     row = await session.get(Artist, aid)
     if row is None:
@@ -55,13 +60,21 @@ async def _upsert_artist(session: AsyncSession, name: str, sort_name: str | None
             id=aid,
             name=name,
             sort_name=sort_name,
+            musicbrainz_artist_id=mb_artist_id,
             created_at=_now(),
             updated_at=_now(),
         )
         session.add(row)
-    elif sort_name and not row.sort_name:
-        row.sort_name = sort_name
-        row.updated_at = _now()
+    else:
+        updated = False
+        if sort_name and not row.sort_name:
+            row.sort_name = sort_name
+            updated = True
+        if mb_artist_id and not row.musicbrainz_artist_id:
+            row.musicbrainz_artist_id = mb_artist_id
+            updated = True
+        if updated:
+            row.updated_at = _now()
     return aid
 
 
@@ -157,7 +170,7 @@ async def _process_file(
     title = tagged.title or path.stem
     album_title = tagged.album
 
-    artist_id = await _upsert_artist(session, artist_name, sort_name=tagged.artist_sort)
+    artist_id = await _upsert_artist(session, artist_name, sort_name=tagged.artist_sort, mb_artist_id=tagged.mb_artist_id)
 
     album_id: str | None = None
     if album_title:

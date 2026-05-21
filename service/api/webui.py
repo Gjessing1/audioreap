@@ -1393,6 +1393,81 @@ async def job_cover_art(
                 headers={"Cache-Control": "no-store"})
 
 
+@router.get("/library/artists/{artist_id}", response_class=HTMLResponse)
+async def artist_page(
+    request: Request,
+    artist_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Artist page: owned tracks grouped by album + MB discography if MBID known."""
+    from sqlalchemy.orm import joinedload as _jl
+
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+
+    # Owned tracks, grouped into albums
+    tracks = (await session.execute(
+        select(Track)
+        .options(_jl(Track.album), _jl(Track.file))
+        .where(Track.artist_id == artist_id)
+        .order_by(Album.year.nullslast(), Album.title.nullslast(), Track.track_number.nullslast(), Track.title)  # type: ignore[union-attr]
+        .outerjoin(Track.album)
+        .join(Track.file)
+    )).unique().scalars().all()
+
+    # Group tracks by album
+    from collections import OrderedDict
+    albums_map: dict[str | None, list[Track]] = OrderedDict()
+    for t in tracks:
+        key = t.album_id
+        if key not in albums_map:
+            albums_map[key] = []
+        albums_map[key].append(t)
+
+    albums_list = []
+    for album_id_key, atracks in albums_map.items():
+        album_obj = atracks[0].album if atracks else None
+        albums_list.append({
+            "album": album_obj,
+            "tracks": atracks,
+        })
+
+    # MB discography (if MBID known)
+    mb_release_groups: list[dict] = []
+    owned_rids: set[str] = {t.musicbrainz_recording_id for t in tracks if t.musicbrainz_recording_id}
+    if artist.musicbrainz_artist_id:
+        try:
+            from service.core.normalize import normalize as _norm
+            from service.metadata.musicbrainz import get_artist_release_groups
+            _, rgs = await asyncio.to_thread(
+                get_artist_release_groups, artist.musicbrainz_artist_id, settings.cache_dir
+            )
+            owned_album_titles = {_norm(a["album"].title) for a in albums_list if a["album"]}
+            for rg in rgs:
+                owned = _norm(rg.title) in owned_album_titles
+                mb_release_groups.append({
+                    "release_group_id": rg.release_group_id,
+                    "title": rg.title,
+                    "year": rg.year,
+                    "release_type": rg.release_type,
+                    "owned": owned,
+                })
+        except Exception as exc:
+            logger.debug("Artist page MB lookup failed: %s", exc)
+
+    return templates.TemplateResponse(
+        request, "artist_page.html",
+        {
+            "active": "library",
+            "artist": artist,
+            "albums_list": albums_list,
+            "mb_release_groups": mb_release_groups,
+            "total_tracks": len(tracks),
+        },
+    )
+
+
 @router.get("/library/browse", response_class=HTMLResponse)
 async def library_browse(
     request: Request,
@@ -2362,8 +2437,69 @@ async def discography_acquire_album(
         logger.error("Discography acquire failed: %s", exc)
         return HTMLResponse(f'<span class="badge-warn">Error: {exc}</span>')
 
-    msg = "Album queued"
-    return HTMLResponse(f'<span class="badge-ok">{msg} — <a href="/jobs">View jobs</a></span>')
+    return HTMLResponse(
+        f'<span id="disco-status-{album_job_id}"'
+        f' hx-get="/discography/album-status/{album_job_id}"'
+        f' hx-trigger="load, every 5s"'
+        f' hx-swap="outerHTML">'
+        f'Queued…'
+        f'</span>'
+    )
+
+
+@router.get("/discography/album-status/{album_job_id}", response_class=HTMLResponse)
+async def discography_album_status(
+    request: Request,
+    album_job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Polling endpoint: returns a status badge for an in-progress album acquisition."""
+    from service.db.schema import AlbumAcquisitionJob as _AlbumJob
+
+    album = await session.get(_AlbumJob, album_job_id)
+    if album is None:
+        return HTMLResponse('<span class="badge badge-fail">Not found</span>')
+
+    # Count child track jobs
+    child_counts = (await session.execute(
+        select(AcquisitionJobRow.state, func.count(AcquisitionJobRow.id))
+        .where(AcquisitionJobRow.album_job_id == album_job_id)
+        .group_by(AcquisitionJobRow.state)
+    )).all()
+    counts: dict[str, int] = {state: cnt for state, cnt in child_counts}
+    total = sum(counts.values())
+    review = counts.get("needs_review", 0)
+    done = counts.get("done", 0)
+    active = total - review - done - counts.get("failed", 0) - counts.get("cancelled", 0)
+
+    if album.state in ("failed", "cancelled"):
+        return HTMLResponse('<span class="badge badge-fail">Failed</span>')
+
+    if review > 0 or done > 0:
+        # Terminal or near-terminal: stop polling by not including hx-trigger
+        parts = []
+        if done:
+            parts.append(f"{done} placed")
+        if review:
+            parts.append(f'<a href="/jobs">{review} to review</a>')
+        if active:
+            parts.append(f"{active} in progress")
+        label = " · ".join(parts)
+        badge = "badge-done" if not review and not active else "badge-busy"
+        return HTMLResponse(f'<span class="badge {badge}">{label}</span>')
+
+    # Still running: keep polling
+    if active:
+        label = f"Downloading ({active}/{total or '…'})"
+    else:
+        label = "Queued…"
+    return HTMLResponse(
+        f'<span id="disco-status-{album_job_id}"'
+        f' hx-get="/discography/album-status/{album_job_id}"'
+        f' hx-trigger="every 5s"'
+        f' hx-swap="outerHTML"'
+        f' class="badge badge-queued">{label}</span>'
+    )
 
 
 @router.get("/discography/{artist_mbid}", response_class=HTMLResponse)
@@ -2802,6 +2938,41 @@ async def library_health_dupes(
     return templates.TemplateResponse(
         request, "partials/health_dupes.html", {"groups": groups}
     )
+
+
+@router.post("/library/health/dupes/keep-best", response_class=HTMLResponse)
+async def dupes_keep_best(
+    request: Request,
+    recording_id: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Keep the highest-bitrate copy; trash all lower-quality duplicates."""
+    from sqlalchemy.orm import joinedload as _jl
+
+    rows = (await session.execute(
+        select(Track)
+        .options(_jl(Track.file))
+        .join(Track.file)
+        .where(Track.musicbrainz_recording_id == recording_id)
+        .order_by(TrackFile.bitrate_kbps.desc().nulls_last(), Track.tag_quality_score.desc().nulls_last())
+    )).unique().scalars().all()
+
+    if len(rows) <= 1:
+        return HTMLResponse("")  # nothing to do, remove the card
+
+    for track in rows[1:]:  # keep rows[0], trash the rest
+        if track.file:
+            file_path = Path(track.file.path)
+            if file_path.exists():
+                try:
+                    safe_trash(file_path, settings.music_dir / ".trash")
+                except Exception as exc:
+                    logger.warning("Trash failed for %s: %s", file_path, exc)
+            await session.delete(track.file)
+        await session.delete(track)
+
+    await session.commit()
+    return HTMLResponse("")  # remove the group card on success
 
 
 @router.get("/library/health/splits", response_class=HTMLResponse)

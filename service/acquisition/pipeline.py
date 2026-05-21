@@ -559,6 +559,12 @@ async def place_approved_track(
                 musicbrainz_recording_id=mb_recording_id,
                 has_cover_art=hca,
             )
+            # Store MB artist ID on Artist row for artist page discography
+            if mb_artist_id and track_row.artist_id:
+                from service.db.schema import Artist as _Artist
+                artist_row = await session.get(_Artist, track_row.artist_id)
+                if artist_row is not None and not artist_row.musicbrainz_artist_id:
+                    artist_row.musicbrainz_artist_id = mb_artist_id
             await session.flush()
     except Exception as exc:
         logger.warning("Approve: DB index failed for %s: %s", dest, exc)

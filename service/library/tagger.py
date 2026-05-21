@@ -38,6 +38,7 @@ class TaggedFile:
     has_cover_art: bool = False
     genre: str | None = None
     artist_sort: str | None = None
+    mb_artist_id: str | None = None
 
 
 def _parse_tracknum(value: str | None) -> int | None:
@@ -154,6 +155,7 @@ def read_tags(path: Path) -> TaggedFile | None:
 
     genre: str | None = None
     artist_sort: str | None = None
+    mb_artist_id: str | None = None
 
     if isinstance(audio, MP4):
         # note: MP4 check must come before ID3 check
@@ -170,6 +172,10 @@ def read_tags(path: Path) -> TaggedFile | None:
         genre = str(genre_raw).strip() if genre_raw else None
         soar_raw = (tags.get("soar") or [None])[0] if tags else None
         artist_sort = str(soar_raw).strip() if soar_raw else None
+        mb_aid_raw = tags.get("----:com.apple.iTunes:MusicBrainz Artist Id") if tags else None
+        if mb_aid_raw and isinstance(mb_aid_raw, list) and mb_aid_raw:
+            val = mb_aid_raw[0]
+            mb_artist_id = val.decode() if isinstance(val, bytes) else str(val)
 
     elif isinstance(tags, ID3):
         # MP3, WAV, AIFF — all have ID3-based tags regardless of audio FileType
@@ -182,6 +188,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         disc_number = _parse_tracknum(_id3_str(tags, "TPOS"))
         genre = _id3_str(tags, "TCON")
         artist_sort = _id3_str(tags, "TSOP")
+        mb_artist_id = _id3_str(tags, "TXXX:MusicBrainz Artist Id")
 
     else:
         # Vorbis comment: FLAC, OGG Vorbis, Opus
@@ -194,6 +201,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         disc_number = _parse_tracknum(_vorbis_str(tags, "discnumber"))
         genre = _vorbis_str(tags, "genre")
         artist_sort = _vorbis_str(tags, "artistsort")
+        mb_artist_id = _vorbis_str(tags, "musicbrainz_artistid")
 
     cover = _check_cover_art(audio, tags)
 
@@ -214,6 +222,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         has_cover_art=cover,
         genre=genre,
         artist_sort=artist_sort,
+        mb_artist_id=mb_artist_id,
     )
 
 

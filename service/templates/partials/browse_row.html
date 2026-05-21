@@ -20,7 +20,7 @@
        hx-swap="outerHTML">
     <div class="browse-title">{{ t.title }}</div>
     <div class="browse-meta">
-      <span>{{ t.artist.name }}</span>
+      <a href="/library/artists/{{ t.artist_id }}" style="color:inherit;text-decoration:none" onclick="event.stopPropagation()">{{ t.artist.name }}</a>
       {% if t.album %}<span class="muted">· {{ t.album.title }}{% if t.album.year %} ({{ t.album.year }}){% endif %}</span>{% endif %}
     </div>
     <div class="browse-meta browse-meta-2">

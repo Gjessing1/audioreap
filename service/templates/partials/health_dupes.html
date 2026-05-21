@@ -3,9 +3,19 @@
 {% else %}
 {% for g in groups %}
 <div class="card" id="dupe-{{ g.recording_id[:8] }}" style="flex-direction:column;align-items:stretch;gap:10px">
-  <div style="font-weight:600">{{ g.title }}
-    <span style="color:var(--muted);font-weight:400;font-size:13px"> · {{ g.artist }}</span>
-    <span style="color:var(--muted);font-size:12px;float:right">{{ g.tracks|length }} copies</span>
+  <div style="font-weight:600;display:flex;align-items:center;gap:8px">
+    <span>{{ g.title }}
+      <span style="color:var(--muted);font-weight:400;font-size:13px"> · {{ g.artist }}</span>
+    </span>
+    <span style="color:var(--muted);font-size:12px;margin-left:auto">{{ g.tracks|length }} copies</span>
+    <button class="btn btn-sm btn-success"
+            hx-post="/library/health/dupes/keep-best"
+            hx-vals='{"recording_id": "{{ g.recording_id }}"}'
+            hx-target="#dupe-{{ g.recording_id[:8] }}"
+            hx-swap="outerHTML swap:0.2s"
+            hx-confirm="Keep the highest-bitrate copy and trash the rest?">
+      Keep best
+    </button>
   </div>
   {% for t in g.tracks %}
   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ artist.name }} — audioreap{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
+  <h2 style="font-size:20px;margin:0">{{ artist.name }}</h2>
+  {% if artist.sort_name and artist.sort_name != artist.name %}
+  <span style="font-size:13px;color:var(--t3)">{{ artist.sort_name }}</span>
+  {% endif %}
+  {% if artist.musicbrainz_artist_id %}
+  <a href="https://musicbrainz.org/artist/{{ artist.musicbrainz_artist_id }}"
+     target="_blank" class="badge badge-queued" style="text-decoration:none;font-size:11px">↗ MB</a>
+  {% endif %}
+</div>
+<div style="font-size:13px;color:var(--t3);margin-bottom:20px">
+  {{ total_tracks }} track{% if total_tracks != 1 %}s{% endif %} owned
+  · <a href="/library/browse?q={{ artist.name|urlencode }}" style="color:var(--accent)">Browse tracks</a>
+</div>
+
+{% if albums_list %}
+<div class="section-title">Owned</div>
+{% for entry in albums_list %}
+<div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:12px 14px">
+  {% if entry.album %}
+  <div style="font-weight:600;display:flex;align-items:center;gap:8px">
+    <a href="/library/albums/{{ entry.album.id }}/detail"
+       hx-get="/library/albums/{{ entry.album.id }}/detail"
+       hx-target="#album-list"
+       hx-swap="innerHTML"
+       style="color:inherit;text-decoration:none">{{ entry.album.title }}</a>
+    {% if entry.album.year %}<span style="font-size:12px;color:var(--t3)">{{ entry.album.year }}</span>{% endif %}
+    <span style="font-size:12px;color:var(--t3);margin-left:auto">{{ entry.tracks|length }} tracks</span>
+  </div>
+  {% else %}
+  <div style="font-weight:600;color:var(--t3)">Singles</div>
+  {% endif %}
+  <table style="width:100%;font-size:13px;border-collapse:collapse">
+    {% for t in entry.tracks %}
+    <tr style="border-bottom:1px solid var(--b1)">
+      <td style="padding:3px 6px 3px 0;width:24px;color:var(--t3)">{{ t.track_number or '' }}</td>
+      <td style="padding:3px 0">{{ t.title }}</td>
+      <td style="padding:3px 0 3px 8px;color:var(--t3);font-size:12px;text-align:right">
+        {% if t.file %}{{ t.file.codec }}{% if t.file.bitrate_kbps %} {{ t.file.bitrate_kbps }}k{% endif %}{% endif %}
+      </td>
+      <td style="padding:3px 0 3px 8px;width:32px">
+        {% if t.file %}
+        <button class="play-btn" data-id="{{ t.id }}"
+                onclick="playTrack('{{ t.id }}','{{ t.title|e }}')" title="Play">▶</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if mb_release_groups %}
+<div class="section-title" style="margin-top:24px">MusicBrainz discography</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+  {% for rg in mb_release_groups %}
+  <div class="card" style="padding:10px 14px;align-items:center;gap:12px">
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:{% if rg.owned %}600{% else %}400{% endif %}">
+        {{ rg.title }}
+        {% if rg.year %}<span style="color:var(--t3);font-weight:400;font-size:12px;margin-left:6px">{{ rg.year }}</span>{% endif %}
+      </div>
+      <div style="font-size:12px;color:var(--t3)">{{ rg.release_type }}</div>
+    </div>
+    {% if rg.owned %}
+    <span class="badge badge-done" style="font-size:11px">owned</span>
+    {% else %}
+    <form hx-post="/discography/{{ artist.musicbrainz_artist_id }}/{{ rg.release_group_id }}/acquire"
+          hx-target="this"
+          hx-swap="outerHTML"
+          hx-indicator="this"
+          style="display:contents">
+      <input type="hidden" name="artist" value="{{ artist.name|e }}">
+      <button type="submit" class="btn btn-sm">
+        Acquire
+        <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% elif not artist.musicbrainz_artist_id %}
+<div style="margin-top:16px;font-size:13px;color:var(--t3)">
+  No MusicBrainz artist ID — <a href="/discography?q={{ artist.name|urlencode }}" style="color:var(--accent)">search discography</a>
+</div>
+{% endif %}
+
+<div id="album-list" style="display:none"></div>
+{% endblock %}
