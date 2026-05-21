@@ -330,10 +330,16 @@ async def review_card(
 
     staging_exists = bool(row.staging_path and Path(row.staging_path).exists())
 
+    from sqlalchemy import distinct as _distinct
+    genre_rows = (await session.execute(
+        select(_distinct(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
+    )).scalars().all()
+    genres = [g for g in genre_rows if g]
+
     return templates.TemplateResponse(
         request, "partials/review_card.html",
         {"job_id": job_id, "meta": meta, "query": row.query or "",
-         "staging_exists": staging_exists},
+         "staging_exists": staging_exists, "genres": genres},
     )
 
 
@@ -396,6 +402,7 @@ async def approve_job(
     year: str = Form(""),
     track_number: str = Form(""),
     mb_recording_id: str = Form(""),
+    genre: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.acquisition.pipeline import place_approved_track
@@ -407,6 +414,7 @@ async def approve_job(
         "year": year or None,
         "track_number": track_number or None,
         "mb_recording_id": mb_recording_id or None,
+        "genre": genre or None,
     }
 
     dest: Path | None = None
@@ -1192,7 +1200,7 @@ async def track_cover_art(
     internal_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Return embedded cover art bytes for a track, or 404."""
+    """Return cover art for a track: embedded first, then sidecar cover.jpg."""
     from fastapi.responses import Response as Resp
     from service.library.tagger import read_cover_art_bytes
 
@@ -1207,7 +1215,15 @@ async def track_cover_art(
     path = Path(row.file.path)
     if not path.exists():
         raise HTTPException(404)
+
     art = await asyncio.to_thread(read_cover_art_bytes, path)
+
+    if not art:
+        # Fall back to sidecar cover.jpg in the same directory
+        cover_jpg = path.parent / "cover.jpg"
+        if cover_jpg.exists():
+            art = await asyncio.to_thread(cover_jpg.read_bytes)
+
     if not art:
         raise HTTPException(404)
     return Resp(content=art, media_type="image/jpeg",
@@ -1337,7 +1353,7 @@ async def track_edit_card(
     internal_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from service.library.tagger import read_tags as _read_tags
+    from sqlalchemy import distinct as _distinct
     stmt = (
         select(Track)
         .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
@@ -1346,17 +1362,24 @@ async def track_edit_card(
     row = (await session.execute(stmt)).unique().scalar_one_or_none()
     if row is None:
         raise HTTPException(404)
-    # Read current genre from file tags (not stored in DB)
-    genre: str | None = None
-    if row.file:
+    # Use genre stored in DB (populated by scanner and save-tags)
+    genre: str | None = row.genre
+    # Fall back to reading from file if DB has no genre yet
+    if not genre and row.file:
+        from service.library.tagger import read_tags as _read_tags
         fp = Path(row.file.path)
         if fp.exists():
             tagged = await asyncio.to_thread(_read_tags, fp)
             if tagged:
                 genre = tagged.genre
+    # Fetch all known genres for autocomplete datalist
+    genre_rows = (await session.execute(
+        select(_distinct(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
+    )).scalars().all()
+    genres = [g for g in genre_rows if g]
     return templates.TemplateResponse(
         request, "partials/track_edit_card.html",
-        {"track": row, "genre": genre},
+        {"track": row, "genre": genre, "genres": genres},
     )
 
 
@@ -1421,6 +1444,7 @@ async def save_track_tags(
     row.title = title_val
     row.track_number = track_num_val
     row.musicbrainz_recording_id = mbid_val
+    row.genre = genre_val
 
     if artist_val != row.artist.name:
         new_artist_id = await _upsert_artist(session, artist_val)

@@ -8,8 +8,9 @@
     <button class="btn btn-ghost btn-sm"
             hx-post="/api/enrich/all"
             hx-swap="none"
+            hx-confirm="MB Enrich All will run MusicBrainz text-search on tracks without a Recording ID and DIRECTLY write matched metadata to files — changes are not staged for review. Proceed?"
             hx-on::after-request="this.textContent='Queued ✓'; this.disabled=true"
-            title="Run MusicBrainz text-search for all library tracks that lack a MB Recording ID. Results are written directly to the placed files — does not go through the review queue.">
+            title="Run MusicBrainz text-search for all library tracks that lack a MB Recording ID. Results are written directly to files — does not go through the review queue.">
       MB Enrich all
     </button>
     <button class="btn btn-ghost btn-sm" id="rescan-btn"

@@ -5,11 +5,12 @@
   {% set cover_track = namespace(value=None) %}
   {% for t in album.tracks %}{% if t.file and cover_track.value is none %}{% set cover_track.value = t %}{% endif %}{% endfor %}
 
-  <div class="album-row" id="album-{{ album.id }}">
+  {% set aid = album.id | replace(':', '_') %}
+  <div class="album-row" id="album-{{ aid }}">
     {# Cover art #}
     <div class="album-art"
          hx-get="/library/albums/{{ album.id }}/detail"
-         hx-target="#album-{{ album.id }}"
+         hx-target="#album-{{ aid }}"
          hx-swap="outerHTML"
          style="cursor:pointer">
       {% if cover_track.value %}
@@ -24,7 +25,7 @@
     {# Info #}
     <div class="album-info"
          hx-get="/library/albums/{{ album.id }}/detail"
-         hx-target="#album-{{ album.id }}"
+         hx-target="#album-{{ aid }}"
          hx-swap="outerHTML"
          style="cursor:pointer">
       <div class="album-title">{{ album.title }}</div>
@@ -40,7 +41,7 @@
       {% endif %}
       <button class="btn btn-sm btn-ghost"
               hx-get="/library/albums/{{ album.id }}/detail"
-              hx-target="#album-{{ album.id }}"
+              hx-target="#album-{{ aid }}"
               hx-swap="outerHTML">Edit</button>
     </div>
   </div>

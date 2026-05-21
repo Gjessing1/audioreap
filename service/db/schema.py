@@ -53,6 +53,7 @@ class Track(Base):
     track_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     disc_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     musicbrainz_recording_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    genre: Mapped[str | None] = mapped_column(String, nullable=True)
     tag_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     id_algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     normalize_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

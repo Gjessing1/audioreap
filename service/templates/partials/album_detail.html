@@ -1,8 +1,9 @@
 {% set ntracks = album.tracks|length %}
+{% set aid = album.id | replace(':', '_') %}
 {% set cover_track = namespace(value=None) %}
 {% for t in album.tracks %}{% if t.file and cover_track.value is none %}{% set cover_track.value = t %}{% endif %}{% endfor %}
 
-<div class="card card-review" id="album-{{ album.id }}">
+<div class="card card-review" id="album-{{ aid }}">
 
   {# ── Album header ──────────────────────────────────────────────────────── #}
   <div class="rv-header">
@@ -47,7 +48,7 @@
   {# ── Edit album metadata ───────────────────────────────────────────────── #}
   <form class="rv-form" style="padding-top:0;border-top:1px solid var(--b1)"
         hx-post="/library/albums/{{ album.id }}/update-meta"
-        hx-target="#album-{{ album.id }}"
+        hx-target="#album-{{ aid }}"
         hx-swap="outerHTML">
     <div class="rv-grid" style="grid-template-columns:1fr 80px;gap:10px 12px">
       <div class="rv-field" style="grid-column:1">
@@ -63,13 +64,13 @@
       <button type="submit" class="btn rv-approve" style="height:36px;font-size:13px">Save album</button>
       <button type="button" class="btn btn-sm btn-ghost"
               hx-delete="/library/albums/{{ album.id }}"
-              hx-target="#album-{{ album.id }}"
+              hx-target="#album-{{ aid }}"
               hx-swap="outerHTML swap:0.3s"
               hx-confirm="Trash all tracks in this album?"
               style="color:var(--danger)">Delete album</button>
       <button type="button" class="btn btn-sm rv-reject"
               hx-get="/library/albums/list"
-              hx-target="#album-{{ album.id }}"
+              hx-target="#album-{{ aid }}"
               hx-swap="outerHTML">Close</button>
     </div>
   </form>
@@ -106,29 +107,29 @@
     <div style="margin-top:12px">
       <button class="btn btn-sm btn-ghost"
               hx-get="/library/albums/{{ album.id }}/mb-compare"
-              hx-target="#mb-compare-{{ album.id }}"
+              hx-target="#mb-compare-{{ aid }}"
               hx-swap="innerHTML">
         Compare with MusicBrainz tracklist
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
-      <div id="mb-compare-{{ album.id }}" style="margin-top:10px"></div>
+      <div id="mb-compare-{{ aid }}" style="margin-top:10px"></div>
     </div>
     {% endif %}
 
     {# Merge with another album #}
     <div style="margin-top:12px">
       <button class="btn btn-sm btn-ghost"
-              onclick="document.getElementById('merge-panel-{{ album.id }}').classList.toggle('hidden')"
+              onclick="document.getElementById('merge-panel-{{ aid }}').classList.toggle('hidden')"
               style="font-size:11px">Merge another album into this one</button>
-      <div id="merge-panel-{{ album.id }}" class="hidden" style="margin-top:8px">
+      <div id="merge-panel-{{ aid }}" class="hidden" style="margin-top:8px">
         <form hx-get="/library/albums/list"
-              hx-trigger="input changed delay:400ms from:#merge-q-{{ album.id }}"
-              hx-target="#merge-results-{{ album.id }}"
-              hx-include="#merge-q-{{ album.id }}">
-          <input id="merge-q-{{ album.id }}" name="q" type="search" class="rv-input"
+              hx-trigger="input changed delay:400ms from:#merge-q-{{ aid }}"
+              hx-target="#merge-results-{{ aid }}"
+              hx-include="#merge-q-{{ aid }}">
+          <input id="merge-q-{{ aid }}" name="q" type="search" class="rv-input"
                  placeholder="Search album to merge into this one…" style="margin-bottom:8px">
         </form>
-        <div id="merge-results-{{ album.id }}" class="muted" style="font-size:12px">
+        <div id="merge-results-{{ aid }}" class="muted" style="font-size:12px">
           Type to search…
         </div>
       </div>

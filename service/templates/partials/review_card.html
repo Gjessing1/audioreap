@@ -87,8 +87,12 @@
       <div class="rv-field rv-field--full">
         <label class="rv-label">Genre <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--t4)">(one genre preferred)</span></label>
         <input class="rv-input" name="genre" value="{{ meta.genre or '' }}"
+               list="genre-list-rv-{{ job_id }}"
                placeholder="e.g. Folk, Electronic, Jazz…"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        <datalist id="genre-list-rv-{{ job_id }}">
+          {% for g in genres|default([]) %}<option value="{{ g }}">{% endfor %}
+        </datalist>
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">

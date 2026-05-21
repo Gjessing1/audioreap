@@ -186,6 +186,7 @@ async def _process_file(
             duration_seconds=tagged.duration_seconds,
             track_number=tagged.track_number,
             disc_number=tagged.disc_number,
+            genre=tagged.genre or None,
             tag_quality_score=quality_score,
             created_at=_now(),
             updated_at=_now(),
@@ -194,6 +195,8 @@ async def _process_file(
     else:
         track_row.album_id = album_id
         track_row.track_number = tagged.track_number
+        if tagged.genre:
+            track_row.genre = tagged.genre
         # Preserve MB ID in quality score computation if already enriched
         quality_score = compute_quality_score(
             title=title,

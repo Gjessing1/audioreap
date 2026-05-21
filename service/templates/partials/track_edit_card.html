@@ -84,7 +84,11 @@
       <div class="rv-field rv-field--full">
         <label class="rv-label">Genre <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--t4)">(one clear genre preferred)</span></label>
         <input class="rv-input" name="genre" value="{{ genre or '' }}"
+               list="genre-list-{{ safe_id }}"
                placeholder="e.g. Folk, Electronic, Jazz…" autocomplete="off">
+        <datalist id="genre-list-{{ safe_id }}">
+          {% for g in genres %}<option value="{{ g }}">{% endfor %}
+        </datalist>
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">

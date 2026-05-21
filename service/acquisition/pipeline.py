@@ -411,7 +411,7 @@ async def place_approved_track(
     meta: dict[str, object] = json.loads(row.resolved_metadata_json)
 
     # Apply user-supplied overrides — non-empty string values win
-    for k in ("title", "artist", "album", "mb_recording_id", "mb_release_id"):
+    for k in ("title", "artist", "album", "mb_recording_id", "mb_release_id", "genre"):
         if k in overrides:
             val = (overrides[k] or "").strip()
             meta[k] = val or None
@@ -443,6 +443,7 @@ async def place_approved_track(
     mb_artist_id: str | None = meta.get("mb_artist_id") or None  # type: ignore[assignment]
     mb_artist_sort: str | None = meta.get("mb_artist_sort") or None  # type: ignore[assignment]
     is_compilation: bool = bool(meta.get("is_compilation", False))
+    genre: str | None = meta.get("genre") or None  # type: ignore[assignment]
     duration_seconds: int | None = meta.get("duration_seconds")  # type: ignore[assignment]
     ext: str = str(meta.get("ext") or staging_path.suffix.lstrip("."))
 
@@ -461,6 +462,7 @@ async def place_approved_track(
             disc_number=disc_number,
             artist_sort=mb_artist_sort,
             compilation=is_compilation,
+            genre=genre,
             mb_recording_id=mb_recording_id,
             mb_release_id=mb_release_id,
             mb_artist_id=mb_artist_id,
@@ -525,6 +527,8 @@ async def place_approved_track(
         if track_row is not None:
             if mb_recording_id:
                 track_row.musicbrainz_recording_id = mb_recording_id
+            if genre:
+                track_row.genre = genre
             if track_row.file:
                 track_row.file.has_cover_art = hca
             track_row.tag_quality_score = compute_quality_score(
