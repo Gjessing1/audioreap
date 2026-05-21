@@ -34,29 +34,52 @@
   </div>
 
   {# ── Cover art panel ─────────────────────────────────────────────────────── #}
-  <div id="album-art-panel-{{ aid }}" class="hidden" style="padding:10px 4px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid var(--b1)">
-    {% if album.musicbrainz_release_id %}
-    <span class="fetch-art-btn">
-      <button class="btn btn-sm btn-ghost"
-              hx-post="/library/albums/{{ album.id }}/cover/fetch"
-              hx-target="closest .fetch-art-btn"
-              hx-swap="innerHTML" style="font-size:11px">
-        Fetch from MusicBrainz
-        <span class="htmx-indicator"><span class="spinner"></span></span>
-      </button>
-    </span>
-    {% endif %}
-    <form hx-post="/library/albums/{{ album.id }}/cover/upload"
-          hx-target="#album-art-upload-result-{{ aid }}"
+  <div id="album-art-panel-{{ aid }}" class="hidden" style="padding:10px 4px;border-bottom:1px solid var(--b1)">
+    {# Quick actions #}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
+      {% if album.musicbrainz_release_id %}
+      <span class="fetch-art-btn">
+        <button class="btn btn-sm btn-ghost"
+                hx-post="/library/albums/{{ album.id }}/cover/fetch"
+                hx-target="closest .fetch-art-btn"
+                hx-swap="innerHTML" style="font-size:11px">
+          Fetch from MusicBrainz
+          <span class="htmx-indicator"><span class="spinner"></span></span>
+        </button>
+      </span>
+      {% endif %}
+      <form hx-post="/library/albums/{{ album.id }}/cover/upload"
+            hx-target="#album-art-upload-result-{{ aid }}"
+            hx-swap="innerHTML"
+            hx-encoding="multipart/form-data"
+            style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--t3)">Upload (≥ 300×300):</label>
+        <input type="file" name="cover" accept="image/*"
+               style="font-size:12px;max-width:180px"
+               onchange="this.closest('form').dispatchEvent(new Event('submit'))">
+        <span id="album-art-upload-result-{{ aid }}"></span>
+      </form>
+    </div>
+    {# Search #}
+    <div style="font-size:11px;color:var(--t3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Search for cover art</div>
+    <form hx-get="/art/search"
+          hx-target="#album-art-results-{{ aid }}"
           hx-swap="innerHTML"
-          hx-encoding="multipart/form-data"
-          style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-      <label style="font-size:12px;color:var(--t3)">Upload (≥ 300×300):</label>
-      <input type="file" name="cover" accept="image/*"
-             style="font-size:12px;max-width:180px"
-             onchange="this.closest('form').dispatchEvent(new Event('submit'))">
-      <span id="album-art-upload-result-{{ aid }}"></span>
+          hx-indicator="#album-art-spin-{{ aid }}"
+          style="display:flex;gap:6px;margin-bottom:8px">
+      <input class="rv-input" name="q"
+             value="{{ album.artist.name }} {{ album.title }}"
+             placeholder="Artist Album…" style="flex:1;font-size:12px">
+      {% if album.musicbrainz_release_id %}
+      <input type="hidden" name="release_id" value="{{ album.musicbrainz_release_id }}">
+      {% endif %}
+      <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">
+        Search <span id="album-art-spin-{{ aid }}" class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
     </form>
+    <div id="album-art-results-{{ aid }}"
+         data-apply-url="/library/albums/{{ album.id }}/apply-art"
+         data-apply-target="#album-{{ aid }}"></div>
   </div>
 
   {# ── Edit album metadata ───────────────────────────────────────────────── #}

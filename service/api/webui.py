@@ -2287,6 +2287,210 @@ async def fetch_track_art(
     return HTMLResponse('<span class="badge badge-done">Art embedded ✓</span>')
 
 
+# ── Cover art search ──────────────────────────────────────────────────────────
+
+async def _search_itunes_art(q: str) -> list[dict]:
+    """Search iTunes Store for album artwork. Returns list of {url, label} dicts."""
+    import urllib.parse
+    results: list[dict] = []
+    try:
+        encoded = urllib.parse.quote(q)
+        url = f"https://itunes.apple.com/search?term={encoded}&entity=album&limit=12&media=music"
+        async with __import__("httpx").AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return results
+            data = resp.json()
+            for item in data.get("results", []):
+                art_url = item.get("artworkUrl100", "")
+                if not art_url:
+                    continue
+                # iTunes returns 100×100; swap to 600×600
+                art_url = art_url.replace("100x100bb", "600x600bb")
+                thumb_url = art_url.replace("600x600bb", "150x150bb")
+                artist = item.get("artistName", "")
+                album = item.get("collectionName", "")
+                results.append({
+                    "thumb": thumb_url,
+                    "full": art_url,
+                    "label": f"{artist} — {album}" if artist else album,
+                    "source": "iTunes",
+                })
+    except Exception as exc:
+        logger.debug("iTunes art search failed: %s", exc)
+    return results
+
+
+async def _search_caa_editions(release_id: str) -> list[dict]:
+    """Fetch all CAA covers for every edition in the same MB release group."""
+    results: list[dict] = []
+    try:
+        import httpx
+        # Step 1: get the release group from the known release_id
+        rg_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=release-groups&fmt=json"
+        async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "audioreap/0.1"}) as client:
+            rg_resp = await client.get(rg_url)
+            if rg_resp.status_code != 200:
+                return results
+            rg_data = rg_resp.json()
+            rg_id = (rg_data.get("release-group") or {}).get("id")
+            if not rg_id:
+                return results
+
+            # Step 2: list all releases in the group
+            releases_url = f"https://musicbrainz.org/ws/2/release?release-group={rg_id}&fmt=json&limit=25"
+            rels_resp = await client.get(releases_url)
+            if rels_resp.status_code != 200:
+                return results
+            releases = rels_resp.json().get("releases", [])
+
+            # Step 3: probe CAA for each release (in parallel, best-effort)
+            async def _fetch_caa(rel_id: str, rel_label: str) -> dict | None:
+                try:
+                    caa = await client.get(
+                        f"https://coverartarchive.org/release/{rel_id}/front-250",
+                        follow_redirects=True,
+                    )
+                    if caa.status_code == 200 and caa.headers.get("content-type", "").startswith("image/"):
+                        # We have the actual image; get the redirect URL for the full-size
+                        full = await client.get(
+                            f"https://coverartarchive.org/release/{rel_id}/front",
+                            follow_redirects=False,
+                        )
+                        full_url = full.headers.get("location", f"https://coverartarchive.org/release/{rel_id}/front")
+                        thumb_url = f"https://coverartarchive.org/release/{rel_id}/front-250"
+                        return {"thumb": thumb_url, "full": full_url, "label": rel_label, "source": "CAA"}
+                except Exception:
+                    pass
+                return None
+
+            import asyncio as _asyncio
+            tasks = [
+                _fetch_caa(
+                    r["id"],
+                    f"{r.get('title', '')} ({r.get('date', '')[:4] if r.get('date') else '?'})"
+                    f" [{r.get('country', '') or r.get('status', '')}]"
+                )
+                for r in releases[:15]
+            ]
+            found = await _asyncio.gather(*tasks)
+            results = [r for r in found if r is not None]
+    except Exception as exc:
+        logger.debug("CAA editions search failed: %s", exc)
+    return results
+
+
+@router.get("/art/search", response_class=HTMLResponse)
+async def art_search(
+    request: Request,
+    q: str = "",
+    release_id: str = "",
+) -> HTMLResponse:
+    """Return a thumbnail grid from iTunes + CAA editions for the given query."""
+    results: list[dict] = []
+    if q.strip():
+        itunes = await _search_itunes_art(q.strip())
+        results.extend(itunes)
+    if release_id.strip():
+        caa = await _search_caa_editions(release_id.strip())
+        results.extend(caa)
+
+    if not results:
+        return HTMLResponse('<p class="empty" style="font-size:12px;padding:8px 0">No results found.</p>')
+
+    return templates.TemplateResponse(
+        request, "partials/art_search_results.html",
+        {"results": results},
+    )
+
+
+@router.post("/library/tracks/{internal_id}/apply-art", response_class=HTMLResponse)
+async def apply_art_to_track(
+    request: Request,
+    internal_id: str,
+    art_url: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Download art from a URL and embed it in a track file."""
+    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
+    from service.metadata.artwork import _image_too_small, fetch_from_url
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or not row.file:
+        raise HTTPException(404)
+    file_path = Path(row.file.path)
+    if not file_path.exists():
+        raise HTTPException(404, "File not on disk")
+
+    art = await fetch_from_url(art_url)
+    if not art:
+        return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
+    if _image_too_small(art):
+        return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
+
+    await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
+    write_cover_jpg(file_path.parent, art)
+    hca = await asyncio.to_thread(_has_cover_art, file_path)
+    row.file.has_cover_art = hca
+    await session.commit()
+    return HTMLResponse('<span class="badge badge-done">Art applied ✓</span>')
+
+
+@router.post("/library/albums/{album_id}/apply-art", response_class=HTMLResponse)
+async def apply_art_to_album(
+    request: Request,
+    album_id: str,
+    art_url: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Download art from a URL and embed it in all tracks of an album."""
+    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
+    from service.metadata.artwork import _image_too_small, fetch_from_url
+    from sqlalchemy.orm import joinedload as _jl
+
+    art = await fetch_from_url(art_url)
+    if not art:
+        return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
+    if _image_too_small(art):
+        return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    album_dir: Path | None = None
+    embedded = 0
+    for track in album.tracks:
+        if not track.file:
+            continue
+        fp = Path(track.file.path)
+        if not fp.exists():
+            continue
+        album_dir = album_dir or fp.parent
+        try:
+            await asyncio.to_thread(_write_tags, fp, artwork_bytes=art)
+            hca = await asyncio.to_thread(_has_cover_art, fp)
+            track.file.has_cover_art = hca
+            embedded += 1
+        except Exception as exc:
+            logger.debug("apply_art_to_album: embed failed for %s: %s", fp, exc)
+
+    if album_dir:
+        write_cover_jpg(album_dir, art)
+
+    await session.commit()
+    return HTMLResponse(f'<span class="badge badge-done">Art applied to {embedded} track(s) ✓</span>')
+
+
 @router.post("/library/tracks/{internal_id}/upload-art", response_class=HTMLResponse)
 async def upload_track_art(
     request: Request,
