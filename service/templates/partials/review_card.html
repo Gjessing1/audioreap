@@ -53,6 +53,9 @@
   {% elif meta.force_staging_reason %}
   <div class="rv-alert rv-alert--warn">{{ meta.force_staging_reason }}</div>
   {% endif %}
+  {% if album_consistency_warning %}
+  <div class="rv-alert rv-alert--warn">⚠ {{ album_consistency_warning }}</div>
+  {% endif %}
   {% if error %}
   <div class="rv-alert rv-alert--error">{{ error }}</div>
   {% endif %}

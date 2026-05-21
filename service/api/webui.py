@@ -407,11 +407,42 @@ async def review_card(
     )).scalars().all()
     genres = [g for g in genre_rows if g]
 
+    # Album consistency check: warn if albumartist differs from sibling tracks in the same album job
+    album_consistency_warning: str | None = None
+    if row.album_job_id and not is_enrichment:
+        siblings = (await session.execute(
+            select(AcquisitionJobRow.resolved_metadata_json)
+            .where(
+                AcquisitionJobRow.album_job_id == row.album_job_id,
+                AcquisitionJobRow.id != job_id,
+                AcquisitionJobRow.state == "needs_review",
+                AcquisitionJobRow.resolved_metadata_json.isnot(None),
+            )
+        )).scalars().all()
+        this_aa = (meta.get("albumartist") or "").lower().strip()
+        if this_aa and siblings:
+            sibling_aas = set()
+            for sib_json in siblings:
+                try:
+                    sib_meta = json.loads(sib_json)
+                    sib_aa = (sib_meta.get("albumartist") or "").lower().strip()
+                    if sib_aa:
+                        sibling_aas.add(sib_aa)
+                except Exception:
+                    pass
+            other_aas = sibling_aas - {this_aa}
+            if other_aas:
+                album_consistency_warning = (
+                    f"Album artist mismatch: this track has \"{meta.get('albumartist')}\""
+                    f" but {len(other_aas)} other track(s) in this batch differ."
+                )
+
     return templates.TemplateResponse(
         request, "partials/review_card.html",
         {"job_id": job_id, "meta": meta, "query": row.query or "",
          "staging_exists": staging_exists, "genres": genres,
-         "is_enrichment": is_enrichment},
+         "is_enrichment": is_enrichment,
+         "album_consistency_warning": album_consistency_warning},
     )
 
 
@@ -2127,17 +2158,54 @@ async def resolve_playlist(
                 {"error": f"Could not resolve playlist: {exc}"},
             )
 
-    # Dedup check against local library
+    # Dedup check against local library (hash + MB ID + fuzzy title match)
+    from service.core.normalize import normalize as _norm
     track_statuses: list[dict[str, object]] = []
     for candidate in candidates:
+        owned = False
         internal_id = make_id(candidate.artist, candidate.title, candidate.duration_seconds)
-        stmt = (
-            select(Track)
-            .options(joinedload(Track.file))
-            .where(Track.id == internal_id)
-        )
-        row = (await session.execute(stmt)).unique().scalar_one_or_none()
-        owned = row is not None and row.file is not None
+
+        # 1. Exact hash
+        row = (await session.execute(
+            select(Track).options(joinedload(Track.file)).where(Track.id == internal_id)
+        )).unique().scalar_one_or_none()
+        if row and row.file:
+            owned = True
+
+        # 2. MB recording ID if available
+        if not owned and candidate.mb_recording_id:
+            mb_row = (await session.execute(
+                select(Track).options(joinedload(Track.file))
+                .where(Track.musicbrainz_recording_id == candidate.mb_recording_id)
+            )).unique().scalar_one_or_none()
+            if mb_row and mb_row.file:
+                owned = True
+
+        # 3. Fuzzy title + artist match (normalized LIKE)
+        if not owned:
+            norm_title = _norm(candidate.title or "")
+            norm_artist = _norm(candidate.artist or "")
+            if norm_title and norm_artist:
+                fuzzy = (await session.execute(
+                    select(Track)
+                    .join(Track.artist)
+                    .join(Track.file)
+                    .where(
+                        func.lower(Track.title).contains(norm_title[:20]) if len(norm_title) > 4 else Track.title.ilike(f"%{norm_title}%"),
+                        Artist.name.ilike(f"%{norm_artist.split()[0]}%") if norm_artist else True,
+                    )
+                    .limit(5)
+                )).unique().scalars().all()
+                for frow in fuzzy:
+                    from service.search.matcher import track_similarity
+                    sim = track_similarity(
+                        candidate.title or "", candidate.artist or "", candidate.duration_seconds,
+                        frow.title, frow.artist.name if frow.artist else "", frow.duration_seconds,
+                    )
+                    if sim >= 0.85:
+                        owned = True
+                        break
+
         track_statuses.append({
             "candidate": candidate,
             "candidate_json": candidate.model_dump_json(),

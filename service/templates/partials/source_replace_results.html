@@ -15,17 +15,30 @@
     </div>
     <div class="card-actions">
       <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
-      <form hx-post="/jobs/{{ job_id }}/replace-source"
-            hx-target="#job-{{ job_id }}"
-            hx-swap="outerHTML"
-            style="display:contents">
-        <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
-        <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
-        <button type="submit" class="btn btn-sm rv-approve" style="height:30px;font-size:12px"
-                hx-confirm="Replace staged file and re-download this version?">
+      {# Two-step confirm #}
+      <span id="src-use-{{ job_id }}-{{ loop.index }}">
+        <button type="button" class="btn btn-sm btn-ghost" style="height:30px;font-size:12px"
+                onclick="document.getElementById('src-use-{{ job_id }}-{{ loop.index }}').style.display='none';
+                         document.getElementById('src-cfm-{{ job_id }}-{{ loop.index }}').style.display='flex'">
           Use this
         </button>
-      </form>
+      </span>
+      <span id="src-cfm-{{ job_id }}-{{ loop.index }}" style="display:none;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--t3)">Replace staged file?</span>
+        <form hx-post="/jobs/{{ job_id }}/replace-source"
+              hx-target="#job-{{ job_id }}"
+              hx-swap="outerHTML"
+              style="display:contents">
+          <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
+          <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
+          <button type="submit" class="btn btn-sm rv-approve" style="height:28px;font-size:12px">Confirm</button>
+        </form>
+        <button type="button" class="btn btn-sm btn-ghost" style="height:28px;font-size:12px"
+                onclick="document.getElementById('src-cfm-{{ job_id }}-{{ loop.index }}').style.display='none';
+                         document.getElementById('src-use-{{ job_id }}-{{ loop.index }}').style.display='inline'">
+          Cancel
+        </button>
+      </span>
     </div>
   </div>
   {% endfor %}
