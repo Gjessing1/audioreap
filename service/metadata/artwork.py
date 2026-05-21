@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = 20.0
 _CAA_FRONT = "https://coverartarchive.org/release/{release_mbid}/front-500"
 _MIN_COVER_PX = 300       # used for automatic CAA fetches
-_MIN_USER_COVER_PX = 75  # minimum for user-supplied art (upload / search pick)
+_MIN_USER_COVER_PX = 150  # minimum for user-supplied art (upload / search pick)
 
 
 def _image_too_small(data: bytes, min_px: int = _MIN_COVER_PX) -> bool:
