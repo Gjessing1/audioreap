@@ -39,6 +39,11 @@
       {% if album.musicbrainz_release_id %}
       <span class="badge badge-done" title="MusicBrainz matched">MB</span>
       {% endif %}
+      {% set aq = album_quality[album.id] if album_quality is defined and album.id in album_quality else none %}
+      {% if aq is not none %}
+      <span class="browse-quality {% if aq >= 0.7 %}quality-good{% elif aq >= 0.4 %}quality-mid{% else %}quality-low{% endif %}"
+            title="Average metadata quality">{{ "%.0f"|format(aq * 100) }}%</span>
+      {% endif %}
       <button class="btn btn-sm btn-ghost"
               hx-get="/library/albums/{{ album.id }}/detail"
               hx-target="#album-{{ aid }}"

@@ -111,6 +111,16 @@
               onclick="document.getElementById('mb-edit-panel-{{ safe_id }}').classList.toggle('hidden')">
         Search MB
       </button>
+      {% if provider_ref and bitrate_kbps and min_bitrate_kbps and bitrate_kbps < min_bitrate_kbps %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              hx-post="/library/tracks/{{ track.id }}/reacquire"
+              hx-target="#browse-{{ safe_id }}"
+              hx-swap="outerHTML"
+              hx-confirm="Re-download at best available quality? The current file will be trashed on approval."
+              title="{{ bitrate_kbps }} kbps — below {{ min_bitrate_kbps }} kbps threshold">
+        ↑ Upgrade
+      </button>
+      {% endif %}
       <button type="button" class="btn btn-sm rv-reject"
               hx-get="/library/tracks/{{ track.id }}/browse-row"
               hx-target="#browse-{{ safe_id }}"

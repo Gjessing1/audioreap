@@ -1285,9 +1285,14 @@ async def library_albums_list(
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Album.title.ilike(pattern) | Artist.name.ilike(pattern))
     albums = (await session.execute(stmt)).unique().scalars().all()
+    # Compute per-album quality from owned tracks (no extra query needed — tracks already loaded)
+    album_quality: dict[str, float | None] = {}
+    for alb in albums:
+        scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
+        album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
     return templates.TemplateResponse(
         request, "partials/album_list.html",
-        {"albums": albums, "q": q},
+        {"albums": albums, "q": q, "album_quality": album_quality},
     )
 
 
@@ -1719,7 +1724,9 @@ async def library_browse_results(
         stmt = stmt.order_by(order)
     if q.strip():
         pattern = f"%{q.strip()}%"
-        stmt = stmt.where(Track.title.ilike(pattern) | Artist.name.ilike(pattern))
+        stmt = stmt.where(
+            Track.title.ilike(pattern) | Artist.name.ilike(pattern) | Album.title.ilike(pattern)
+        )
 
     # Filter tabs
     if f == "no_mb":
@@ -1863,7 +1870,14 @@ async def track_edit_card(
     genres = [g for g in genre_rows if g]
     return templates.TemplateResponse(
         request, "partials/track_edit_card.html",
-        {"track": row, "genre": genre, "genres": genres},
+        {
+            "track": row,
+            "genre": genre,
+            "genres": genres,
+            "provider_ref": row.file.provider_ref if row.file else None,
+            "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
+            "min_bitrate_kbps": settings.min_bitrate_kbps,
+        },
     )
 
 
@@ -1968,7 +1982,15 @@ async def save_track_tags(
     )).scalars().all() if g]
     return templates.TemplateResponse(
         request, "partials/track_edit_card.html",
-        {"track": updated, "saved": True, "genre": genre_val, "genres": all_genres},
+        {
+            "track": updated,
+            "saved": True,
+            "genre": genre_val,
+            "genres": all_genres,
+            "provider_ref": updated.file.provider_ref if updated and updated.file else None,
+            "bitrate_kbps": updated.file.bitrate_kbps if updated and updated.file else None,
+            "min_bitrate_kbps": settings.min_bitrate_kbps,
+        },
     )
 
 
@@ -3636,3 +3658,27 @@ async def fetch_missing_covers(request: Request, session: AsyncSession = Depends
     except Exception as exc:
         return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
     return HTMLResponse('<span class="badge-ok">Cover art fetch queued — check back in a few minutes</span>')
+
+
+# ── Admin ─────────────────────────────────────────────────────────────────────
+
+
+@router.post("/admin/update-ytdlp", response_class=HTMLResponse)
+async def admin_update_ytdlp(request: Request) -> HTMLResponse:
+    """Run pip install -U yt-dlp inside the container and report the result."""
+    import subprocess
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["pip", "install", "-U", "yt-dlp"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            # Extract the new version line from pip output
+            for line in (result.stdout + result.stderr).splitlines():
+                if "yt-dlp" in line.lower() and ("successfully installed" in line.lower() or "already" in line.lower()):
+                    return HTMLResponse(f'<span class="badge-ok">yt-dlp updated: {line.strip()}</span>')
+            return HTMLResponse('<span class="badge-ok">yt-dlp updated ✓</span>')
+        return HTMLResponse(f'<span class="badge-warn">pip failed (exit {result.returncode}): {result.stderr[:200]}</span>')
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">Update failed: {exc}</span>')

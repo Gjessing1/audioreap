@@ -49,6 +49,22 @@
 </p>
 <div id="health-splits"></div>
 
+<div class="section-title" style="margin-top:24px">yt-dlp
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-post="/admin/update-ytdlp"
+          hx-target="#ytdlp-result"
+          hx-swap="innerHTML"
+          hx-indicator="#ytdlp-spinner"
+          hx-confirm="Run pip install -U yt-dlp inside the container?">
+    Update now
+    <span id="ytdlp-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  yt-dlp breaks when YouTube changes. Update to the latest version without restarting the container.
+</p>
+<div id="ytdlp-result"></div>
+
 <div class="section-title" style="margin-top:24px">Missing cover art
   <button class="btn btn-ghost btn-sm" style="margin-left:8px"
           hx-post="/library/health/fetch-missing-covers"

@@ -102,9 +102,16 @@
   </div>
   {% endfor %}
 </div>
-{% elif not artist.musicbrainz_artist_id %}
+{% else %}
 <div style="margin-top:16px;font-size:13px;color:var(--t3)">
-  No MusicBrainz artist ID — <a href="/discography?q={{ artist.name|urlencode }}" style="color:var(--accent)">search discography</a>
+  No MusicBrainz artist ID —
+  <a href="/discography?q={{ artist.name|urlencode }}" style="color:var(--accent)">search discography ↗</a>
+</div>
+{% endif %}
+
+{% if artist.musicbrainz_artist_id %}
+<div style="margin-top:8px;font-size:12px;color:var(--t3)">
+  <a href="/discography?q={{ artist.name|urlencode }}" style="color:var(--t3)">Open in discography search ↗</a>
 </div>
 {% endif %}
 
