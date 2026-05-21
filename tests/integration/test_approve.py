@@ -61,7 +61,6 @@ async def _stage_track(
         await run_acquisition(
             job_id=job_id, provider=provider, provider_ref=provider_ref,
             candidate=candidate,
-            music_dir=staging_dir,
             tmp_acquire_dir=tmp_acquire,
             session=s, scan_trigger=AsyncMock(),
         )

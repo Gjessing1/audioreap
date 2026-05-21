@@ -118,7 +118,6 @@ async def run_acquisition(
     provider: Provider,
     provider_ref: str,
     candidate: TrackCandidate,
-    music_dir: Path,
     tmp_acquire_dir: Path,
     session: AsyncSession,
     scan_trigger: ScanTrigger | None = None,

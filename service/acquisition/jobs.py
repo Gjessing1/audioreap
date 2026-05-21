@@ -399,7 +399,6 @@ async def acquire_track(
             provider=provider,
             provider_ref=provider_ref,
             candidate=candidate,
-            music_dir=Path(music_dir),
             tmp_acquire_dir=Path(tmp_acquire_dir),
             session=session,
             on_progress=on_progress,

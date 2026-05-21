@@ -78,37 +78,6 @@ window.playPreview = function(ref, title) {
   updatePlayBtns();
 };
 
-/* ── Acquire (bypass hx-vals JSON-in-JSON problem) ───────────────────────── */
-window.acquireTrack = async function(btn) {
-  const targetId = btn.dataset.target;
-  const target = document.getElementById(targetId);
-  if (!target) return;
-
-  btn.disabled = true;
-  btn.textContent = "Queuing…";
-
-  try {
-    const resp = await fetch("/api/acquire", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "HX-Request": "true",          // tell server to return HTML card
-      },
-      body: JSON.stringify({
-        provider_name: "ytdlp",
-        provider_ref: btn.dataset.ref,
-        candidate_json: btn.dataset.json,
-        query: btn.dataset.query || "",
-      }),
-    });
-    const html = await resp.text();
-    target.outerHTML = html;
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = "Acquire";
-    console.error("Acquire failed:", err);
-  }
-};
 
 /* ── Play staged (review) files ─────────────────────────────────────────── */
 window.playJobStaged = function(jobId, title) {
@@ -216,6 +185,24 @@ document.addEventListener("keydown", function(e) {
     e.preventDefault();
     const playBtn = Array.from(card.querySelectorAll(".rv-actions button")).find(b => b.textContent.trim().startsWith("▶"));
     if (playBtn) playBtn.click();
+  }
+});
+
+/* ── HTMX global error handler ───────────────────────────────────────────── */
+document.addEventListener("htmx:responseError", function(e) {
+  const status = e.detail.xhr.status;
+  const url = e.detail.pathInfo && e.detail.pathInfo.requestPath || "";
+  console.error("HTMX request failed:", status, url);
+  // Surface 5xx errors to the user with a dismissible banner
+  if (status >= 500) {
+    let banner = document.getElementById("_error-banner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "_error-banner";
+      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--danger-bg,#450a0a);color:var(--danger,#f87171);padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:12px;";
+      document.body.prepend(banner);
+    }
+    banner.innerHTML = `<span>Server error (${status}) — check <a href="/health" style="color:inherit;text-decoration:underline">health</a> or try again.</span><button onclick="this.parentElement.remove()" style="margin-left:auto;background:none;border:none;color:inherit;cursor:pointer;font-size:16px">✕</button>`;
   }
 });
 

@@ -141,16 +141,18 @@
 
     <div class="rv-actions">
       {% if staging_exists %}
-      <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}">
+      <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}" title="Keyboard: a">
         {% if is_enrichment %}✓ Apply MB Tags{% else %}✓ Approve &amp; Place{% endif %}
+        <kbd class="rv-kbd">a</kbd>
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}')">
-        Search MB
+              onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}')"
+              title="Keyboard: s">
+        Search MB <kbd class="rv-kbd">s</kbd>
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview file">▶ Play</button>
+              onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview file — keyboard: p">▶ Play <kbd class="rv-kbd">p</kbd></button>
       {% if not is_enrichment %}
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="togglePanel('src-panel-{{ job_id }}','mb-panel-{{ job_id }}')">
@@ -170,8 +172,9 @@
               hx-post="/jobs/{{ job_id }}/reject"
               hx-target="#job-{{ job_id }}"
               hx-swap="outerHTML"
-              hx-confirm="{% if is_enrichment %}Dismiss this enrichment suggestion?{% else %}Reject and remove this job?{% endif %}">
-        {% if is_enrichment %}Dismiss{% else %}Reject{% endif %}
+              hx-confirm="{% if is_enrichment %}Dismiss this enrichment suggestion?{% else %}Reject and remove this job?{% endif %}"
+              title="Keyboard: r">
+        {% if is_enrichment %}Dismiss{% else %}Reject{% endif %} <kbd class="rv-kbd">r</kbd>
       </button>
     </div>
   </form>

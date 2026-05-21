@@ -651,6 +651,18 @@ input::placeholder { color: var(--t4); }
   font-size: 12px;
 }
 .rv-reject:hover { color: var(--danger); border-color: rgba(248,113,113,0.35); background: var(--danger-bg); box-shadow: none; }
+.rv-kbd {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.55;
+  margin-left: 4px;
+  pointer-events: none;
+}
 
 /* ── MB search panel ─────────────────────────────────────────────────────── */
 .mb-panel {

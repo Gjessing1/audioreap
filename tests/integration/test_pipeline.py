@@ -74,7 +74,6 @@ async def _run(
             provider=provider,
             provider_ref=provider_ref,
             candidate=candidate,
-            music_dir=tmp_path / "music",
             tmp_acquire_dir=tmp_path / "tmp",
             session=session,
             scan_trigger=scan_mock,
@@ -225,7 +224,7 @@ async def _run_with_failing(
     async with db() as session, session.begin():
         await run_acquisition(
             job_id=job_id, provider=provider, provider_ref="x",
-            candidate=candidate, music_dir=tmp_path / "music",
+            candidate=candidate,
             tmp_acquire_dir=tmp_path / "tmp", session=session,
             scan_trigger=AsyncMock(),
         )

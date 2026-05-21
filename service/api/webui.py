@@ -29,19 +29,21 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 
 _JOBS_COMPLETED_PAGE = 50
 _BROWSE_PAGE = 75
+_COMPLETED_STATES = ("done", "failed", "cancelled")
+_ACTIVE_STATES_EXCLUDE = _COMPLETED_STATES  # states NOT in active list
 
 
 async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     """Build the paginated job list template context (first page of completed)."""
     active_rows = (await session.execute(
         select(AcquisitionJobRow)
-        .where(AcquisitionJobRow.state.notin_(["done", "failed", "cancelled"]))
+        .where(AcquisitionJobRow.state.notin_(_ACTIVE_STATES_EXCLUDE))
         .order_by(AcquisitionJobRow.created_at.desc())
         .limit(200)
     )).scalars().all()
     completed_rows = (await session.execute(
         select(AcquisitionJobRow)
-        .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+        .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
         .order_by(AcquisitionJobRow.created_at.desc())
         .limit(_JOBS_COMPLETED_PAGE + 1)
     )).scalars().all()
@@ -132,7 +134,7 @@ def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
         j = _job_to_model(r)
         if r.state in ("needs_review", "staged"):
             review.append(j)
-        elif r.state in ("done", "failed", "cancelled"):
+        elif r.state in _COMPLETED_STATES:
             completed.append(j)
         else:
             active.append(j)
@@ -210,7 +212,7 @@ async def jobs_page(
     active_rows = (
         await session.execute(
             select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.notin_(["done", "failed", "cancelled"]))
+            .where(AcquisitionJobRow.state.notin_(_ACTIVE_STATES_EXCLUDE))
             .order_by(AcquisitionJobRow.created_at.desc())
             .limit(200)
         )
@@ -218,7 +220,7 @@ async def jobs_page(
     completed_rows = (
         await session.execute(
             select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+            .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
             .order_by(AcquisitionJobRow.created_at.desc())
             .limit(_JOBS_COMPLETED_PAGE + 1)
         )
@@ -243,7 +245,7 @@ async def jobs_list_partial(
     active_rows = (
         await session.execute(
             select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.notin_(["done", "failed", "cancelled"]))
+            .where(AcquisitionJobRow.state.notin_(_ACTIVE_STATES_EXCLUDE))
             .order_by(AcquisitionJobRow.created_at.desc())
             .limit(200)
         )
@@ -252,7 +254,7 @@ async def jobs_list_partial(
     completed_rows = (
         await session.execute(
             select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+            .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
             .order_by(AcquisitionJobRow.created_at.desc())
             .offset(completed_offset)
             .limit(_JOBS_COMPLETED_PAGE + 1)
@@ -278,7 +280,7 @@ async def jobs_completed_more(
     rows = (
         await session.execute(
             select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+            .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
             .order_by(AcquisitionJobRow.created_at.desc())
             .offset(offset)
             .limit(_JOBS_COMPLETED_PAGE + 1)
@@ -356,7 +358,7 @@ async def cancel_job(
     row = await session.get(AcquisitionJobRow, job_id)
     if row is None:
         raise HTTPException(404)
-    if row.state in ("done", "failed", "cancelled"):
+    if row.state in _COMPLETED_STATES:
         return templates.TemplateResponse(
             request, "partials/job_card.html", {"job": _job_to_model(row)}
         )
@@ -735,7 +737,7 @@ async def jobs_bulk_action(
                     pass
                 row.state = "cancelled"
                 row.error = "Cancelled (bulk)"
-            elif action == "dismiss" and row.state in ("done", "failed", "cancelled"):
+            elif action == "dismiss" and row.state in _COMPLETED_STATES:
                 await session.delete(row)
             row.updated_at = datetime.now(UTC).replace(tzinfo=None)
             await session.flush()
@@ -894,7 +896,7 @@ async def dismiss_job(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     row = await session.get(AcquisitionJobRow, job_id)
-    if row is not None and row.state in ("done", "failed", "cancelled"):
+    if row is not None and row.state in _COMPLETED_STATES:
         await session.delete(row)
         await session.commit()
     return HTMLResponse("")
@@ -907,7 +909,7 @@ async def clear_done_jobs(
 ) -> HTMLResponse:
     await session.execute(
         sa_delete(AcquisitionJobRow).where(
-            AcquisitionJobRow.state.in_(["done", "failed", "cancelled"])
+            AcquisitionJobRow.state.in_(_COMPLETED_STATES)
         )
     )
     await session.commit()

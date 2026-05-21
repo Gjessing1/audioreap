@@ -136,7 +136,6 @@ async def run_album_acquisition(
             provider=provider,
             provider_ref=candidate.provider_ref,
             candidate=candidate,
-            music_dir=staging_root,
             tmp_acquire_dir=tmp_acquire_dir,
             session=session,
             scan_trigger=lambda: None,  # type: ignore[arg-type,return-value]
