@@ -1,14 +1,18 @@
-"""Integration tests for the acquisition pipeline.
+"""Integration tests for the acquisition pipeline (Phase 1 — identify/stage).
 
 Uses FakeProvider and real SQLite + real filesystem (tmp_path).
-Navidrome scan is replaced by a mock callable to verify it was triggered.
 No arq, no Redis — calls run_acquisition() directly.
+
+Post-review-gate behavior:
+- run_acquisition() stages the file and sets state to "needs_review"
+- The Track table is NOT populated until place_approved_track() is called
+- scan_trigger is only called by place_approved_track(), not run_acquisition()
 """
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import yt_dlp.utils as yt_utils
@@ -17,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from service.acquisition.pipeline import run_acquisition
 from service.core.models import FetchResult, ProviderHealth, SearchQuery, TrackCandidate
-from service.db.schema import AcquisitionJobRow, Base, Track, TrackFile
+from service.db.schema import AcquisitionJobRow, Base
 from service.providers.base import Provider, ProviderCapabilities
 from tests.fake_provider import FakeProvider
 
@@ -37,22 +41,6 @@ async def db(tmp_path: Path) -> AsyncGenerator[async_sessionmaker[AsyncSession],
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _make_job(
-    session_factory: async_sessionmaker[AsyncSession],
-    *,
-    provider_ref: str = "fake-001",
-    query: str = "Test Track One",
-) -> tuple[str, TrackCandidate]:
-    return provider_ref, TrackCandidate(
-        provider="fake",
-        provider_ref=provider_ref,
-        title="Test Track One",
-        artist="Fake Artist",
-        album="Fake Album",
-        duration_seconds=1,
-    )
-
-
 async def _insert_job(
     session_factory: async_sessionmaker[AsyncSession],
     candidate: TrackCandidate,
@@ -69,104 +57,133 @@ async def _insert_job(
         )
 
 
-# ── Happy path ─────────────────────────────────────────────────────────────
-
-async def test_pipeline_places_file(
-    tmp_path: Path, db: async_sessionmaker[AsyncSession]
-) -> None:
-    music_dir = tmp_path / "music"
-    tmp_acquire = tmp_path / "tmp"
-    provider = FakeProvider(FIXTURE_AUDIO)
-    candidate = TrackCandidate(
-        provider="fake", provider_ref="fake-001",
-        title="Test Track One", artist="Fake Artist", duration_seconds=1,
-    )
-    scan_mock = AsyncMock()
-
-    job_id = await _insert_job(db, candidate, "fake-001")
-
+async def _run(
+    db: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    candidate: TrackCandidate,
+    provider: Provider | None = None,
+    provider_ref: str = "fake-001",
+    scan_mock: AsyncMock | None = None,
+) -> str:
+    provider = provider or FakeProvider(FIXTURE_AUDIO)
+    scan_mock = scan_mock or AsyncMock()
+    job_id = await _insert_job(db, candidate, provider_ref)
     async with db() as session, session.begin():
         await run_acquisition(
             job_id=job_id,
             provider=provider,
-            provider_ref="fake-001",
+            provider_ref=provider_ref,
             candidate=candidate,
-            music_dir=music_dir,
-            tmp_acquire_dir=tmp_acquire,
+            music_dir=tmp_path / "music",
+            tmp_acquire_dir=tmp_path / "tmp",
             session=session,
             scan_trigger=scan_mock,
         )
+    return job_id
 
-    # File exists in library
-    placed = list(music_dir.rglob("*.wav"))
-    assert len(placed) == 1
 
-    # Job state is done
+_CANDIDATE = TrackCandidate(
+    provider="fake", provider_ref="fake-001",
+    title="Test Track One", artist="Fake Artist", duration_seconds=1,
+)
+
+
+# ── Happy path (review gate) ───────────────────────────────────────────────
+
+async def test_pipeline_stages_file(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """run_acquisition stages the file and sets state=needs_review."""
+    job_id = await _run(db, tmp_path, _CANDIDATE)
+
+    async with db() as session:
+        row = await session.get(AcquisitionJobRow, job_id)
+    assert row is not None
+    assert row.state == "needs_review", f"Expected needs_review, got {row.state}"
+    assert row.staging_path is not None
+    assert Path(row.staging_path).exists(), "Staged file must exist on disk"
+    assert row.resolved_metadata_json is not None, "Metadata must be stored for review"
+
+
+async def test_pipeline_metadata_stored(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """resolved_metadata_json is populated for the review card."""
+    import json
+    job_id = await _run(db, tmp_path, _CANDIDATE)
+
+    async with db() as session:
+        row = await session.get(AcquisitionJobRow, job_id)
+    assert row is not None
+    meta = json.loads(row.resolved_metadata_json)
+    assert meta["title"] == "Test Track One"
+    assert meta["artist"] == "Fake Artist"
+
+
+async def test_pipeline_does_not_place_in_music_dir(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """Phase 1 must NOT place files in /music — that is Phase 2 (approval)."""
+    music_dir = tmp_path / "music"
+    job_id = await _run(db, tmp_path, _CANDIDATE)
+    placed = list(music_dir.rglob("*")) if music_dir.exists() else []
+    assert placed == [], f"Files must not land in /music until approved: {placed}"
+
+
+async def test_pipeline_no_track_row_until_approved(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """Track is not indexed in the Track table until place_approved_track() runs."""
+    from service.db.schema import Track
+    job_id = await _run(db, tmp_path, _CANDIDATE)
+    async with db() as session:
+        tracks = (await session.execute(select(Track))).scalars().all()
+    assert tracks == [], "Track table must be empty before approval"
+
+
+async def test_pipeline_dedup_skips_already_owned(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """If a confident local match exists in Track table, acquisition is skipped."""
+    from service.index.scanner import index_file
+    from tests.integration.test_dedup import _make_wav, _tag_wav
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    existing = music_dir / "track.wav"
+    _make_wav(existing)
+    _tag_wav(existing, "Test Track One", "Fake Artist")
+    async with db() as s, s.begin():
+        await index_file(s, existing)
+
+    provider = FakeProvider(FIXTURE_AUDIO)
+    fetch_mock = AsyncMock(wraps=provider.fetch)
+
+    with patch.object(provider, "fetch", fetch_mock):
+        job_id = await _run(db, tmp_path, _CANDIDATE, provider=provider)
+
+    fetch_mock.assert_not_called()
     async with db() as session:
         row = await session.get(AcquisitionJobRow, job_id)
     assert row is not None
     assert row.state == "done"
-    assert row.failure_class is None
-
-    # Navidrome scan was triggered
-    scan_mock.assert_called_once()
 
 
-async def test_pipeline_indexes_track_in_db(
+async def test_pipeline_two_runs_create_two_staged_jobs(
     tmp_path: Path, db: async_sessionmaker[AsyncSession]
 ) -> None:
-    music_dir = tmp_path / "music"
-    tmp_acquire = tmp_path / "tmp"
-    provider = FakeProvider(FIXTURE_AUDIO)
-    candidate = TrackCandidate(
-        provider="fake", provider_ref="fake-001",
-        title="Test Track One", artist="Fake Artist", duration_seconds=1,
-    )
+    """Without an approved track in Track table, two runs stage two files.
 
-    job_id = await _insert_job(db, candidate, "fake-001")
-    async with db() as session, session.begin():
-        await run_acquisition(
-            job_id=job_id, provider=provider, provider_ref="fake-001",
-            candidate=candidate, music_dir=music_dir, tmp_acquire_dir=tmp_acquire,
-            session=session, scan_trigger=AsyncMock(),
-        )
+    Dedup only skips if the track is already in the Track table (approved).
+    During review it's only staged — so a second download is allowed.
+    """
+    job_id1 = await _run(db, tmp_path, _CANDIDATE)
+    job_id2 = await _run(db, tmp_path, _CANDIDATE)
 
     async with db() as session:
-        tracks = (await session.execute(select(Track))).scalars().all()
-        files = (await session.execute(select(TrackFile))).scalars().all()
-
-    assert len(tracks) == 1
-    assert len(files) == 1
-    assert tracks[0].title == "Test Track One"
-
-
-async def test_pipeline_idempotent(
-    tmp_path: Path, db: async_sessionmaker[AsyncSession]
-) -> None:
-    """Running acquisition twice for the same ref must not duplicate files or DB rows."""
-    music_dir = tmp_path / "music"
-    tmp_acquire = tmp_path / "tmp"
-    provider = FakeProvider(FIXTURE_AUDIO)
-    candidate = TrackCandidate(
-        provider="fake", provider_ref="fake-001",
-        title="Test Track One", artist="Fake Artist", duration_seconds=1,
-    )
-
-    for _ in range(2):
-        job_id = await _insert_job(db, candidate, "fake-001")
-        async with db() as session, session.begin():
-            await run_acquisition(
-                job_id=job_id, provider=provider, provider_ref="fake-001",
-                candidate=candidate, music_dir=music_dir, tmp_acquire_dir=tmp_acquire,
-                session=session, scan_trigger=AsyncMock(),
-            )
-
-    placed = list(music_dir.rglob("*.wav"))
-    assert len(placed) == 1
-
-    async with db() as session:
-        files = (await session.execute(select(TrackFile))).scalars().all()
-    assert len(files) == 1
+        row1 = await session.get(AcquisitionJobRow, job_id1)
+        row2 = await session.get(AcquisitionJobRow, job_id2)
+    assert row1 is not None and row1.state == "needs_review"
+    assert row2 is not None and row2.state == "needs_review"
 
 
 # ── Failure injection ──────────────────────────────────────────────────────
@@ -184,9 +201,9 @@ class _FailingProvider(Provider):
 
     async def search(self, query: SearchQuery) -> AsyncGenerator[TrackCandidate, None]:  # type: ignore[override]
         return
-        yield  # make it an async generator
+        yield
 
-    async def fetch(self, provider_ref: str, dest_dir: Path) -> FetchResult:
+    async def fetch(self, provider_ref: str, dest_dir: Path, on_progress=None) -> FetchResult:
         raise self._exc
 
     async def health_check(self) -> ProviderHealth:
@@ -205,7 +222,6 @@ async def _run_with_failing(
     )
     job_id = await _insert_job(db, candidate, "x")
     provider = _FailingProvider(exc)
-
     async with db() as session, session.begin():
         await run_acquisition(
             job_id=job_id, provider=provider, provider_ref="x",
@@ -213,7 +229,6 @@ async def _run_with_failing(
             tmp_acquire_dir=tmp_path / "tmp", session=session,
             scan_trigger=AsyncMock(),
         )
-
     async with db() as session:
         row = await session.get(AcquisitionJobRow, job_id)
     assert row is not None
@@ -249,32 +264,13 @@ async def test_connection_error_is_transient(
     assert row.failure_class == "transient"
 
 
-async def test_scan_trigger_failure_does_not_fail_job(
+async def test_failure_does_not_place_files(
     tmp_path: Path, db: async_sessionmaker[AsyncSession]
 ) -> None:
-    """Navidrome scan failure must not roll back the acquisition."""
+    """A failed download must not leave any files in /music or staging."""
     music_dir = tmp_path / "music"
-    tmp_acquire = tmp_path / "tmp"
-    provider = FakeProvider(FIXTURE_AUDIO)
-    candidate = TrackCandidate(
-        provider="fake", provider_ref="fake-001",
-        title="Test Track One", artist="Fake Artist", duration_seconds=1,
+    await _run_with_failing(
+        tmp_path, db, yt_utils.DownloadError("ERROR: Video unavailable")
     )
-
-    scan_mock = AsyncMock(side_effect=RuntimeError("navidrome down"))
-    job_id = await _insert_job(db, candidate, "fake-001")
-
-    async with db() as session, session.begin():
-        await run_acquisition(
-            job_id=job_id, provider=provider, provider_ref="fake-001",
-            candidate=candidate, music_dir=music_dir, tmp_acquire_dir=tmp_acquire,
-            session=session, scan_trigger=scan_mock,
-        )
-
-    placed = list(music_dir.rglob("*.wav"))
-    assert len(placed) == 1
-
-    async with db() as session:
-        row = await session.get(AcquisitionJobRow, job_id)
-    assert row is not None
-    assert row.state == "done"
+    placed = list(music_dir.rglob("*")) if music_dir.exists() else []
+    assert placed == []

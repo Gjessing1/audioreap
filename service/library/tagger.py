@@ -316,6 +316,17 @@ def write_tags(
 
     tags = audio.tags
 
+    # WAV (and AIFF) files use ID3 tags but start with tags=None.
+    # Detect this early so they fall into the ID3 branch below.
+    if tags is None and not isinstance(audio, MP4):
+        try:
+            from mutagen.wave import WAVE as _WAVE
+            if isinstance(audio, _WAVE):
+                audio.add_tags()
+                tags = audio.tags
+        except Exception:
+            pass
+
     if isinstance(audio, MP4):
         if tags is None:
             audio.add_tags()

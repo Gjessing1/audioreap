@@ -156,8 +156,10 @@ async def test_dedup_does_not_skip_different_track(
     async with db() as session:
         row = await session.get(AcquisitionJobRow, job_id)
     assert row is not None
-    assert row.state == "done"
-
-    # New file was downloaded and placed
+    # With the review gate: track staged for review, not auto-placed
+    assert row.state == "needs_review", f"Expected needs_review, got {row.state}"
+    assert row.staging_path is not None
+    assert Path(row.staging_path).exists(), "Staged file must exist on disk"
+    # music_dir still only has the seeded track (new track is in staging, not music)
     wav_files = list(music_dir.rglob("*.wav"))
-    assert len(wav_files) == 2
+    assert len(wav_files) == 1

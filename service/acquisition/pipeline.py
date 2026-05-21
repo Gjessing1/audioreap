@@ -463,28 +463,26 @@ async def place_approved_track(
     duration_seconds: int | None = meta.get("duration_seconds")  # type: ignore[assignment]
     ext: str = str(meta.get("ext") or staging_path.suffix.lstrip("."))
 
-    # Write final tags (to staging file for normal; directly to /music file for enrichment)
-    try:
-        await asyncio.to_thread(
-            write_tags,
-            staging_path,
-            title=title,
-            artist=artist,
-            albumartist=albumartist,
-            album=album,
-            year=year,
-            original_year=original_year,
-            track_number=track_number,
-            disc_number=disc_number,
-            artist_sort=mb_artist_sort,
-            compilation=is_compilation,
-            genre=genre,
-            mb_recording_id=mb_recording_id,
-            mb_release_id=mb_release_id,
-            mb_artist_id=mb_artist_id,
-        )
-    except Exception as exc:
-        logger.warning("Approve: tag write failed for %s: %s", staging_path, exc)
+    # Write final tags — raise on failure so the approval is aborted and the
+    # job stays in needs_review rather than placing an untagged file in /music.
+    await asyncio.to_thread(
+        write_tags,
+        staging_path,
+        title=title,
+        artist=artist,
+        albumartist=albumartist,
+        album=album,
+        year=year,
+        original_year=original_year,
+        track_number=track_number,
+        disc_number=disc_number,
+        artist_sort=mb_artist_sort,
+        compilation=is_compilation,
+        genre=genre,
+        mb_recording_id=mb_recording_id,
+        mb_release_id=mb_release_id,
+        mb_artist_id=mb_artist_id,
+    )
 
     if is_enrichment:
         # File is already in /music — no move needed

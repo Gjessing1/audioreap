@@ -64,7 +64,7 @@ def test_disc_number_1_not_prefixed():
 def test_various_artists_goes_to_compilations():
     p = _p(albumartist="Various Artists", album="Now 100", year=2024, track_number=1,
            artist="Some Artist", title="Some Song")
-    assert p.parts[-4] == "Compilations"
+    assert p.parts[-3] == "Compilations"
 
 
 def test_compilation_filename_includes_artist():

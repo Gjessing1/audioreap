@@ -100,7 +100,7 @@ class FakeProvider(Provider):
             tracks=tracks,
         )
 
-    async def fetch(self, provider_ref: str, dest_dir: Path) -> FetchResult:
+    async def fetch(self, provider_ref: str, dest_dir: Path, on_progress=None) -> FetchResult:
         all_entries = _CATALOGUE + [
             {**t, "album": FAKE_ALBUM_TITLE, "duration_seconds": 1, "fixture": "tone_1s.wav"}
             for t in _ALBUM_TRACKS
