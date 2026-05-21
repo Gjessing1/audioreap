@@ -73,13 +73,14 @@
       {% if album.musicbrainz_release_id %}
       <input type="hidden" name="release_id" value="{{ album.musicbrainz_release_id }}">
       {% endif %}
+      <input type="hidden" name="apply_url" value="/library/albums/{{ album.id }}/apply-art">
+      <input type="hidden" name="result_target" value="#album-art-apply-status-{{ aid }}">
       <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">
         Search <span id="album-art-spin-{{ aid }}" class="htmx-indicator"><span class="spinner"></span></span>
       </button>
     </form>
-    <div id="album-art-results-{{ aid }}"
-         data-apply-url="/library/albums/{{ album.id }}/apply-art"
-         data-apply-target="#album-{{ aid }}"></div>
+    <div id="album-art-results-{{ aid }}"></div>
+    <div id="album-art-apply-status-{{ aid }}" style="font-size:12px;margin-top:4px"></div>
   </div>
 
   {# ── Edit album metadata ───────────────────────────────────────────────── #}

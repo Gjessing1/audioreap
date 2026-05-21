@@ -152,29 +152,6 @@ window.applyMbToLibraryEditor = function(trackId, recordingId, title, artist, al
   if (panel) panel.classList.add('hidden');
 };
 
-/* ── Cover art picker ────────────────────────────────────────────────────── */
-window.pickArt = function(el) {
-  const fullUrl = el.dataset.full;
-  if (!fullUrl) return;
-  // Find the results container (parent with data-apply-url)
-  const container = el.closest("[data-apply-url]");
-  if (!container) return;
-  const applyUrl  = container.dataset.applyUrl;
-  const targetSel = container.dataset.applyTarget;
-
-  // Highlight selected
-  container.querySelectorAll(".art-choice img").forEach(img => img.style.borderColor = "var(--b1)");
-  el.querySelector("img").style.borderColor = "var(--primary)";
-
-  // POST the URL via HTMX
-  const fd = new FormData();
-  fd.append("art_url", fullUrl);
-  htmx.ajax("POST", applyUrl, {
-    swap: "outerHTML",
-    target: targetSel,
-    values: { art_url: fullUrl },
-  });
-};
 
 /* ── Review card keyboard shortcuts (a=approve, r=reject, s=MB search, p=play) ── */
 let _hoveredCard = null;

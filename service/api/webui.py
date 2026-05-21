@@ -2385,6 +2385,8 @@ async def art_search(
     request: Request,
     q: str = "",
     release_id: str = "",
+    apply_url: str = "",
+    result_target: str = "",
 ) -> HTMLResponse:
     """Return a thumbnail grid from iTunes + CAA editions for the given query."""
     results: list[dict] = []
@@ -2400,7 +2402,7 @@ async def art_search(
 
     return templates.TemplateResponse(
         request, "partials/art_search_results.html",
-        {"results": results},
+        {"results": results, "apply_url": apply_url, "result_target": result_target},
     )
 
 

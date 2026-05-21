@@ -2,13 +2,23 @@
 <div style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0">
   {% for r in results %}
   <div style="position:relative;width:80px;cursor:pointer" class="art-choice"
-       data-full="{{ r.full|e }}"
-       onclick="pickArt(this)"
-       title="{{ r.label }} ({{ r.source }})">
+       {% if apply_url %}
+       hx-post="{{ apply_url }}"
+       hx-trigger="click"
+       hx-target="{{ result_target or 'this' }}"
+       hx-swap="innerHTML"
+       hx-vals='{"art_url": "{{ r.full|e }}"}'
+       hx-indicator="this"
+       {% endif %}
+       title="{{ r.label }} ({{ r.source }})"
+       onclick="this.querySelectorAll('img')[0].style.borderColor='var(--primary)'">
     <img src="{{ r.thumb|e }}"
          loading="lazy"
          style="width:80px;height:80px;object-fit:cover;border-radius:4px;border:2px solid var(--b1);display:block"
          onerror="this.closest('.art-choice').style.display='none'">
+    <div class="htmx-indicator" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.4);border-radius:4px;align-items:center;justify-content:center">
+      <span class="spinner"></span>
+    </div>
     <div style="font-size:9px;color:var(--t3);text-align:center;margin-top:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">
       {{ r.source }}
     </div>

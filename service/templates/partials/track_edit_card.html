@@ -81,14 +81,14 @@
       {% if track.album and track.album.musicbrainz_release_id %}
       <input type="hidden" name="release_id" value="{{ track.album.musicbrainz_release_id }}">
       {% endif %}
+      <input type="hidden" name="apply_url" value="/library/tracks/{{ track.id }}/apply-art">
+      <input type="hidden" name="result_target" value="#art-apply-status-{{ safe_id }}">
       <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">
         Search <span id="art-search-spin-{{ safe_id }}" class="htmx-indicator"><span class="spinner"></span></span>
       </button>
     </form>
-    {# Results — clicking a thumbnail calls pickArt() set up in app.js #}
-    <div id="art-search-results-{{ safe_id }}"
-         data-apply-url="/library/tracks/{{ track.id }}/apply-art"
-         data-apply-target="#browse-{{ safe_id }}"></div>
+    <div id="art-search-results-{{ safe_id }}"></div>
+    <div id="art-apply-status-{{ safe_id }}" style="font-size:12px;margin-top:4px"></div>
   </div>
 
   <form class="rv-form"
