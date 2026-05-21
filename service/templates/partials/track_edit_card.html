@@ -37,14 +37,16 @@
       {# Fetch cover art from CAA if has MB ID #}
       {% if track.musicbrainz_recording_id %}
       <div style="margin-top:8px">
-        <button class="btn btn-sm btn-ghost"
-                hx-post="/library/tracks/{{ track.id }}/fetch-art"
-                hx-target="closest .fetch-art-btn"
-                hx-swap="innerHTML"
-                style="font-size:11px">
-          <span class="fetch-art-btn">Fetch cover from MusicBrainz</span>
-          <span class="htmx-indicator"><span class="spinner"></span></span>
-        </button>
+        <span class="fetch-art-btn">
+          <button class="btn btn-sm btn-ghost"
+                  hx-post="/library/tracks/{{ track.id }}/fetch-art"
+                  hx-target="closest .fetch-art-btn"
+                  hx-swap="innerHTML"
+                  style="font-size:11px">
+            Fetch cover from MusicBrainz
+            <span class="htmx-indicator"><span class="spinner"></span></span>
+          </button>
+        </span>
       </div>
       {% endif %}
     </div>
