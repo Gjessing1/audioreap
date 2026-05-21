@@ -1628,9 +1628,7 @@ async def artist_acquire_missing(
                 album_job_id=album_job_id,
                 release_group_id=rg.release_group_id,
                 artist_name=artist.name,
-                album_title=rg.title,
                 music_dir=str(settings.music_dir),
-                staging_dir=str(settings.staging_dir),
                 tmp_acquire_dir=str(settings.tmp_acquire_dir),
                 _job_id=f"album:{album_job_id}",
             )
@@ -1778,14 +1776,17 @@ async def library_bulk_edit(
         return HTMLResponse('<span class="badge-warn">Enter at least one field to update</span>')
 
     updated = 0
+    # Batch-fetch all selected tracks in one query
+    all_rows = (await session.execute(
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id.in_(track_ids))
+    )).unique().scalars().all()
+    row_by_id = {r.id: r for r in all_rows}
+
     failed = 0
     for tid in track_ids:
-        stmt = (
-            select(Track)
-            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-            .where(Track.id == tid)
-        )
-        row = (await session.execute(stmt)).unique().scalar_one_or_none()
+        row = row_by_id.get(tid)
         if row is None or not row.file:
             continue
         file_path = Path(row.file.path)
@@ -3584,7 +3585,10 @@ async def trash_restore(
     """Restore a trashed file to its original path (or music root if unknown)."""
     import urllib.parse
     filename = urllib.parse.unquote(filename)
+    # Check both music and staging trash directories
     trash_file = settings.music_dir / ".trash" / ts / filename
+    if not trash_file.exists():
+        trash_file = settings.staging_dir / ".trash" / ts / filename
     if not trash_file.exists():
         raise HTTPException(404, "File not found in trash")
 
@@ -3628,6 +3632,8 @@ async def trash_delete(ts: str, filename: str) -> HTMLResponse:
     import urllib.parse
     filename = urllib.parse.unquote(filename)
     trash_file = settings.music_dir / ".trash" / ts / filename
+    if not trash_file.exists():
+        trash_file = settings.staging_dir / ".trash" / ts / filename
     restore_sidecar = trash_file.parent / f"{filename}.restore_path"
     try:
         if trash_file.exists():

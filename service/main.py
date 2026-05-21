@@ -318,8 +318,8 @@ async def acquire(
     # Pre-flight duplicate check: skip if MB recording ID is already owned
     if candidate.mb_recording_id:
         existing = (await session.execute(
-            select(Track).where(Track.musicbrainz_recording_id == candidate.mb_recording_id)
-        )).scalar_one_or_none()
+            select(Track).where(Track.musicbrainz_recording_id == candidate.mb_recording_id).limit(1)
+        )).scalars().first()
         if existing is not None:
             from fastapi.templating import Jinja2Templates as _T
             _tmpl = _T(directory=str(Path(__file__).parent / "templates"))

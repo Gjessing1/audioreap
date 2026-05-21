@@ -578,11 +578,7 @@ async def place_approved_track(
             await session.flush()
     except Exception as exc:
         logger.warning("Approve: DB index failed for %s: %s", dest, exc)
-        # Reset session after any flush/greenlet error so subsequent operations work
-        try:
-            await session.rollback()
-        except Exception:
-            pass
+        # begin_nested() savepoint already rolled back on exception; outer transaction is intact
 
     # Navidrome scan
     try:
