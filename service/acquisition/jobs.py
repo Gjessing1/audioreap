@@ -89,16 +89,20 @@ async def enrich_track(
     *,
     track_id: str,
 ) -> None:
-    """arq job: attempt MusicBrainz enrichment for a track without a Recording ID."""
+    """arq job: find MusicBrainz match for a track without a Recording ID.
+
+    Instead of auto-applying, creates a needs_review job so the user can
+    inspect and approve (or reject) the suggested metadata.
+    """
     import asyncio
+    import json
     from pathlib import Path as _Path
 
     from sqlalchemy import select as _select
     from sqlalchemy.orm import joinedload as _joinedload
 
     from service.config import settings as _settings
-    from service.db.schema import Track as _Track
-    from service.library.tagger import has_cover_art as _has_cover_art, write_tags as _write_tags
+    from service.db.schema import AcquisitionJobRow as _JobRow, Track as _Track
     from service.metadata.musicbrainz import lookup_recording as _lookup
     from service.metadata.quality import compute_quality_score as _quality
 
@@ -117,10 +121,25 @@ async def enrich_track(
         track = (await session.execute(stmt)).unique().scalar_one_or_none()
         if track is None or track.musicbrainz_recording_id:
             return
+        if not track.file:
+            return
 
-        # Attempt MB lookup with the stored title/artist.
-        # If the title looks like "Artist - Title" (common for YouTube uploads indexed
-        # before the split logic was added), also try with split values.
+        file_path = _Path(track.file.path)
+        if not file_path.exists():
+            return
+
+        # Check if a pending enrichment suggestion already exists for this track
+        existing_enrich = (await session.execute(
+            _select(_JobRow).where(
+                _JobRow.provider == "enrich",
+                _JobRow.provider_ref == track_id,
+                _JobRow.state == "needs_review",
+            )
+        )).scalar_one_or_none()
+        if existing_enrich:
+            logger.debug("Enrichment suggestion already pending for track %s", track_id)
+            return
+
         lookup_title = track.title
         lookup_artist = track.artist.name
         match = await asyncio.to_thread(
@@ -132,67 +151,64 @@ async def enrich_track(
             match = await asyncio.to_thread(
                 _lookup, split_title, split_artist, track.duration_seconds, _settings.cache_dir,
             )
-            if match is not None:
-                lookup_title = split_title
-                lookup_artist = split_artist
 
         if match is None:
             logger.debug("No MB match for track %s", track_id)
             return
 
-        track.musicbrainz_recording_id = match.recording_id
-
-        # Update title/artist in DB if they changed (e.g., after "Artist - Title" split)
         clean_title = match.title or lookup_title
         clean_artist = match.artist or lookup_artist
-        if clean_title != track.title:
-            track.title = clean_title
-        if clean_artist != track.artist.name:
-            # Find or create the correct Artist row
-            from service.index.scanner import _artist_id as _aid
-            from service.db.schema import Artist as _Artist
-            from datetime import UTC as _UTC, datetime as _dt
-            new_aid = _aid(clean_artist)
-            existing = await session.get(_Artist, new_aid)
-            if existing is None:
-                now = _dt.now(_UTC).replace(tzinfo=None)
-                session.add(_Artist(
-                    id=new_aid, name=clean_artist,
-                    created_at=now, updated_at=now,
-                ))
-            track.artist_id = new_aid
+        hca = bool(track.file.has_cover_art)
+        quality = _quality(
+            title=clean_title,
+            artist=clean_artist,
+            album=match.album or (track.album.title if track.album else None),
+            year=match.year,
+            track_number=match.track_number,
+            musicbrainz_recording_id=match.recording_id,
+            has_cover_art=hca,
+        )
 
-        if track.file:
-            file_path = _Path(track.file.path)
-            if file_path.exists():
-                await asyncio.to_thread(
-                    _write_tags,
-                    file_path,
-                    title=clean_title,
-                    artist=clean_artist,
-                    albumartist=clean_artist,
-                    album=match.album,
-                    year=match.year,
-                    original_year=match.original_year,
-                    track_number=match.track_number,
-                    artist_sort=match.artist_sort,
-                    mb_recording_id=match.recording_id,
-                    mb_release_id=match.release_id,
-                    mb_artist_id=match.artist_id,
-                )
-                hca = await asyncio.to_thread(_has_cover_art, file_path)
-                track.file.has_cover_art = hca
-                track.tag_quality_score = _quality(
-                    title=clean_title,
-                    artist=clean_artist,
-                    album=match.album or (track.album.title if track.album else None),
-                    year=match.year,
-                    track_number=match.track_number,
-                    musicbrainz_recording_id=match.recording_id,
-                    has_cover_art=hca,
-                )
+        resolved_metadata = {
+            "title": clean_title,
+            "artist": clean_artist,
+            "albumartist": clean_artist,
+            "album": match.album,
+            "year": match.year,
+            "original_year": match.original_year,
+            "track_number": match.track_number,
+            "disc_number": track.disc_number,
+            "duration_seconds": track.duration_seconds,
+            "ext": file_path.suffix.lstrip("."),
+            "mb_recording_id": match.recording_id,
+            "mb_release_id": match.release_id,
+            "mb_artist_id": match.artist_id,
+            "mb_artist_sort": match.artist_sort,
+            "mb_match_source": "text_search",
+            "is_enrichment": True,
+            "current_title": track.title,
+            "current_artist": track.artist.name,
+            "quality_score": quality,
+        }
 
-    logger.info("Enriched track %s → MB %s", track_id, match.recording_id)
+        job_id = str(uuid.uuid4())
+        job_row = _JobRow(
+            id=job_id,
+            provider="enrich",
+            provider_ref=track_id,
+            state="needs_review",
+            query=f"{track.artist.name} – {track.title}",
+            staging_path=str(file_path),
+            resolved_metadata_json=json.dumps(resolved_metadata),
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        session.add(job_row)
+
+    logger.info(
+        "Created enrichment suggestion %s for track %s → MB %s",
+        job_id, track_id, match.recording_id,
+    )
 
 
 async def acquire_album_from_mb(

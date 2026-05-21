@@ -329,6 +329,7 @@ async def review_card(
         raise HTTPException(400, "Job not reviewable")
 
     staging_exists = bool(row.staging_path and Path(row.staging_path).exists())
+    is_enrichment = bool(meta.get("is_enrichment"))
 
     from sqlalchemy import distinct as _distinct
     genre_rows = (await session.execute(
@@ -339,7 +340,8 @@ async def review_card(
     return templates.TemplateResponse(
         request, "partials/review_card.html",
         {"job_id": job_id, "meta": meta, "query": row.query or "",
-         "staging_exists": staging_exists, "genres": genres},
+         "staging_exists": staging_exists, "genres": genres,
+         "is_enrichment": is_enrichment},
     )
 
 
@@ -477,7 +479,15 @@ async def reject_job(
     if row is None:
         raise HTTPException(404)
 
-    if row.staging_path:
+    # Enrichment suggestions point to the real /music file — never trash it
+    is_enrichment = False
+    if row.resolved_metadata_json:
+        try:
+            is_enrichment = bool(json.loads(row.resolved_metadata_json).get("is_enrichment"))
+        except Exception:
+            pass
+
+    if row.staging_path and not is_enrichment:
         try:
             p = Path(row.staging_path)
             if p.exists():
@@ -576,6 +586,21 @@ async def requeue_job(
     if not row.candidate_json:
         raise HTTPException(400, "No candidate data to re-queue")
 
+    # Carry forward any MB recording ID the user set during review so the
+    # pipeline can lock onto it rather than running a fresh text search.
+    candidate_json = row.candidate_json
+    if row.resolved_metadata_json:
+        try:
+            from service.core.models import TrackCandidate as _TC
+            resolved = json.loads(row.resolved_metadata_json)
+            mb_id = resolved.get("mb_recording_id")
+            if mb_id:
+                cand = _TC.model_validate_json(candidate_json)
+                cand = cand.model_copy(update={"musicbrainz_recording_id": mb_id})
+                candidate_json = cand.model_dump_json()
+        except Exception:
+            pass
+
     try:
         from arq import create_pool
         from arq.connections import RedisSettings
@@ -585,7 +610,7 @@ async def requeue_job(
             job_id=job_id,
             provider_name=row.provider,
             provider_ref=row.provider_ref,
-            candidate_json=row.candidate_json,
+            candidate_json=candidate_json,
             music_dir=str(settings.music_dir),
             tmp_acquire_dir=str(settings.tmp_acquire_dir),
             _job_id=f"acquire:{job_id}",
@@ -1017,6 +1042,52 @@ async def library_albums_page(
         request, "library_albums.html",
         {"active": "library", "q": q},
     )
+
+
+@router.get("/library/albums/merge-candidates", response_class=HTMLResponse)
+async def library_albums_merge_candidates(
+    request: Request,
+    q: str = "",
+    canonical: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return album rows as merge-into-canonical candidates with action buttons."""
+    from sqlalchemy.orm import joinedload as _jl
+    if not q.strip():
+        return HTMLResponse('<p class="muted" style="font-size:12px">Type to search…</p>')
+    pattern = f"%{q.strip()}%"
+    stmt = (
+        select(Album)
+        .join(Album.artist)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
+        .where(Album.title.ilike(pattern) | Artist.name.ilike(pattern))
+        .where(Album.id != canonical)
+        .order_by(Artist.name, Album.year, Album.title)
+        .limit(20)
+    )
+    albums = (await session.execute(stmt)).unique().scalars().all()
+    if not albums:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No matching albums.</p>')
+    lines = []
+    for album in albums:
+        ntracks = len(album.tracks)
+        lines.append(
+            f'<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--b1)">'
+            f'<div style="flex:1;min-width:0">'
+            f'<div style="font-size:13px;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{album.title}</div>'
+            f'<div style="font-size:11px;color:var(--t3)">{album.artist.name}'
+            + (f' · {album.year}' if album.year else '')
+            + f' · {ntracks} track{"s" if ntracks != 1 else ""}</div>'
+            f'</div>'
+            f'<button class="btn btn-sm btn-ghost" style="white-space:nowrap"'
+            f' hx-post="/library/albums/{canonical}/merge/{album.id}"'
+            f' hx-target="#album-list"'
+            f' hx-swap="innerHTML"'
+            f' hx-confirm="Merge \'{album.title}\' into the current album? This moves all its tracks and cannot be undone.">'
+            f'Merge in ←</button>'
+            f'</div>'
+        )
+    return HTMLResponse('<div style="margin-top:4px">' + ''.join(lines) + '</div>')
 
 
 @router.get("/library/albums/list", response_class=HTMLResponse)

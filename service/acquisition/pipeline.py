@@ -430,6 +430,7 @@ async def place_approved_track(
     if "artist" in overrides and "albumartist" not in overrides:
         meta["albumartist"] = meta.get("artist")
 
+    is_enrichment: bool = bool(meta.get("is_enrichment", False))
     title: str = str(meta.get("title") or "Unknown")
     artist: str = str(meta.get("artist") or "Unknown")
     albumartist: str = str(meta.get("albumartist") or artist)
@@ -447,7 +448,7 @@ async def place_approved_track(
     duration_seconds: int | None = meta.get("duration_seconds")  # type: ignore[assignment]
     ext: str = str(meta.get("ext") or staging_path.suffix.lstrip("."))
 
-    # Write final tags to the staging file
+    # Write final tags (to staging file for normal; directly to /music file for enrichment)
     try:
         await asyncio.to_thread(
             write_tags,
@@ -470,32 +471,36 @@ async def place_approved_track(
     except Exception as exc:
         logger.warning("Approve: tag write failed for %s: %s", staging_path, exc)
 
-    # Compute final /music destination
-    dest = track_path(
-        settings.music_dir,
-        artist=artist,
-        album=album,
-        year=year,
-        track_number=track_number,
-        disc_number=disc_number,
-        title=title,
-        ext=ext,
-        albumartist=albumartist,
-    )
+    if is_enrichment:
+        # File is already in /music — no move needed
+        dest = staging_path
+    else:
+        # Compute final /music destination
+        dest = track_path(
+            settings.music_dir,
+            artist=artist,
+            album=album,
+            year=year,
+            track_number=track_number,
+            disc_number=disc_number,
+            title=title,
+            ext=ext,
+            albumartist=albumartist,
+        )
 
-    # Idempotency: file already in place
-    if dest.exists():
-        logger.info("Approve: track already at %s — marking done", dest)
-        hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
-        row.state = "done"
-        row.track_id = hash_track_id
-        row.staging_path = None
-        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-        await session.flush()
-        return dest
+        # Idempotency: file already in place
+        if dest.exists():
+            logger.info("Approve: track already at %s — marking done", dest)
+            hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
+            row.state = "done"
+            row.track_id = hash_track_id
+            row.staging_path = None
+            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            await session.flush()
+            return dest
 
-    # Atomic place: staging → music
-    await asyncio.to_thread(atomic_place, staging_path, dest)
+        # Atomic place: staging → music
+        await asyncio.to_thread(atomic_place, staging_path, dest)
 
     # Fetch and embed artwork (cached — cheap on second call)
     artwork_bytes: bytes | None = None

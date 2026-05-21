@@ -70,8 +70,8 @@
               style="color:var(--danger)">Delete album</button>
       <button type="button" class="btn btn-sm rv-reject"
               hx-get="/library/albums/list"
-              hx-target="#album-{{ aid }}"
-              hx-swap="outerHTML">Close</button>
+              hx-target="#album-list"
+              hx-swap="innerHTML">Close</button>
     </div>
   </form>
 
@@ -122,12 +122,12 @@
               onclick="document.getElementById('merge-panel-{{ aid }}').classList.toggle('hidden')"
               style="font-size:11px">Merge another album into this one</button>
       <div id="merge-panel-{{ aid }}" class="hidden" style="margin-top:8px">
-        <form hx-get="/library/albums/list"
+        <form hx-get="/library/albums/merge-candidates?canonical={{ album.id }}"
               hx-trigger="input changed delay:400ms from:#merge-q-{{ aid }}"
               hx-target="#merge-results-{{ aid }}"
               hx-include="#merge-q-{{ aid }}">
           <input id="merge-q-{{ aid }}" name="q" type="search" class="rv-input"
-                 placeholder="Search album to merge into this one…" style="margin-bottom:8px">
+                 placeholder="Find album to merge into this one…" style="margin-bottom:8px">
         </form>
         <div id="merge-results-{{ aid }}" class="muted" style="font-size:12px">
           Type to search…

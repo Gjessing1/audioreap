@@ -11,7 +11,9 @@
     </div>
     <div class="rv-info">
       <div class="rv-badges">
-        {% if meta.mb_match_source == 'acoustid' %}
+        {% if is_enrichment %}
+        <span class="badge badge-busy">MB Enrichment suggestion</span>
+        {% elif meta.mb_match_source == 'acoustid' %}
         <span class="badge badge-done">✓ AcoustID {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}%</span>
         {% elif meta.mb_match_source == 'text_search' %}
         <span class="badge badge-busy">≈ Text match</span>
@@ -26,7 +28,7 @@
         {% endif %}
         {% if not staging_exists %}
         <span class="badge badge-fail">File missing</span>
-        {% elif meta.force_staging_reason %}
+        {% elif meta.force_staging_reason and not is_enrichment %}
         <span class="badge badge-warn">⚠ Mismatch</span>
         {% endif %}
       </div>
@@ -37,7 +39,13 @@
   </div>
 
   {# ── Alerts ─────────────────────────────────────────────────────────── #}
-  {% if not staging_exists %}
+  {% if is_enrichment %}
+  <div class="rv-alert rv-alert--warn" style="display:flex;flex-direction:column;gap:2px">
+    <span style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Enrichment suggestion</span>
+    <span>Currently: <strong>{{ meta.current_title }}</strong> by <strong>{{ meta.current_artist }}</strong></span>
+    <span style="color:var(--t3);font-size:12px">Approving will write the suggested MB metadata to the existing file in place.</span>
+  </div>
+  {% elif not staging_exists %}
   <div class="rv-alert rv-alert--error">
     Staged file no longer exists at {{ meta.title }}. The file may have been cleaned up.
     Use Re-download to fetch it again.
@@ -110,17 +118,21 @@
 
     <div class="rv-actions">
       {% if staging_exists %}
-      <button type="submit" class="btn btn-lg rv-approve">✓ Approve &amp; Place</button>
+      <button type="submit" class="btn btn-lg rv-approve">
+        {% if is_enrichment %}✓ Apply MB Tags{% else %}✓ Approve &amp; Place{% endif %}
+      </button>
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}')">
         Search MB
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview staged file">▶ Play</button>
+              onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview file">▶ Play</button>
+      {% if not is_enrichment %}
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="togglePanel('src-panel-{{ job_id }}','mb-panel-{{ job_id }}')">
         Different source
       </button>
+      {% endif %}
       {% else %}
       <button type="button" class="btn btn-lg btn-ghost"
               hx-post="/jobs/{{ job_id }}/requeue"
@@ -133,8 +145,8 @@
               hx-post="/jobs/{{ job_id }}/reject"
               hx-target="#job-{{ job_id }}"
               hx-swap="outerHTML"
-              hx-confirm="Reject and remove this job?">
-        Reject
+              hx-confirm="{% if is_enrichment %}Dismiss this enrichment suggestion?{% else %}Reject and remove this job?{% endif %}">
+        {% if is_enrichment %}Dismiss{% else %}Reject{% endif %}
       </button>
     </div>
   </form>
@@ -157,7 +169,8 @@
     <div id="mb-results-{{ job_id }}" class="mb-results"></div>
   </div>
 
-  {# ── Source replacement panel ──────────────────────────────────────────── #}
+  {# ── Source replacement panel (not applicable for enrichment suggestions) ── #}
+  {% if not is_enrichment %}
   <div id="src-panel-{{ job_id }}" class="mb-panel hidden">
     <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find a different YouTube version</div>
     <form class="mb-search-row"

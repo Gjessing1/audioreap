@@ -21,6 +21,7 @@ from service.acquisition.pipeline import ScanTrigger, run_acquisition
 from service.core.models import AlbumCandidate
 from service.db.schema import AcquisitionJobRow, AlbumAcquisitionJob
 from service.library.layout import track_path
+from service.library.writer import atomic_place
 from service.providers.base import Provider
 
 logger = logging.getLogger(__name__)
@@ -169,9 +170,8 @@ async def run_album_acquisition(
         if dest.exists():
             logger.info("Album: skipping existing %s", dest)
             continue
-        import os
         try:
-            os.rename(staged_file, dest)
+            atomic_place(staged_file, dest)
             moved += 1
         except OSError as exc:
             logger.warning("Album: failed to move %s: %s", staged_file, exc)
