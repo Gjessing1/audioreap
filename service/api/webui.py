@@ -2413,7 +2413,7 @@ async def apply_art_to_track(
 ) -> HTMLResponse:
     """Download art from a URL and embed it in a track file."""
     from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
-    from service.metadata.artwork import _image_too_small, fetch_from_url
+    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small, fetch_from_url
 
     stmt = (
         select(Track)
@@ -2430,7 +2430,7 @@ async def apply_art_to_track(
     art = await fetch_from_url(art_url)
     if not art:
         return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
-    if _image_too_small(art):
+    if _image_too_small(art, _MIN_USER_COVER_PX):
         return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
 
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
@@ -2450,13 +2450,13 @@ async def apply_art_to_album(
 ) -> HTMLResponse:
     """Download art from a URL and embed it in all tracks of an album."""
     from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
-    from service.metadata.artwork import _image_too_small, fetch_from_url
+    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small, fetch_from_url
     from sqlalchemy.orm import joinedload as _jl
 
     art = await fetch_from_url(art_url)
     if not art:
         return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
-    if _image_too_small(art):
+    if _image_too_small(art, _MIN_USER_COVER_PX):
         return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
 
     album = (await session.execute(
@@ -2500,7 +2500,7 @@ async def upload_track_art(
 ) -> HTMLResponse:
     """Embed a user-supplied image as cover art in a track file."""
     from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
-    from service.metadata.artwork import _image_too_small
+    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small
 
     stmt = (
         select(Track)
@@ -2520,7 +2520,7 @@ async def upload_track_art(
     art = await cover.read()
     if not art:
         return HTMLResponse('<span class="badge badge-warn">Empty file</span>')
-    if _image_too_small(art):
+    if _image_too_small(art, _MIN_USER_COVER_PX):
         return HTMLResponse('<span class="badge badge-warn">Image too small — must be at least 300×300 px</span>')
 
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
@@ -2545,7 +2545,7 @@ async def upload_album_cover(
 ) -> HTMLResponse:
     """Embed a user-supplied image as cover art for all tracks in an album + sidecar."""
     from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
-    from service.metadata.artwork import _image_too_small
+    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small
     from sqlalchemy.orm import joinedload as _jl
 
     if not cover.content_type or not cover.content_type.startswith("image/"):
@@ -2554,7 +2554,7 @@ async def upload_album_cover(
     art = await cover.read()
     if not art:
         return HTMLResponse('<span class="badge badge-warn">Empty file</span>')
-    if _image_too_small(art):
+    if _image_too_small(art, _MIN_USER_COVER_PX):
         return HTMLResponse('<span class="badge badge-warn">Image too small — must be at least 300×300 px</span>')
 
     album = (await session.execute(
@@ -3500,8 +3500,12 @@ async def merge_album(
     source_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Move all files from source album into canonical album folder, then re-index."""
-    from service.index.scanner import index_file as _index_file
+    """Move source album files into canonical album folder and reassign all DB records.
+
+    Deliberately does NOT call index_file() — that would re-read file tags and
+    associate tracks with a new album based on the source's tags instead of the
+    canonical. Instead we update TrackFile.path and Track.album_id directly.
+    """
     from service.library.writer import atomic_place as _atomic_place
     from sqlalchemy.orm import joinedload as _jl
 
@@ -3526,43 +3530,61 @@ async def merge_album(
             canonical_dir = Path(t.file.path).parent
             break
     if canonical_dir is None:
-        return HTMLResponse('<span class="badge-warn">Canonical album has no files on disk</span>')
+        # Canonical has no files yet — use the layout function to compute the expected dir
+        from service.library.layout import track_path as _track_path
+        canonical_dir = _track_path(
+            settings.music_dir,
+            artist=canonical.artist.name if canonical.artist else "Unknown",
+            album=canonical.title,
+            year=canonical.year,
+            track_number=None, disc_number=None,
+            title="placeholder", ext="flac",
+            albumartist=canonical.artist.name if canonical.artist else None,
+        ).parent
+        canonical_dir.mkdir(parents=True, exist_ok=True)
 
     moved = 0
     already_there = 0
     collisions = 0
-    stale_paths: list[str] = []  # source TrackFile paths to remove from DB
 
     for track in source.tracks:
         if not track.file:
+            # Reassign album even if no file
+            track.album_id = canonical_id
             continue
+
         src = Path(track.file.path)
         dst = canonical_dir / src.name
 
         if src == dst:
-            # File is already in canonical dir (DB split on same directory) — no move needed
+            # Files are already in canonical dir — just reassign album in DB
             already_there += 1
+            track.album_id = canonical_id
             continue
 
-        stale_paths.append(track.file.path)
-
         if not src.exists():
-            # Stale DB record — file already gone from source location
+            # Stale DB record — update path to where it should be, reassign album
+            track.file.path = str(dst)
+            track.album_id = canonical_id
             continue
 
         if dst.exists():
-            # Name collision: a different file already occupies dst
+            # Name collision — reassign album, don't move the file
             collisions += 1
-            logger.info("Merge: name collision at %s — source %s not moved", dst, src)
+            logger.info("Merge: name collision at %s — keeping source %s, reassigning album", dst, src)
+            track.album_id = canonical_id
             continue
 
         try:
             _atomic_place(src, dst)
+            # Update TrackFile path in DB to reflect new location
+            track.file.path = str(dst)
+            track.album_id = canonical_id
             moved += 1
         except Exception as exc:
             logger.warning("Merge: failed to move %s → %s: %s", src, dst, exc)
 
-    # Remove now-empty source directory (only if different from canonical)
+    # Remove now-empty source directories
     try:
         src_dirs: set[Path] = set()
         for track in source.tracks:
@@ -3576,37 +3598,9 @@ async def merge_album(
     except Exception:
         pass
 
-    # Index moved files at their new paths — do NOT call scan() with incremental=False
-    # because that collects ALL known DB paths and removes anything not in canonical_dir,
-    # which would wipe the entire library except this album.
-    for track in source.tracks:
-        if not track.file:
-            continue
-        dst = canonical_dir / Path(track.file.path).name
-        if dst.exists():
-            try:
-                await _index_file(session, dst)
-            except Exception as exc:
-                logger.warning("Merge: index_file failed for %s: %s", dst, exc)
-
-    # Delete stale TrackFile records that pointed to the old (source) paths
-    if stale_paths:
-        from sqlalchemy import delete as _delete
-        await session.execute(
-            _delete(TrackFile).where(TrackFile.path.in_(stale_paths))
-        )
-        await session.flush()
-        # Remove orphaned Track rows (no remaining TrackFile)
-        from sqlalchemy import select as _select
-        orphan_ids = (await session.execute(
-            _select(Track.id).where(~Track.id.in_(_select(TrackFile.track_id)))
-        )).scalars().all()
-        if orphan_ids:
-            await session.execute(_delete(Track).where(Track.id.in_(orphan_ids)))
-        # Remove orphaned Album rows (no remaining tracks)
-        await session.execute(
-            _delete(Album).where(~Album.id.in_(_select(Track.album_id).where(Track.album_id.is_not(None))))
-        )
+    # Delete the source Album row — all its tracks have been reassigned
+    await session.flush()
+    await session.delete(source)
 
     await session.commit()
 
@@ -3618,9 +3612,9 @@ async def merge_album(
 
     parts = [f"moved {moved}"]
     if already_there:
-        parts.append(f"{already_there} already in place")
+        parts.append(f"{already_there} reassigned in place")
     if collisions:
-        parts.append(f"{collisions} name collision(s) — rename manually")
+        parts.append(f"{collisions} name collision(s)")
     return HTMLResponse(f'<span class="badge-ok">Merged ✓ ({", ".join(parts)})</span>')
 
 

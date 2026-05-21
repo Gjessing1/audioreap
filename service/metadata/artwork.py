@@ -15,16 +15,17 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 20.0
 _CAA_FRONT = "https://coverartarchive.org/release/{release_mbid}/front-500"
-_MIN_COVER_PX = 300
+_MIN_COVER_PX = 300       # used for automatic CAA fetches
+_MIN_USER_COVER_PX = 75  # minimum for user-supplied art (upload / search pick)
 
 
-def _image_too_small(data: bytes) -> bool:
-    """Return True if the image dimensions are below _MIN_COVER_PX."""
+def _image_too_small(data: bytes, min_px: int = _MIN_COVER_PX) -> bool:
+    """Return True if the image dimensions are below min_px."""
     try:
         if data[:8] == b'\x89PNG\r\n\x1a\n':  # PNG
             w = struct.unpack('>I', data[16:20])[0]
             h = struct.unpack('>I', data[20:24])[0]
-            return w < _MIN_COVER_PX or h < _MIN_COVER_PX
+            return w < min_px or h < min_px
         if data[:2] == b'\xff\xd8':  # JPEG — scan for SOF marker
             i = 2
             while i + 4 < len(data):
@@ -35,7 +36,7 @@ def _image_too_small(data: bytes) -> bool:
                 if marker in (0xc0, 0xc1, 0xc2, 0xc3):
                     h = struct.unpack('>H', data[i + 5:i + 7])[0]
                     w = struct.unpack('>H', data[i + 7:i + 9])[0]
-                    return w < _MIN_COVER_PX or h < _MIN_COVER_PX
+                    return w < min_px or h < min_px
                 i += 2 + seg_len
     except Exception:
         pass
