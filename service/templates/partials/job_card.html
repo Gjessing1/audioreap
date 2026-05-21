@@ -3,21 +3,20 @@
   'failed':       'badge-fail',
   'queued':       'badge-queued',
   'cancelled':    'badge-fail',
-  'staged':       'badge-staged',
   'needs_review': 'badge-review',
 }.get(job.state, 'badge-busy') %}
 
 <div class="card"
      id="job-{{ job.id }}"
      data-state="{{ job.state }}"
-     {% if job.state not in ('done','failed','cancelled','needs_review','staged') %}
+     {% if job.state not in ('done','failed','cancelled','needs_review') %}
      hx-get="/jobs/status/{{ job.id }}"
      hx-trigger="every 3s"
      hx-target="#job-{{ job.id }}"
      hx-swap="outerHTML"
      {% endif %}>
 
-  {% if job.state in ('needs_review', 'staged') %}
+  {% if job.state == 'needs_review' %}
   <input type="checkbox"
          class="job-check"
          name="job_id"
@@ -29,7 +28,7 @@
     <div class="card-title">{{ job.track_ref.title }}</div>
     <div class="card-sub">{{ job.track_ref.artist }}<span class="muted"> · {{ job.id[:8] }}</span></div>
     {% if job.error %}
-    <div class="card-error {% if job.state not in ('needs_review','staged') %}card-error--danger{% endif %}">
+    <div class="card-error {% if job.state != 'needs_review' %}card-error--danger{% endif %}">
       {{ job.error[:140] }}
     </div>
     {% endif %}
@@ -44,7 +43,7 @@
             onclick="playTrack('{{ job.track_ref.internal_id }}','{{ job.track_ref.title|e }}')">▶</button>
     {% endif %}
 
-    {% if job.state in ('needs_review', 'staged') %}
+    {% if job.state == 'needs_review' %}
     <button class="play-btn"
             onclick="playJobStaged('{{ job.id }}','{{ job.track_ref.title|e }}')"
             title="Preview staged file">▶</button>
