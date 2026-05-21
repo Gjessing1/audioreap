@@ -28,10 +28,14 @@
         <form hx-post="/jobs/{{ job_id }}/replace-source"
               hx-target="#job-{{ job_id }}"
               hx-swap="outerHTML"
+              hx-indicator="#src-confirm-ind-{{ job_id }}-{{ loop.index }}"
               style="display:contents">
           <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
           <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
-          <button type="submit" class="btn btn-sm rv-approve" style="height:28px;font-size:12px">Confirm</button>
+          <button type="submit" class="btn btn-sm rv-approve" style="height:28px;font-size:12px">
+            Confirm
+            <span id="src-confirm-ind-{{ job_id }}-{{ loop.index }}" class="htmx-indicator"><span class="spinner"></span></span>
+          </button>
         </form>
         <button type="button" class="btn btn-sm btn-ghost" style="height:28px;font-size:12px"
                 onclick="document.getElementById('src-cfm-{{ job_id }}-{{ loop.index }}').style.display='none';

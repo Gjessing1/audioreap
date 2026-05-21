@@ -29,16 +29,20 @@
       </div>
     </div>
     <div class="card-actions" id="staged-actions-{{ row.id }}">
-      <button class="btn-sm btn-primary"
+      <button class="btn btn-sm"
         hx-post="/staging/{{ row.id }}/reenrich"
         hx-target="#staged-actions-{{ row.id }}"
-        hx-swap="innerHTML">Re-enrich</button>
-      <button class="btn-sm btn-ghost"
+        hx-swap="innerHTML"
+        hx-indicator="#staged-ind-{{ row.id }}">
+        Re-enrich
+        <span id="staged-ind-{{ row.id }}" class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+      <button class="btn btn-sm btn-ghost"
         hx-post="/staging/{{ row.id }}/approve"
         hx-confirm="Move this track to the library as-is?"
         hx-target="#staged-{{ row.id }}"
         hx-swap="outerHTML">Approve</button>
-      <button class="btn-sm btn-danger"
+      <button class="btn btn-sm btn-danger"
         hx-post="/staging/{{ row.id }}/reject"
         hx-confirm="Delete this staged file permanently?"
         hx-target="#staged-{{ row.id }}"

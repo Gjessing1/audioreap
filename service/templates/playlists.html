@@ -29,9 +29,9 @@
 
 <div id="playlist-preview" style="margin-top:20px"></div>
 
-{% if imports %}
 <div style="margin-top:32px">
   <div class="section-title">Recent imports</div>
+  {% if imports %}
   {% for imp in imports %}
   <div class="card" style="margin-bottom:8px">
     <div class="card-info">
@@ -48,6 +48,8 @@
     </div>
   </div>
   {% endfor %}
+  {% else %}
+  <p class="empty" style="padding:12px 0">No playlist imports yet — paste a URL above to get started.</p>
+  {% endif %}
 </div>
-{% endif %}
 {% endblock %}

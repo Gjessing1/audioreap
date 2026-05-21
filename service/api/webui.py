@@ -1806,9 +1806,13 @@ async def save_track_tags(
         .where(Track.id == internal_id)
     )
     updated = (await session.execute(stmt2)).unique().scalar_one_or_none()
+    from sqlalchemy import distinct as _distinct2
+    all_genres = [g for g in (await session.execute(
+        select(_distinct2(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
+    )).scalars().all() if g]
     return templates.TemplateResponse(
         request, "partials/track_edit_card.html",
-        {"track": updated, "saved": True},
+        {"track": updated, "saved": True, "genre": genre_val, "genres": all_genres},
     )
 
 
@@ -2789,11 +2793,13 @@ async def staging_approve(
         logger.debug("Staging approve: ReplayGain failed for %s: %s", dest, rg_exc)
 
     # Index and scan
+    index_warn: str | None = None
     try:
         await index_file(session, dest)
         await session.flush()
     except Exception as exc:
         logger.warning("Staging approve: index failed for %s: %s", dest, exc)
+        index_warn = "Moved to library — index failed, trigger a Rescan to pick it up."
 
     row.state = "done"
     row.staging_path = None
@@ -2806,6 +2812,8 @@ async def staging_approve(
         pass
 
     logger.info("Staging approved: %s → %s", job_id, dest)
+    if index_warn:
+        return HTMLResponse(f'<span class="badge-warn">{index_warn}</span>')
     return HTMLResponse('<span class="badge-ok">Approved — moved to library</span>')
 
 
@@ -2900,11 +2908,13 @@ async def staging_reenrich(
         atomic_place(staging_path, dest)
         if artwork_bytes:
             write_cover_jpg(dest.parent, artwork_bytes)
+        reenrich_warn: str | None = None
         try:
             await index_file(session, dest)
             await session.flush()
         except Exception as exc:
             logger.warning("Re-enrich auto-promote index failed: %s", exc)
+            reenrich_warn = "index failed"
         row.state = "done"
         row.staging_path = None
         row.updated_at = datetime.now(UTC).replace(tzinfo=None)
@@ -2913,8 +2923,9 @@ async def staging_reenrich(
             await trigger_scan()
         except Exception:
             pass
+        suffix = " — trigger a Rescan to pick it up" if reenrich_warn else " — auto-promoted to library"
         return HTMLResponse(
-            f'<span class="badge-ok">Enriched (quality {new_score:.0%}) — auto-promoted to library</span>'
+            f'<span class="badge-ok">Enriched (quality {new_score:.0%}){suffix}</span>'
         )
 
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
@@ -3265,7 +3276,7 @@ async def merge_album(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Move all files from source album into canonical album folder, then rescan."""
-    import os
+    from service.library.writer import atomic_place as _atomic_place
     from sqlalchemy.orm import joinedload as _jl
 
     canonical = (await session.execute(
@@ -3304,9 +3315,9 @@ async def merge_album(
             skipped += 1
             continue
         try:
-            os.rename(src, dst)
+            _atomic_place(src, dst)
             moved += 1
-        except OSError as exc:
+        except Exception as exc:
             logger.warning("Merge: failed to move %s → %s: %s", src, dst, exc)
 
     # Remove now-empty source directory
@@ -3317,13 +3328,15 @@ async def merge_album(
     except Exception:
         pass
 
-    # Re-scan canonical dir to update DB
+    # Re-scan canonical dir to update DB (always commit, scan is best-effort)
+    scan_ok = True
     try:
         from service.index.scanner import scan
         await scan(session, canonical_dir, incremental=False)
-        await session.commit()
     except Exception as exc:
         logger.warning("Merge: scan failed: %s", exc)
+        scan_ok = False
+    await session.commit()
 
     try:
         from service.navidrome.client import trigger_scan
@@ -3331,8 +3344,9 @@ async def merge_album(
     except Exception:
         pass
 
-    return HTMLResponse(
-        f'<span class="badge-ok">Merged {moved} tracks ✓'
-        + (f" ({skipped} skipped — already existed)" if skipped else "")
-        + "</span>"
-    )
+    note = ""
+    if skipped:
+        note += f" ({skipped} skipped — already existed)"
+    if not scan_ok:
+        note += " — Rescan needed to update library view"
+    return HTMLResponse(f'<span class="badge-ok">Merged {moved} tracks ✓{note}</span>')

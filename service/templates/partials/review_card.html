@@ -64,7 +64,8 @@
   <form class="rv-form"
         hx-post="/jobs/{{ job_id }}/approve"
         hx-target="#job-{{ job_id }}"
-        hx-swap="outerHTML">
+        hx-swap="outerHTML"
+        hx-indicator="#approve-btn-{{ job_id }}">
 
     <div class="rv-grid">
       <div class="rv-field rv-field--full">
@@ -140,8 +141,9 @@
 
     <div class="rv-actions">
       {% if staging_exists %}
-      <button type="submit" class="btn btn-lg rv-approve">
+      <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}">
         {% if is_enrichment %}✓ Apply MB Tags{% else %}✓ Approve &amp; Place{% endif %}
+        <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}')">
@@ -161,6 +163,7 @@
               hx-target="#job-{{ job_id }}"
               hx-swap="outerHTML">
         Re-download
+        <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
       {% endif %}
       <button type="button" class="btn btn-sm rv-reject"

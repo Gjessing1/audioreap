@@ -4,9 +4,11 @@
 {% for g in groups %}
 {% set canonical = g[0] %}
 <div class="card" id="split-{{ canonical.id }}" style="flex-direction:column;align-items:stretch;gap:8px">
-  <div style="font-weight:600">{{ canonical.title }}
-    {% if canonical.year %}<span style="color:var(--muted);font-weight:400"> · {{ canonical.year }}</span>{% endif %}
-    <span style="font-size:12px;color:var(--warn);float:right">{{ g|length }} folders</span>
+  <div style="font-weight:600;display:flex;align-items:center;gap:8px">
+    <span style="flex:1;min-width:0">{{ canonical.title }}
+      {% if canonical.year %}<span style="color:var(--muted);font-weight:400"> · {{ canonical.year }}</span>{% endif %}
+    </span>
+    <span style="font-size:12px;color:var(--warn);white-space:nowrap">{{ g|length }} folders</span>
   </div>
   {% for album in g %}
   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">
@@ -21,8 +23,10 @@
             hx-post="/library/albums/{{ canonical.id }}/merge/{{ album.id }}"
             hx-target="#split-{{ canonical.id }}"
             hx-swap="outerHTML"
-            hx-confirm="Move {{ album.ntracks }} track(s) from '{{ album.artist }}' into '{{ canonical.artist }}' folder?">
+            hx-confirm="Move {{ album.ntracks }} track(s) from '{{ album.artist }}' into '{{ canonical.artist }}' folder?"
+            hx-indicator="#split-ind-{{ canonical.id }}-{{ loop.index }}">
       Merge here
+      <span id="split-ind-{{ canonical.id }}-{{ loop.index }}" class="htmx-indicator"><span class="spinner"></span></span>
     </button>
     {% endif %}
     <button class="btn btn-sm btn-ghost"
