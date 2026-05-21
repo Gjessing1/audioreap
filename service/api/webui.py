@@ -3198,7 +3198,8 @@ async def merge_album(
     source_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Move all files from source album into canonical album folder, then rescan."""
+    """Move all files from source album into canonical album folder, then re-index."""
+    from service.index.scanner import index_file as _index_file
     from service.library.writer import atomic_place as _atomic_place
     from sqlalchemy.orm import joinedload as _jl
 
@@ -3216,7 +3217,7 @@ async def merge_album(
     if canonical is None or source is None:
         raise HTTPException(404)
 
-    # Determine the canonical album directory
+    # Determine the canonical album directory from any file that exists on disk
     canonical_dir: Path | None = None
     for t in canonical.tracks:
         if t.file and Path(t.file.path).exists():
@@ -3226,39 +3227,85 @@ async def merge_album(
         return HTMLResponse('<span class="badge-warn">Canonical album has no files on disk</span>')
 
     moved = 0
-    skipped = 0
+    already_there = 0
+    collisions = 0
+    stale_paths: list[str] = []  # source TrackFile paths to remove from DB
+
     for track in source.tracks:
         if not track.file:
             continue
         src = Path(track.file.path)
-        if not src.exists():
-            continue
         dst = canonical_dir / src.name
-        if dst.exists():
-            skipped += 1
+
+        if src == dst:
+            # File is already in canonical dir (DB split on same directory) — no move needed
+            already_there += 1
             continue
+
+        stale_paths.append(track.file.path)
+
+        if not src.exists():
+            # Stale DB record — file already gone from source location
+            continue
+
+        if dst.exists():
+            # Name collision: a different file already occupies dst
+            collisions += 1
+            logger.info("Merge: name collision at %s — source %s not moved", dst, src)
+            continue
+
         try:
             _atomic_place(src, dst)
             moved += 1
         except Exception as exc:
             logger.warning("Merge: failed to move %s → %s: %s", src, dst, exc)
 
-    # Remove now-empty source directory
+    # Remove now-empty source directory (only if different from canonical)
     try:
-        src_dir = Path(source.tracks[0].file.path).parent if source.tracks and source.tracks[0].file else None
-        if src_dir and src_dir.exists() and not list(src_dir.iterdir()):
-            src_dir.rmdir()
+        src_dirs: set[Path] = set()
+        for track in source.tracks:
+            if track.file:
+                d = Path(track.file.path).parent
+                if d != canonical_dir:
+                    src_dirs.add(d)
+        for src_dir in src_dirs:
+            if src_dir.exists() and not list(src_dir.iterdir()):
+                src_dir.rmdir()
     except Exception:
         pass
 
-    # Re-scan canonical dir to update DB (always commit, scan is best-effort)
-    scan_ok = True
-    try:
-        from service.index.scanner import scan
-        await scan(session, canonical_dir, incremental=False)
-    except Exception as exc:
-        logger.warning("Merge: scan failed: %s", exc)
-        scan_ok = False
+    # Index moved files at their new paths — do NOT call scan() with incremental=False
+    # because that collects ALL known DB paths and removes anything not in canonical_dir,
+    # which would wipe the entire library except this album.
+    for track in source.tracks:
+        if not track.file:
+            continue
+        dst = canonical_dir / Path(track.file.path).name
+        if dst.exists():
+            try:
+                await _index_file(session, dst)
+            except Exception as exc:
+                logger.warning("Merge: index_file failed for %s: %s", dst, exc)
+
+    # Delete stale TrackFile records that pointed to the old (source) paths
+    if stale_paths:
+        from sqlalchemy import delete as _delete
+        await session.execute(
+            _delete(TrackFile).where(TrackFile.path.in_(stale_paths))
+        )
+        await session.flush()
+        # Remove orphaned Track rows (no remaining TrackFile)
+        from sqlalchemy import select as _select
+        orphan_ids = (await session.execute(
+            _select(Track.id).where(~Track.id.in_(_select(TrackFile.track_id)))
+        )).scalars().all()
+        if orphan_ids:
+            await session.execute(_delete(Track).where(Track.id.in_(orphan_ids)))
+        # Remove orphaned Album rows (no remaining tracks)
+        await session.execute(
+            _delete(Album).where(~Album.id.in_(_select(Track.album_id).where(Track.album_id.is_not(None))))
+        )
+
     await session.commit()
 
     try:
@@ -3267,12 +3314,12 @@ async def merge_album(
     except Exception:
         pass
 
-    note = ""
-    if skipped:
-        note += f" ({skipped} skipped — already existed)"
-    if not scan_ok:
-        note += " — Rescan needed to update library view"
-    return HTMLResponse(f'<span class="badge-ok">Merged {moved} tracks ✓{note}</span>')
+    parts = [f"moved {moved}"]
+    if already_there:
+        parts.append(f"{already_there} already in place")
+    if collisions:
+        parts.append(f"{collisions} name collision(s) — rename manually")
+    return HTMLResponse(f'<span class="badge-ok">Merged ✓ ({", ".join(parts)})</span>')
 
 
 # ── Trash recovery ────────────────────────────────────────────────────────────
