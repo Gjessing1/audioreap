@@ -1,6 +1,7 @@
 """arq job definitions for the acquisition pipeline."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -379,6 +380,19 @@ async def acquire_track(
             logger.info("Job %s was cancelled before pickup; skipping", job_id)
             return
 
+    # Progress callback: writes row.progress to DB (throttled by ytdlp hook to ~5% steps)
+    async def _write_progress(fraction: float) -> None:
+        try:
+            async with session_factory() as s, s.begin():
+                r = await s.get(AcquisitionJobRow, job_id)
+                if r and r.state == "downloading":
+                    r.progress = fraction
+        except Exception:
+            pass
+
+    def on_progress(fraction: float) -> None:
+        asyncio.create_task(_write_progress(fraction))
+
     async with session_factory() as session, session.begin():
         await run_acquisition(
             job_id=job_id,
@@ -388,6 +402,7 @@ async def acquire_track(
             music_dir=Path(music_dir),
             tmp_acquire_dir=Path(tmp_acquire_dir),
             session=session,
+            on_progress=on_progress,
         )
 
     # Auto-retry on transient failures

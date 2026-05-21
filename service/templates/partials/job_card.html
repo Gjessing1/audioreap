@@ -77,4 +77,8 @@
             style="color:var(--t4)">✕</button>
     {% endif %}
   </div>
+
+  {% if job.state == 'downloading' and job.progress is not none %}
+  <div class="dl-progress" style="width:{{ (job.progress * 100)|int }}%"></div>
+  {% endif %}
 </div>

@@ -27,6 +27,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
+_JOBS_COMPLETED_PAGE = 50
+_BROWSE_PAGE = 75
+
+
+async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
+    """Build the paginated job list template context (first page of completed)."""
+    active_rows = (await session.execute(
+        select(AcquisitionJobRow)
+        .where(AcquisitionJobRow.state.notin_(["done", "failed", "cancelled"]))
+        .order_by(AcquisitionJobRow.created_at.desc())
+        .limit(200)
+    )).scalars().all()
+    completed_rows = (await session.execute(
+        select(AcquisitionJobRow)
+        .where(AcquisitionJobRow.state.in_(["done", "failed", "cancelled"]))
+        .order_by(AcquisitionJobRow.created_at.desc())
+        .limit(_JOBS_COMPLETED_PAGE + 1)
+    )).scalars().all()
+    has_more = len(completed_rows) > _JOBS_COMPLETED_PAGE
+    rows = list(active_rows) + list(completed_rows[:_JOBS_COMPLETED_PAGE])
+    ctx = _grouped_jobs(rows)
+    ctx["completed_has_more"] = has_more
+    ctx["completed_next_offset"] = _JOBS_COMPLETED_PAGE
+    return ctx
+
 
 def _job_to_model(row: AcquisitionJobRow) -> AcquisitionJob:
     from service.main import _job_row_to_model
@@ -206,9 +231,6 @@ async def jobs_page(
     return templates.TemplateResponse(
         request, "jobs.html", {"active": "jobs", **ctx}
     )
-
-
-_JOBS_COMPLETED_PAGE = 50
 
 
 @router.get("/jobs/list", response_class=HTMLResponse)
@@ -448,8 +470,75 @@ async def review_card(
          "is_enrichment": is_enrichment,
          "album_consistency_warning": album_consistency_warning,
          "parsed_artists": parsed_artists,
-         "show_multi_artists": show_multi_artists},
+         "show_multi_artists": show_multi_artists,
+         "show_mb_search": False},
     )
+
+
+async def _review_card_ctx(
+    request: Request,
+    session: AsyncSession,
+    job_id: str,
+    row: AcquisitionJobRow,
+    meta: dict,
+    *,
+    show_mb_search: bool = False,
+) -> dict:
+    """Build complete template context for review_card.html."""
+    staging_exists = bool(row.staging_path and Path(row.staging_path).exists())
+    is_enrichment = bool(meta.get("is_enrichment"))
+
+    from sqlalchemy import distinct as _distinct
+    genre_rows = (await session.execute(
+        select(_distinct(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
+    )).scalars().all()
+    genres = [g for g in genre_rows if g]
+
+    album_consistency_warning: str | None = None
+    if row.album_job_id and not is_enrichment:
+        siblings = (await session.execute(
+            select(AcquisitionJobRow.resolved_metadata_json)
+            .where(
+                AcquisitionJobRow.album_job_id == row.album_job_id,
+                AcquisitionJobRow.id != job_id,
+                AcquisitionJobRow.state == "needs_review",
+                AcquisitionJobRow.resolved_metadata_json.isnot(None),
+            )
+        )).scalars().all()
+        this_aa = (meta.get("albumartist") or "").lower().strip()
+        if this_aa and siblings:
+            sibling_aas = set()
+            for sib_json in siblings:
+                try:
+                    sib_meta = json.loads(sib_json)
+                    sib_aa = (sib_meta.get("albumartist") or "").lower().strip()
+                    if sib_aa:
+                        sibling_aas.add(sib_aa)
+                except Exception:
+                    pass
+            other_aas = sibling_aas - {this_aa}
+            if other_aas:
+                album_consistency_warning = (
+                    f"Album artist mismatch: this track has \"{meta.get('albumartist')}\""
+                    f" but {len(other_aas)} other track(s) in this batch differ."
+                )
+
+    from service.library.tagger import parse_artists as _parse_artists
+    parsed_artists = _parse_artists(meta.get("artist") or "")
+    show_multi_artists = len(parsed_artists) > 1
+
+    return {
+        "job_id": job_id,
+        "meta": meta,
+        "query": row.query or "",
+        "staging_exists": staging_exists,
+        "genres": genres,
+        "is_enrichment": is_enrichment,
+        "album_consistency_warning": album_consistency_warning,
+        "parsed_artists": parsed_artists,
+        "show_multi_artists": show_multi_artists,
+        "show_mb_search": show_mb_search,
+    }
 
 
 @router.post("/jobs/batch-approve", response_class=HTMLResponse)
@@ -491,13 +580,8 @@ async def batch_approve(
                 pass
             fail_count += 1
 
-    rows = (
-        await session.execute(
-            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
-        )
-    ).scalars().all()
     return templates.TemplateResponse(
-        request, "partials/job_list.html", _grouped_jobs(rows)
+        request, "partials/job_list.html", await _job_list_ctx(session)
     )
 
 
@@ -544,16 +628,9 @@ async def approve_job(
         try:
             row = await session.get(AcquisitionJobRow, job_id)
             meta = json.loads(row.resolved_metadata_json) if row and row.resolved_metadata_json else {}
-            staging_exists = bool(row and row.staging_path and Path(row.staging_path).exists())
-            return templates.TemplateResponse(
-                request, "partials/review_card.html",
-                {
-                    "job_id": job_id, "meta": meta,
-                    "query": row.query if row else "",
-                    "error": str(exc),
-                    "staging_exists": staging_exists,
-                },
-            )
+            ctx = await _review_card_ctx(request, session, job_id, row, meta)
+            ctx["error"] = str(exc)
+            return templates.TemplateResponse(request, "partials/review_card.html", ctx)
         except Exception:
             return HTMLResponse(
                 f'<div class="card card-review" id="job-{job_id}">'
@@ -670,13 +747,8 @@ async def jobs_bulk_action(
                 pass
 
     await session.commit()
-    rows = (
-        await session.execute(
-            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(100)
-        )
-    ).scalars().all()
     return templates.TemplateResponse(
-        request, "partials/job_list.html", _grouped_jobs(rows)
+        request, "partials/job_list.html", await _job_list_ctx(session)
     )
 
 
@@ -799,10 +871,8 @@ async def job_mb_apply(
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     await session.commit()
 
-    return templates.TemplateResponse(
-        request, "partials/review_card.html",
-        {"job_id": job_id, "meta": meta, "query": row.query or "", "show_mb_search": True},
-    )
+    ctx = await _review_card_ctx(request, session, job_id, row, meta, show_mb_search=True)
+    return templates.TemplateResponse(request, "partials/review_card.html", ctx)
 
 
 _EXPLICIT_RE = re.compile(r"\b(explicit|explicit version)\b", re.IGNORECASE)
@@ -1518,9 +1588,6 @@ async def library_browse(
         request, "library_browse.html",
         {"active": "library", "q": q, "f": f, "sort": sort},
     )
-
-
-_BROWSE_PAGE = 75
 
 
 @router.get("/library/browse/results", response_class=HTMLResponse)
@@ -2705,16 +2772,21 @@ async def staging_approve(
         raise HTTPException(500, "staging_path not under staging_dir")
 
     dest = settings.music_dir / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
 
+    from service.library.writer import atomic_place
     try:
-        try:
-            import os
-            os.rename(staging_path, dest)
-        except OSError:
-            shutil.move(str(staging_path), str(dest))
+        atomic_place(staging_path, dest)
     except Exception as exc:
         raise HTTPException(500, f"Move failed: {exc}")
+
+    # ReplayGain
+    try:
+        from service.library.tagger import compute_replaygain, write_replaygain
+        rg = await asyncio.to_thread(compute_replaygain, dest)
+        if rg is not None:
+            await asyncio.to_thread(write_replaygain, dest, rg)
+    except Exception as rg_exc:
+        logger.debug("Staging approve: ReplayGain failed for %s: %s", dest, rg_exc)
 
     # Index and scan
     try:

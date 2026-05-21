@@ -250,6 +250,16 @@ input::placeholder { color: var(--t4); }
 .card[data-state="tagging"], .card[data-state="importing"] { border-left: 3px solid #60A5FA; }
 .card[data-state="queued"] { border-left: 3px solid var(--b3); }
 
+.dl-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: #60A5FA;
+  transition: width 0.4s ease;
+  pointer-events: none;
+}
+
 .card-info { flex: 1; min-width: 0; }
 .card-title {
   font-weight: 600;

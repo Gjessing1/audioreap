@@ -5,6 +5,7 @@ yt-dlp-supported extractor. Adding Bandcamp is a config flag, not new code.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -102,16 +103,31 @@ class YtdlpProvider(Provider):
                 raw_metadata={k: v for k, v in entry.items() if isinstance(v, (str, int, float, bool))},
             )
 
-    async def fetch(self, provider_ref: str, dest_dir: Path) -> FetchResult:
+    async def fetch(
+        self,
+        provider_ref: str,
+        dest_dir: Path,
+        on_progress=None,
+    ) -> FetchResult:
         import yt_dlp
 
         downloaded_path: list[Path] = []
+        loop = asyncio.get_running_loop()
+        _last_reported = [0.0]  # throttle: only report every 5% change
 
         def _progress_hook(d: dict[str, object]) -> None:
             if d.get("status") == "finished":
                 fp = d.get("filename")
                 if fp:
                     downloaded_path.append(Path(str(fp)))
+            if on_progress is not None and d.get("status") == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                dl = d.get("downloaded_bytes")
+                if total and dl:
+                    fraction = float(dl) / float(total)
+                    if fraction - _last_reported[0] >= 0.05:
+                        _last_reported[0] = fraction
+                        loop.call_soon_threadsafe(on_progress, fraction)
 
         opts: dict[str, object] = {
             **_ydl_opts_base(),
@@ -120,8 +136,11 @@ class YtdlpProvider(Provider):
             "progress_hooks": [_progress_hook],
         }
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(provider_ref, download=True)
+        def _run() -> object:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(provider_ref, download=True)
+
+        info = await asyncio.to_thread(_run)
 
         if not info:
             raise RuntimeError(f"yt-dlp returned no info for {provider_ref!r}")

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -34,8 +34,17 @@ class Provider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def fetch(self, provider_ref: str, dest_dir: Path) -> FetchResult:
-        """Download/confirm audio file into dest_dir. Returns provenance."""
+    async def fetch(
+        self,
+        provider_ref: str,
+        dest_dir: Path,
+        on_progress: "Callable[[float], None] | None" = None,
+    ) -> FetchResult:
+        """Download/confirm audio file into dest_dir. Returns provenance.
+
+        on_progress(fraction) is called with values 0.0–1.0 during download
+        when the provider can report progress. May be None.
+        """
 
     async def fetch_album(self, album_ref: str) -> AlbumCandidate:
         """Resolve album_ref to an ordered track list.

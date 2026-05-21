@@ -122,6 +122,7 @@ async def run_acquisition(
     tmp_acquire_dir: Path,
     session: AsyncSession,
     scan_trigger: ScanTrigger | None = None,
+    on_progress: Callable[[float], None] | None = None,
 ) -> None:
     """Phase 1 (identify): download, fingerprint, MB lookup, stage for review.
 
@@ -146,7 +147,7 @@ async def run_acquisition(
         # ── 1. Download ────────────────────────────────────────────────────────
         await _set_state(session, job_id, "downloading")
         try:
-            fetch_result = await provider.fetch(provider_ref, tmp_dir)
+            fetch_result = await provider.fetch(provider_ref, tmp_dir, on_progress=on_progress)
         except Exception as exc:
             fc, err = classify_failure(exc)
             await _set_state(session, job_id, "failed", failure_class=fc, error=err)
