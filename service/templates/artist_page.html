@@ -56,7 +56,24 @@
 {% endif %}
 
 {% if mb_release_groups %}
-<div class="section-title" style="margin-top:24px">MusicBrainz discography</div>
+{% set unowned_count = mb_release_groups | selectattr('owned', 'equalto', false) | list | length %}
+<div style="display:flex;align-items:center;gap:10px;margin-top:24px;margin-bottom:8px">
+  <div class="section-title" style="margin:0">MusicBrainz discography</div>
+  {% if unowned_count > 0 %}
+  <form hx-post="/artist/{{ artist.id }}/acquire-missing"
+        hx-target="#acquire-missing-result"
+        hx-swap="innerHTML"
+        hx-indicator="#acquire-missing-spinner"
+        hx-confirm="Queue all {{ unowned_count }} missing release group(s) for download?"
+        style="display:contents">
+    <button type="submit" class="btn btn-sm">
+      Acquire all missing ({{ unowned_count }})
+      <span id="acquire-missing-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </form>
+  {% endif %}
+</div>
+<div id="acquire-missing-result" style="margin-bottom:8px"></div>
 <div style="display:flex;flex-direction:column;gap:6px">
   {% for rg in mb_release_groups %}
   <div class="card" style="padding:10px 14px;align-items:center;gap:12px">
@@ -65,7 +82,7 @@
         {{ rg.title }}
         {% if rg.year %}<span style="color:var(--t3);font-weight:400;font-size:12px;margin-left:6px">{{ rg.year }}</span>{% endif %}
       </div>
-      <div style="font-size:12px;color:var(--t3)">{{ rg.release_type }}</div>
+      <div style="font-size:12px;color:var(--t3)">{{ rg.release_type }}{% if rg.owned and rg.owned_track_count %} · {{ rg.owned_track_count }} track{% if rg.owned_track_count != 1 %}s{% endif %}{% endif %}</div>
     </div>
     {% if rg.owned %}
     <span class="badge badge-done" style="font-size:11px">owned</span>

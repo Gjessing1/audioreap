@@ -1551,6 +1551,11 @@ async def artist_page(
                 get_artist_release_groups, artist.musicbrainz_artist_id, settings.cache_dir
             )
             owned_album_titles = {_norm(a["album"].title) for a in albums_list if a["album"]}
+            # Map normalised album title → owned track count for the completion indicator
+            owned_title_counts: dict[str, int] = {
+                _norm(a["album"].title): len(a["tracks"])
+                for a in albums_list if a["album"]
+            }
             for rg in rgs:
                 owned = _norm(rg.title) in owned_album_titles
                 mb_release_groups.append({
@@ -1559,6 +1564,7 @@ async def artist_page(
                     "year": rg.year,
                     "release_type": rg.release_type,
                     "owned": owned,
+                    "owned_track_count": owned_title_counts.get(_norm(rg.title), 0),
                 })
         except Exception as exc:
             logger.debug("Artist page MB lookup failed: %s", exc)
@@ -1572,6 +1578,63 @@ async def artist_page(
             "mb_release_groups": mb_release_groups,
             "total_tracks": len(tracks),
         },
+    )
+
+
+@router.post("/artist/{artist_id}/acquire-missing", response_class=HTMLResponse)
+async def artist_acquire_missing(
+    request: Request,
+    artist_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue acquire_album_from_mb for every un-owned release group for this artist."""
+    from service.db.schema import Artist as _Artist
+    artist = await session.get(_Artist, artist_id)
+    if artist is None or not artist.musicbrainz_artist_id:
+        raise HTTPException(404)
+
+    try:
+        from service.core.normalize import normalize as _norm
+        from service.metadata.musicbrainz import get_artist_release_groups
+        _, rgs = await asyncio.to_thread(
+            get_artist_release_groups, artist.musicbrainz_artist_id, settings.cache_dir
+        )
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">MB lookup failed: {exc}</span>')
+
+    # Find which release groups are already owned
+    owned_albums = (await session.execute(
+        select(Album).join(Album.tracks).join(Track.artist).where(Artist.id == artist_id)
+    )).unique().scalars().all()
+    owned_titles = {_norm(a.title) for a in owned_albums}
+    unowned = [rg for rg in rgs if _norm(rg.title) not in owned_titles]
+
+    if not unowned:
+        return HTMLResponse('<span class="badge-done">All release groups already owned ✓</span>')
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        for rg in unowned:
+            album_job_id = str(uuid.uuid4())
+            await redis.enqueue_job(
+                "acquire_album_from_mb",
+                album_job_id=album_job_id,
+                release_group_id=rg.release_group_id,
+                artist_name=artist.name,
+                album_title=rg.title,
+                music_dir=str(settings.music_dir),
+                staging_dir=str(settings.staging_dir),
+                tmp_acquire_dir=str(settings.tmp_acquire_dir),
+                _job_id=f"album:{album_job_id}",
+            )
+        await redis.aclose()
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">Queue error: {exc}</span>')
+
+    return HTMLResponse(
+        f'<span class="badge-ok">Queued {len(unowned)} album{"s" if len(unowned) != 1 else ""} → <a href="/jobs">Jobs</a></span>'
     )
 
 
@@ -3350,3 +3413,133 @@ async def merge_album(
     if not scan_ok:
         note += " — Rescan needed to update library view"
     return HTMLResponse(f'<span class="badge-ok">Merged {moved} tracks ✓{note}</span>')
+
+
+# ── Trash recovery ────────────────────────────────────────────────────────────
+
+
+def _list_trash(trash_dir: Path) -> list[dict]:
+    """Walk a .trash directory and return metadata for each file."""
+    items: list[dict] = []
+    if not trash_dir.exists():
+        return items
+    for ts_dir in sorted(trash_dir.iterdir(), reverse=True):
+        if not ts_dir.is_dir() or ts_dir.name.startswith("."):
+            continue
+        for f in ts_dir.iterdir():
+            if f.name.endswith(".restore_path") or not f.is_file():
+                continue
+            restore_path_file = ts_dir / f"{f.name}.restore_path"
+            original_path: str | None = None
+            if restore_path_file.exists():
+                try:
+                    original_path = restore_path_file.read_text(encoding="utf-8").strip()
+                except Exception:
+                    pass
+            try:
+                size_bytes = f.stat().st_size
+            except OSError:
+                size_bytes = 0
+            items.append({
+                "ts": ts_dir.name,
+                "filename": f.name,
+                "original_path": original_path,
+                "size_mb": round(size_bytes / 1_048_576, 1),
+            })
+    return items
+
+
+@router.get("/library/trash", response_class=HTMLResponse)
+async def library_trash(request: Request) -> HTMLResponse:
+    music_trash = _list_trash(settings.music_dir / ".trash")
+    staging_trash = _list_trash(settings.staging_dir / ".trash")
+    return templates.TemplateResponse(
+        request, "partials/trash_list.html",
+        {"music_trash": music_trash, "staging_trash": staging_trash},
+    )
+
+
+@router.post("/library/trash/{ts}/{filename}/restore", response_class=HTMLResponse)
+async def trash_restore(
+    request: Request,
+    ts: str,
+    filename: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Restore a trashed file to its original path (or music root if unknown)."""
+    import urllib.parse
+    filename = urllib.parse.unquote(filename)
+    trash_file = settings.music_dir / ".trash" / ts / filename
+    if not trash_file.exists():
+        raise HTTPException(404, "File not found in trash")
+
+    restore_path_file = trash_file.parent / f"{filename}.restore_path"
+    if restore_path_file.exists():
+        try:
+            dest = Path(restore_path_file.read_text(encoding="utf-8").strip())
+        except Exception:
+            dest = settings.music_dir / filename
+    else:
+        dest = settings.music_dir / filename
+
+    try:
+        from service.library.writer import atomic_place
+        atomic_place(trash_file, dest)
+        # Clean up sidecar
+        if restore_path_file.exists():
+            restore_path_file.unlink(missing_ok=True)
+    except Exception as exc:
+        raise HTTPException(500, f"Restore failed: {exc}") from exc
+
+    try:
+        from service.index.scanner import index_file
+        await index_file(session, dest)
+        await session.commit()
+    except Exception:
+        pass
+
+    try:
+        from service.navidrome.client import trigger_scan
+        await trigger_scan()
+    except Exception:
+        pass
+
+    return HTMLResponse(f'<span class="badge-ok">Restored → {dest.name}</span>')
+
+
+@router.delete("/library/trash/{ts}/{filename}", response_class=HTMLResponse)
+async def trash_delete(ts: str, filename: str) -> HTMLResponse:
+    """Permanently delete a file from trash."""
+    import urllib.parse
+    filename = urllib.parse.unquote(filename)
+    trash_file = settings.music_dir / ".trash" / ts / filename
+    restore_sidecar = trash_file.parent / f"{filename}.restore_path"
+    try:
+        if trash_file.exists():
+            trash_file.unlink()
+        restore_sidecar.unlink(missing_ok=True)
+        # Remove empty timestamp dir
+        try:
+            trash_file.parent.rmdir()
+        except OSError:
+            pass
+    except Exception as exc:
+        raise HTTPException(500, f"Delete failed: {exc}") from exc
+    return HTMLResponse("")
+
+
+# ── Bulk cover art fetch ──────────────────────────────────────────────────────
+
+
+@router.post("/library/health/fetch-missing-covers", response_class=HTMLResponse)
+async def fetch_missing_covers(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Enqueue a background arq job to fetch cover art for all albums missing it."""
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job("fetch_missing_covers")
+        await redis.aclose()
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
+    return HTMLResponse('<span class="badge-ok">Cover art fetch queued — check back in a few minutes</span>')

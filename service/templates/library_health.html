@@ -48,4 +48,34 @@
   You approve every merge — nothing happens automatically.
 </p>
 <div id="health-splits"></div>
+
+<div class="section-title" style="margin-top:24px">Missing cover art
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-post="/library/health/fetch-missing-covers"
+          hx-target="#covers-result"
+          hx-swap="innerHTML"
+          hx-indicator="#covers-spinner">
+    Fetch all
+    <span id="covers-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Fetch cover art from MusicBrainz Cover Art Archive for all albums that have a MB release ID but no cover image.
+  Runs as a background job.
+</p>
+<div id="covers-result"></div>
+
+<div class="section-title" style="margin-top:24px">Trash
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/trash"
+          hx-target="#health-trash"
+          hx-swap="innerHTML"
+          hx-indicator="#trash-spinner">
+    Load <span id="trash-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Files moved to trash instead of being permanently deleted. Restore to their original location or delete permanently.
+</p>
+<div id="health-trash"></div>
 {% endblock %}

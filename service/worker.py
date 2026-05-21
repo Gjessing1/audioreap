@@ -97,12 +97,12 @@ async def worker_heartbeat(ctx: dict[str, object]) -> None:
 
 from arq.cron import cron  # noqa: E402
 
-from service.acquisition.jobs import acquire_album, acquire_album_from_mb, acquire_track, enrich_track, gc_staging  # noqa: E402
+from service.acquisition.jobs import acquire_album, acquire_album_from_mb, acquire_track, enrich_track, fetch_missing_covers, gc_staging  # noqa: E402
 
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track, gc_staging, worker_heartbeat]
+    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track, gc_staging, fetch_missing_covers, worker_heartbeat]
     cron_jobs = [
         cron(gc_staging, hour=3, minute=0),
         cron(worker_heartbeat, minute=None, second=0),  # every minute

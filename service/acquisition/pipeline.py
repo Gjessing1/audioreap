@@ -517,6 +517,15 @@ async def place_approved_track(
         # Atomic place: staging → music
         await asyncio.to_thread(atomic_place, staging_path, dest)
 
+        # ReplayGain (best-effort; adds ~5s but runs only once per track)
+        try:
+            from service.library.tagger import compute_replaygain, write_replaygain
+            rg = await asyncio.to_thread(compute_replaygain, dest)
+            if rg is not None:
+                await asyncio.to_thread(write_replaygain, dest, rg)
+        except Exception as rg_exc:
+            logger.debug("Approve: ReplayGain failed for %s: %s", dest, rg_exc)
+
     # Fetch and embed artwork (cached — cheap on second call)
     artwork_bytes: bytes | None = None
     if mb_release_id:

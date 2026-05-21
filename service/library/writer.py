@@ -27,7 +27,11 @@ def atomic_place(src: Path, dest: Path) -> Path:
 
 
 def safe_trash(path: Path, trash_dir: Path) -> Path:
-    """Move path to trash_dir instead of deleting — preserves data on removal."""
+    """Move path to trash_dir instead of deleting — preserves data on removal.
+
+    Writes a .restore_path sidecar containing the original absolute path so
+    the trash recovery UI can offer one-click restore.
+    """
     from datetime import datetime
 
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
@@ -39,4 +43,9 @@ def safe_trash(path: Path, trash_dir: Path) -> Path:
         if exc.errno != 18:
             raise
         shutil.move(str(path), dest)
+    # Record original path for restore
+    try:
+        (dest.parent / f"{path.name}.restore_path").write_text(str(path), encoding="utf-8")
+    except Exception:
+        pass
     return dest

@@ -6,6 +6,7 @@ Returns raw JPEG/PNG bytes or None.
 from __future__ import annotations
 
 import logging
+import struct
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,31 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 20.0
 _CAA_FRONT = "https://coverartarchive.org/release/{release_mbid}/front-500"
+_MIN_COVER_PX = 300
+
+
+def _image_too_small(data: bytes) -> bool:
+    """Return True if the image dimensions are below _MIN_COVER_PX."""
+    try:
+        if data[:8] == b'\x89PNG\r\n\x1a\n':  # PNG
+            w = struct.unpack('>I', data[16:20])[0]
+            h = struct.unpack('>I', data[20:24])[0]
+            return w < _MIN_COVER_PX or h < _MIN_COVER_PX
+        if data[:2] == b'\xff\xd8':  # JPEG — scan for SOF marker
+            i = 2
+            while i + 4 < len(data):
+                if data[i] != 0xff:
+                    break
+                marker = data[i + 1]
+                seg_len = struct.unpack('>H', data[i + 2:i + 4])[0]
+                if marker in (0xc0, 0xc1, 0xc2, 0xc3):
+                    h = struct.unpack('>H', data[i + 5:i + 7])[0]
+                    w = struct.unpack('>H', data[i + 7:i + 9])[0]
+                    return w < _MIN_COVER_PX or h < _MIN_COVER_PX
+                i += 2 + seg_len
+    except Exception:
+        pass
+    return False  # Unknown format or parse error — don't reject
 
 
 async def fetch_from_caa(release_mbid: str) -> bytes | None:
@@ -63,6 +89,9 @@ async def fetch_artwork(
 
     if release_mbid:
         art = await fetch_from_caa(release_mbid)
+        if art and _image_too_small(art):
+            logger.debug("CAA cover for %s is below %dpx — discarding", release_mbid, _MIN_COVER_PX)
+            art = None
 
     if art is None and thumbnail_url:
         art = await fetch_from_url(thumbnail_url)

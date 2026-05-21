@@ -485,3 +485,59 @@ async def gc_staging(ctx: dict[str, object]) -> None:
             cleared += 1
 
     logger.info("gc_staging: cleared %d staging paths (%d files trashed)", cleared, trashed)
+
+
+async def fetch_missing_covers(ctx: dict[str, object]) -> None:
+    """arq job: fetch cover art from CAA for every album that has a MB release ID but no cover."""
+    from pathlib import Path
+
+    from service.config import settings as _s
+    from service.db.schema import Album as _Album, Track as _Track, TrackFile as _TF
+    from service.library.tagger import write_cover_jpg as _write_cover_jpg
+    from service.metadata.artwork import fetch_artwork as _fetch_artwork
+    from sqlalchemy import select as _select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+
+    async with session_factory() as session:
+        # Albums that have a MB release ID but no cover.jpg on disk
+        albums = (await session.execute(
+            _select(_Album)
+            .join(_Album.tracks)
+            .join(_Track.file)
+            .where(_TF.has_cover_art == 0)
+            .where(_Album.musicbrainz_release_id.isnot(None))
+            .distinct()
+        )).unique().scalars().all()
+
+    fetched = 0
+    skipped = 0
+    for album in albums:
+        # Find first track file to locate the album directory
+        async with session_factory() as session:
+            tracks = (await session.execute(
+                _select(_Track)
+                .join(_Track.file)
+                .where(_Track.album_id == album.id)
+                .limit(1)
+            )).unique().scalars().all()
+        if not tracks or not tracks[0].file:
+            continue
+        album_dir = Path(tracks[0].file.path).parent
+        cover_dest = album_dir / "cover.jpg"
+        if cover_dest.exists():
+            skipped += 1
+            continue
+        try:
+            art = await _fetch_artwork(
+                release_mbid=album.musicbrainz_release_id,
+                cache_dir=_s.cache_dir,
+            )
+            if art:
+                _write_cover_jpg(album_dir, art)
+                fetched += 1
+        except Exception as exc:
+            logger.debug("fetch_missing_covers: %s failed: %s", album.title, exc)
+
+    logger.info("fetch_missing_covers: fetched=%d skipped=%d", fetched, skipped)

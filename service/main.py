@@ -311,8 +311,22 @@ async def acquire(
     """Accept form data (from HTMX) and enqueue an acquisition job."""
     from service.acquisition.jobs import create_job
     from service.core.models import TrackCandidate
+    from service.db.schema import Track
 
     candidate = TrackCandidate.model_validate_json(candidate_json)
+
+    # Pre-flight duplicate check: skip if MB recording ID is already owned
+    if candidate.mb_recording_id:
+        existing = (await session.execute(
+            select(Track).where(Track.musicbrainz_recording_id == candidate.mb_recording_id)
+        )).scalar_one_or_none()
+        if existing is not None:
+            from fastapi.templating import Jinja2Templates as _T
+            _tmpl = _T(directory=str(Path(__file__).parent / "templates"))
+            return _tmpl.TemplateResponse(
+                request, "partials/already_owned.html",
+                {"track": existing, "title": candidate.title, "artist": candidate.artist},
+            )
 
     job_id = await create_job(
         session,
