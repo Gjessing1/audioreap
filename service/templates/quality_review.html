@@ -28,6 +28,12 @@
     <a href="/search?q={{ (t.artist + ' ' + t.title)|urlencode }}"
        class="btn btn-sm btn-ghost">Search</a>
     {% endif %}
+    <button class="btn btn-sm btn-ghost"
+            hx-delete="/library/tracks/{{ t.internal_id }}"
+            hx-target="closest .card"
+            hx-swap="outerHTML swap:0.3s"
+            hx-confirm="Move this track to trash?"
+            style="color:var(--t4)">Delete</button>
   </div>
 </div>
 {% endfor %}
@@ -54,6 +60,12 @@
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
     </span>
+    <button class="btn btn-sm btn-ghost"
+            hx-delete="/library/tracks/{{ t.internal_id }}"
+            hx-target="closest .card"
+            hx-swap="outerHTML swap:0.3s"
+            hx-confirm="Move this track to trash?"
+            style="color:var(--t4)">Delete</button>
   </div>
 </div>
 {% endfor %}

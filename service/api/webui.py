@@ -9,7 +9,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete as sa_delete, func, select
@@ -2285,6 +2285,104 @@ async def fetch_track_art(
     await session.commit()
 
     return HTMLResponse('<span class="badge badge-done">Art embedded ✓</span>')
+
+
+@router.post("/library/tracks/{internal_id}/upload-art", response_class=HTMLResponse)
+async def upload_track_art(
+    request: Request,
+    internal_id: str,
+    cover: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Embed a user-supplied image as cover art in a track file."""
+    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
+    from service.metadata.artwork import _image_too_small
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or not row.file:
+        raise HTTPException(404)
+    file_path = Path(row.file.path)
+    if not file_path.exists():
+        raise HTTPException(404, "File not on disk")
+
+    if not cover.content_type or not cover.content_type.startswith("image/"):
+        return HTMLResponse('<span class="badge badge-warn">Not an image file</span>')
+
+    art = await cover.read()
+    if not art:
+        return HTMLResponse('<span class="badge badge-warn">Empty file</span>')
+    if _image_too_small(art):
+        return HTMLResponse('<span class="badge badge-warn">Image too small — must be at least 300×300 px</span>')
+
+    await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
+    write_cover_jpg(file_path.parent, art)
+    hca = await asyncio.to_thread(_has_cover_art, file_path)
+    row.file.has_cover_art = hca
+    await session.commit()
+
+    return HTMLResponse(
+        f'<img src="/library/tracks/{internal_id}/cover-art?t={int(asyncio.get_event_loop().time())}"'
+        f' style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">'
+        f'<span class="badge badge-done" style="position:absolute;bottom:4px;left:4px;font-size:10px">Saved ✓</span>'
+    )
+
+
+@router.post("/library/albums/{album_id}/cover/upload", response_class=HTMLResponse)
+async def upload_album_cover(
+    request: Request,
+    album_id: str,
+    cover: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Embed a user-supplied image as cover art for all tracks in an album + sidecar."""
+    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
+    from service.metadata.artwork import _image_too_small
+    from sqlalchemy.orm import joinedload as _jl
+
+    if not cover.content_type or not cover.content_type.startswith("image/"):
+        return HTMLResponse('<span class="badge badge-warn">Not an image file</span>')
+
+    art = await cover.read()
+    if not art:
+        return HTMLResponse('<span class="badge badge-warn">Empty file</span>')
+    if _image_too_small(art):
+        return HTMLResponse('<span class="badge badge-warn">Image too small — must be at least 300×300 px</span>')
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    album_dir: Path | None = None
+    embedded = 0
+    for track in album.tracks:
+        if not track.file:
+            continue
+        fp = Path(track.file.path)
+        if not fp.exists():
+            continue
+        album_dir = album_dir or fp.parent
+        try:
+            await asyncio.to_thread(_write_tags, fp, artwork_bytes=art)
+            hca = await asyncio.to_thread(_has_cover_art, fp)
+            track.file.has_cover_art = hca
+            embedded += 1
+        except Exception as exc:
+            logger.debug("upload_album_cover: embed failed for %s: %s", fp, exc)
+
+    if album_dir:
+        write_cover_jpg(album_dir, art)
+
+    await session.commit()
+    return HTMLResponse(f'<span class="badge badge-done">Cover saved to {embedded} track(s) ✓</span>')
 
 
 @router.get("/health", response_class=HTMLResponse)

@@ -3,12 +3,15 @@
 
   {# Header: cover art + status badges #}
   <div class="rv-header">
-    <div class="rv-art rv-art--lg">
+    {# Cover art — click to open art panel #}
+    <div class="rv-art rv-art--lg" style="cursor:pointer;position:relative"
+         onclick="togglePanel('art-panel-{{ safe_id }}')">
       <img src="/library/tracks/{{ track.id }}/cover-art"
            id="edit-cover-{{ safe_id }}"
            onerror="this.style.display='none';document.getElementById('edit-cover-placeholder-{{ safe_id }}').style.display='flex'"
            style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">
       <div id="edit-cover-placeholder-{{ safe_id }}" style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
+      <div style="position:absolute;bottom:0;left:0;right:0;text-align:center;font-size:10px;color:var(--t4);background:rgba(0,0,0,.45);padding:2px 0;border-radius:0 0 inherit inherit;pointer-events:none">change</div>
     </div>
     <div class="rv-info">
       <div class="rv-badges">
@@ -34,22 +37,34 @@
       {% if track.file %}
       <div class="rv-source" style="font-family:var(--font-mono)">{{ track.file.path }}</div>
       {% endif %}
-      {# Fetch cover art from CAA if has MB ID #}
-      {% if track.musicbrainz_recording_id %}
-      <div style="margin-top:8px">
-        <span class="fetch-art-btn">
-          <button class="btn btn-sm btn-ghost"
-                  hx-post="/library/tracks/{{ track.id }}/fetch-art"
-                  hx-target="closest .fetch-art-btn"
-                  hx-swap="innerHTML"
-                  style="font-size:11px">
-            Fetch cover from MusicBrainz
-            <span class="htmx-indicator"><span class="spinner"></span></span>
-          </button>
-        </span>
-      </div>
-      {% endif %}
     </div>
+  </div>
+
+  {# ── Cover art panel ─────────────────────────────────────────────────────── #}
+  <div id="art-panel-{{ safe_id }}" class="hidden" style="padding:12px 4px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid var(--b1)">
+    {% if track.musicbrainz_recording_id %}
+    <span class="fetch-art-btn">
+      <button class="btn btn-sm btn-ghost"
+              hx-post="/library/tracks/{{ track.id }}/fetch-art"
+              hx-target="closest .fetch-art-btn"
+              hx-swap="innerHTML"
+              style="font-size:11px">
+        Fetch from MusicBrainz
+        <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </span>
+    {% endif %}
+    <form hx-post="/library/tracks/{{ track.id }}/upload-art"
+          hx-target="#art-upload-result-{{ safe_id }}"
+          hx-swap="innerHTML"
+          hx-encoding="multipart/form-data"
+          style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <label style="font-size:12px;color:var(--t3)">Upload image (≥ 300×300):</label>
+      <input type="file" name="cover" accept="image/*"
+             style="font-size:12px;max-width:180px"
+             onchange="this.closest('form').dispatchEvent(new Event('submit'))">
+      <span id="art-upload-result-{{ safe_id }}"></span>
+    </form>
   </div>
 
   <form class="rv-form"
@@ -121,6 +136,14 @@
         ↑ Upgrade
       </button>
       {% endif %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              hx-delete="/library/tracks/{{ track.id }}"
+              hx-target="#browse-{{ safe_id }}"
+              hx-swap="outerHTML swap:0.3s"
+              hx-confirm="Move this track to trash?"
+              style="color:var(--t4)">
+        Delete
+      </button>
       <button type="button" class="btn btn-sm rv-reject"
               hx-get="/library/tracks/{{ track.id }}/browse-row"
               hx-target="#browse-{{ safe_id }}"
