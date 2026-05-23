@@ -27,6 +27,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
+_AUDIO_SUFFIXES = frozenset({".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav"})
+
+
+def _trash_empty_album_dir(album_dir: Path, trash_dir: Path) -> None:
+    """If album_dir has no audio files left, trash remaining sidecars and rmdir it.
+
+    Called after a track is deleted so ghost directories (with only cover.jpg)
+    don't cause Navidrome to show phantom albums.
+    """
+    if not album_dir.is_dir():
+        return
+    entries = list(album_dir.iterdir())
+    if any(e.suffix.lower() in _AUDIO_SUFFIXES for e in entries):
+        return
+    for e in entries:
+        try:
+            safe_trash(e, trash_dir)
+        except Exception:
+            pass
+    try:
+        album_dir.rmdir()
+    except OSError:
+        pass
+
 _JOBS_COMPLETED_PAGE = 50
 _BROWSE_PAGE = 75
 _COMPLETED_STATES = ("done", "failed", "cancelled")
@@ -1085,11 +1109,13 @@ async def delete_track(
 
     if row.file:
         file_path = Path(row.file.path)
+        album_dir = file_path.parent
         if file_path.exists():
             try:
                 safe_trash(file_path, settings.music_dir / ".trash")
             except Exception as exc:
                 logger.warning("Trash move failed for %s: %s", file_path, exc)
+        _trash_empty_album_dir(album_dir, settings.music_dir / ".trash")
         await session.delete(row.file)
 
     from datetime import UTC as _UTC, datetime as _dt
@@ -3909,11 +3935,13 @@ async def dupes_keep_best(
     for track in rows[1:]:  # keep rows[0], trash the rest
         if track.file:
             file_path = Path(track.file.path)
+            album_dir = file_path.parent
             if file_path.exists():
                 try:
                     safe_trash(file_path, settings.music_dir / ".trash")
                 except Exception as exc:
                     logger.warning("Trash failed for %s: %s", file_path, exc)
+            _trash_empty_album_dir(album_dir, settings.music_dir / ".trash")
             await session.delete(track.file)
         await session.delete(track)
 
@@ -4128,9 +4156,11 @@ async def delete_album(
     if album is None:
         raise HTTPException(404)
 
+    album_dirs: set[Path] = set()
     for track in album.tracks:
         if track.file:
             fp = Path(track.file.path)
+            album_dirs.add(fp.parent)
             if fp.exists():
                 try:
                     safe_trash(fp, settings.music_dir / ".trash")
@@ -4141,6 +4171,9 @@ async def delete_album(
 
     await session.delete(album)
     await session.commit()
+
+    for d in album_dirs:
+        _trash_empty_album_dir(d, settings.music_dir / ".trash")
 
     try:
         from service.navidrome.client import trigger_scan

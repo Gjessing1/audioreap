@@ -533,7 +533,9 @@ async def place_approved_track(
         albumartist = await stable_albumartist(session, albumartist, mb_artist_id)
         canonical = await find_canonical_album(session, album, albumartist, mb_release_group_id)
         if canonical is not None:
-            album, albumartist = canonical
+            album, albumartist, canonical_year = canonical
+            if canonical_year is not None:
+                year = canonical_year
 
     # Write final tags — raise on failure so the approval is aborted and the
     # job stays in needs_review rather than placing an untagged file in /music.
