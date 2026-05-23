@@ -1565,15 +1565,15 @@ async def album_mb_compare(
 ) -> HTMLResponse:
     """Compare local tracks in this album against the MB release tracklist."""
     from sqlalchemy.orm import joinedload as _jl
-    from service.metadata.musicbrainz import get_release_group_tracks
+    from service.search.matcher import title_similarity as _tsim
 
     album = (await session.execute(
         select(Album)
-        .options(_jl(Album.tracks))
+        .options(_jl(Album.tracks).joinedload(Track.file), _jl(Album.artist))
         .where(Album.id == album_id)
     )).unique().scalar_one_or_none()
     if album is None or (not album.mb_release_group_id and not album.musicbrainz_release_id):
-        return HTMLResponse('<p class="muted" style="font-size:12px">No MusicBrainz release linked — approve at least one track with a MB ID to enable comparison.</p>')
+        return HTMLResponse('<p class="muted" style="font-size:12px">No MusicBrainz release linked.</p>')
 
     try:
         if album.mb_release_group_id:
@@ -1589,37 +1589,289 @@ async def album_mb_compare(
     except Exception as exc:
         return HTMLResponse(f'<p class="muted" style="font-size:12px">MB fetch failed: {exc}</p>')
 
-    from service.search.matcher import title_similarity as _tsim
-    local_track_titles = [t.title for t in album.tracks]
-    local_rids = {t.musicbrainz_recording_id for t in album.tracks if t.musicbrainz_recording_id}
+    # Build lookup structures
+    local_tracks = list(album.tracks)
+    local_track_titles = [t.title for t in local_tracks]
+    # Recording IDs for tracks IN THIS ALBUM
+    local_rids = {t.musicbrainz_recording_id for t in local_tracks if t.musicbrainz_recording_id}
 
+    # Find recording IDs owned ANYWHERE in the library (different album = "elsewhere")
+    from service.library.cohesion import get_owned_recording_ids as _owned_rids
+    mb_recording_ids = [t.recording_id for t in mb_tracks if t.recording_id]
+    all_owned_rids = await _owned_rids(session, mb_recording_ids) if mb_recording_ids else set()
+    elsewhere_rids = all_owned_rids - local_rids  # owned but not in this album
+
+    # --- Section 1: MB tracklist ---
     lines = []
     owned_count = 0
     for mt in mb_tracks:
-        owned = (mt.recording_id in local_rids) or any(
-            _tsim(mt.title, lt) >= 0.80 for lt in local_track_titles
-        )
-        if owned:
+        if mt.recording_id and mt.recording_id in local_rids:
+            status = "here"
+        elif mt.recording_id and mt.recording_id in elsewhere_rids:
+            status = "elsewhere"
+        elif any(_tsim(mt.title, lt) >= 0.80 for lt in local_track_titles):
+            status = "here"  # title match counts as owned here
+        else:
+            status = "missing"
+
+        if status in ("here", "elsewhere"):
             owned_count += 1
-        icon = "✓" if owned else "✕"
-        color = "var(--success)" if owned else "var(--danger)"
+
+        if status == "here":
+            icon, color, label = "✓", "var(--success)", ""
+        elif status == "elsewhere":
+            icon, color, label = "⚠", "#e8a000", " <span style='font-size:10px;color:#e8a000'>(owned elsewhere)</span>"
+        else:
+            icon, color, label = "✕", "var(--danger)", ""
+
+        acquire_btn = ""
+        if status == "missing" and mt.recording_id:
+            acquire_btn = (
+                f'<form style="display:inline"'
+                f' hx-post="/discography/x/{album.mb_release_group_id or ""}/acquire-track"'
+                f' hx-target="closest div" hx-swap="outerHTML">'
+                f'<input type="hidden" name="recording_id" value="{mt.recording_id}">'
+                f'<input type="hidden" name="title" value="{mt.title}">'
+                f'<input type="hidden" name="artist" value="{album.artist.name if album.artist else ""}">'
+                f'<input type="hidden" name="album" value="{album.title}">'
+                f'<input type="hidden" name="track_number" value="{mt.number}">'
+                + (f'<input type="hidden" name="duration_seconds" value="{mt.duration_seconds}">' if mt.duration_seconds else '')
+                + f'<button type="submit" class="btn btn-sm" style="font-size:10px;padding:2px 6px">Get</button>'
+                f'</form>'
+            )
+
+        move_btn = ""
+        if status == "elsewhere" and mt.recording_id:
+            # Find the track DB row that owns this recording
+            et_row = (await session.execute(
+                select(Track).where(Track.musicbrainz_recording_id == mt.recording_id).limit(1)
+            )).scalar_one_or_none()
+            if et_row:
+                move_btn = (
+                    f' <button class="btn btn-sm btn-ghost" style="font-size:10px;padding:2px 6px"'
+                    f' hx-post="/library/tracks/{et_row.id}/move-to-album/{album_id}"'
+                    f' hx-target="closest div" hx-swap="innerHTML">Move here</button>'
+                )
+
         lines.append(
-            f'<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:12px">'
-            f'<span style="color:{color};font-weight:700;width:14px;text-align:center">{icon}</span>'
-            f'<span style="color:var(--t3);min-width:20px">{mt.number}.</span>'
-            f'<span style="color:{"var(--t2)" if owned else "var(--t1)"}">{mt.title}</span>'
-            + (f'<a href="/search?q={mt.title}" class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:10px">Acquire</a>' if not owned else '')
+            f'<div style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:12px">'
+            f'<span style="color:{color};font-weight:700;width:14px;text-align:center;flex-shrink:0">{icon}</span>'
+            f'<span style="color:var(--t3);min-width:20px;flex-shrink:0">{mt.number}.</span>'
+            f'<span style="color:{"var(--t2)" if status == "here" else "var(--t1)"};flex:1">{mt.title}{label}</span>'
+            + acquire_btn + move_btn
             + '</div>'
         )
+
     if not lines:
         return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found in MB tracklist.</p>')
+
     total = len(mb_tracks)
     missing = total - owned_count
     if missing == 0:
         summary = f'<div style="font-size:12px;color:var(--success);font-weight:600;margin-bottom:8px">✓ All {total} tracks owned</div>'
     else:
         summary = f'<div style="font-size:12px;color:var(--danger);font-weight:600;margin-bottom:8px">Missing {missing} of {total} tracks</div>'
-    return HTMLResponse('<div style="border:1px solid var(--b1);border-radius:var(--radius-s);padding:10px">' + summary + ''.join(lines) + '</div>')
+
+    # --- Section 2: Local tracks in this album ---
+    mb_rids_set = {t.recording_id for t in mb_tracks if t.recording_id}
+    mb_titles = [t.title for t in mb_tracks]
+    local_section_lines = []
+    for lt in sorted(local_tracks, key=lambda t: t.track_number or 999):
+        # Does this local track match any MB track?
+        in_mb = (lt.musicbrainz_recording_id and lt.musicbrainz_recording_id in mb_rids_set) or any(
+            _tsim(lt.title, mt) >= 0.80 for mt in mb_titles
+        )
+        icon = "✓" if in_mb else "❓"
+        icon_color = "var(--t3)" if in_mb else "#e8a000"
+        note = "" if in_mb else " <span style='font-size:10px;color:#e8a000'>not in MB list</span>"
+        local_section_lines.append(
+            f'<div style="display:flex;gap:8px;align-items:center;padding:2px 0;font-size:12px">'
+            f'<span style="color:{icon_color};width:14px;text-align:center;flex-shrink:0">{icon}</span>'
+            f'<span style="color:var(--t3);min-width:20px;flex-shrink:0">{lt.track_number or "—"}.</span>'
+            f'<span style="color:var(--t2);flex:1">{lt.title}{note}</span>'
+            f'</div>'
+        )
+
+    local_section = ""
+    if local_section_lines:
+        local_section = (
+            '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--b1)">'
+            '<div style="font-size:11px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Tracks in your library</div>'
+            + "".join(local_section_lines)
+            + '</div>'
+        )
+
+    return HTMLResponse(
+        '<div style="border:1px solid var(--b1);border-radius:var(--radius-s);padding:10px">'
+        + summary + "".join(lines) + local_section + '</div>'
+    )
+
+
+@router.get("/library/albums/{album_id}/mb-link-search", response_class=HTMLResponse)
+async def album_mb_link_search(
+    request: Request,
+    album_id: str,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Search MusicBrainz for release groups to link to this album."""
+    from sqlalchemy.orm import joinedload as _jl
+    album = (await session.execute(
+        select(Album).options(_jl(Album.artist)).where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    if not q:
+        q = f"{album.artist.name} {album.title}" if album.artist else album.title
+
+    from service.metadata.musicbrainz import search_release_groups as _search_rgs
+    results = await asyncio.to_thread(
+        _search_rgs,
+        album.artist.name if album.artist else "",
+        album.title,
+        8,
+        settings.cache_dir,
+    )
+
+    if not results:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No results found.</p>')
+
+    lines = ['<div style="display:flex;flex-direction:column;gap:6px">']
+    for rg in results:
+        label = rg["title"]
+        if rg["year"]:
+            label += f' ({rg["year"]})'
+        if rg["disambiguation"]:
+            label += f' [{rg["disambiguation"]}]'
+        rtype = rg["type"] or "Album"
+        lines.append(
+            f'<div style="display:flex;align-items:center;gap:8px;font-size:12px">'
+            f'<span style="color:var(--t1);flex:1">{label}</span>'
+            f'<span style="color:var(--t3);font-size:11px">{rtype}</span>'
+            f'<form style="display:inline"'
+            f'      hx-post="/library/albums/{album_id}/link-mb-rg"'
+            f'      hx-target="#album-{album_id.replace(":", "_")}"'
+            f'      hx-swap="outerHTML">'
+            f'  <input type="hidden" name="release_group_id" value="{rg["id"]}">'
+            f'  <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">Link</button>'
+            f'</form>'
+            f'</div>'
+        )
+    lines.append('</div>')
+    return HTMLResponse("".join(lines))
+
+
+@router.post("/library/albums/{album_id}/link-mb-rg", response_class=HTMLResponse)
+async def album_link_mb_rg(
+    request: Request,
+    album_id: str,
+    release_group_id: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Save a MusicBrainz release group ID to this album and return the refreshed detail card."""
+    from sqlalchemy.orm import joinedload as _jl2
+    album = (await session.execute(
+        select(Album).where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+    album.mb_release_group_id = release_group_id
+    await session.commit()
+
+    # Return the full refreshed album detail card
+    album = (await session.execute(
+        select(Album)
+        .options(_jl2(Album.artist), _jl2(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one()
+    return templates.TemplateResponse(
+        request, "partials/album_detail.html",
+        {"album": album, "saved": True},
+    )
+
+
+@router.post("/library/tracks/{track_id}/move-to-album/{album_id}", response_class=HTMLResponse)
+async def move_track_to_album(
+    request: Request,
+    track_id: str,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Move a misplaced track's file into this album's folder and fix its tags."""
+    from service.library.tagger import write_tags as _wt
+    from service.library.writer import atomic_place as _ap
+    from service.library.layout import track_path as _tp
+
+    track = (await session.execute(
+        select(Track).options(joinedload(Track.file), joinedload(Track.album))
+        .where(Track.id == track_id)
+    )).unique().scalar_one_or_none()
+
+    target_album = (await session.execute(
+        select(Album).options(joinedload(Album.artist), joinedload(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+
+    if track is None or target_album is None or track.file is None:
+        raise HTTPException(404)
+
+    src = Path(track.file.path)
+    if not src.exists():
+        return HTMLResponse('<span style="color:var(--danger);font-size:12px">File not found on disk</span>')
+
+    artist_name = target_album.artist.name if target_album.artist else "Unknown"
+    ext = src.suffix.lstrip(".")
+    dst = _tp(
+        settings.music_dir,
+        artist=artist_name,
+        album=target_album.title,
+        year=target_album.year,
+        track_number=track.track_number,
+        disc_number=track.disc_number,
+        title=track.title,
+        ext=ext,
+        albumartist=artist_name,
+    )
+
+    if dst == src:
+        return HTMLResponse('<span style="color:var(--success);font-size:12px">Already in place</span>')
+
+    if dst.exists():
+        return HTMLResponse(f'<span style="color:var(--danger);font-size:12px">Collision: {dst.name} already exists in target</span>')
+
+    # Fix tags on the file
+    try:
+        canonical_release_id: str | None = target_album.musicbrainz_release_id
+        await asyncio.to_thread(
+            _wt, src,
+            album=target_album.title,
+            year=target_album.year,
+            albumartist=artist_name,
+            track_number=track.track_number,
+            mb_release_id=canonical_release_id,
+        )
+    except Exception as exc:
+        logger.warning("move_track_to_album: tag write failed for %s: %s", src, exc)
+
+    old_dir = src.parent
+    await asyncio.to_thread(_ap, src, dst)
+
+    # Update DB
+    track.file.path = str(dst)
+    track.album_id = album_id
+    await session.commit()
+
+    # Clean up old dir if empty
+    _trash_empty_album_dir(old_dir, settings.music_dir / ".trash")
+
+    try:
+        from service.navidrome.client import trigger_scan
+        await trigger_scan()
+    except Exception:
+        pass
+
+    return HTMLResponse(f'<span style="color:var(--success);font-size:12px">✓ Moved to {target_album.title}</span>')
 
 
 @router.post("/library/rescan", response_class=HTMLResponse)
@@ -3475,6 +3727,117 @@ def _yt_search_one(query: str) -> str:
     return f"ytsearch1:{query}"
 
 
+# Keywords that indicate a result is a live recording, cover, or tribute —
+# not the original studio track we're looking for.
+_LIVE_KEYWORDS = frozenset({
+    "live", "concert", "in concert", "at the", "at madison", "tour",
+    "tribute", "cover", "karaoke", "instrumental", "acoustic",
+    "session", "radio edit", "bbc", "unplugged", "bootleg",
+})
+
+
+def _looks_like_live(title: str) -> bool:
+    """Return True if a YouTube result title suggests a live/cover/tribute version."""
+    import re
+    lower = title.lower()
+    # Quick check for parenthesised/bracketed qualifiers like "(live)", "[concert]"
+    bracketed = re.findall(r'[\(\[\{]([^\)\]\}]+)[\)\]\}]', lower)
+    for chunk in bracketed:
+        words = set(chunk.split())
+        if words & _LIVE_KEYWORDS:
+            return True
+    # Also catch plain suffixes like "- Live at ..." or "- Live Version"
+    if re.search(r'\blive\b', lower) or re.search(r'\btribute\b', lower):
+        return True
+    return False
+
+
+def _yt_search_best(
+    artist: str,
+    title: str,
+    duration_seconds: int | None = None,
+    n_candidates: int = 5,
+    prefer_ytm: bool = True,
+) -> str:
+    """Search for the best-matching studio version on YouTube (Music).
+
+    Fetches up to *n_candidates* results, scores each by:
+    - Title similarity to expected title (60 %)
+    - Duration proximity (20 %)
+    - Live/cover penalty (−0.30 if flagged)
+
+    Returns the URL of the highest-scoring result, falling back to a plain
+    ytsearch query if nothing looks good.
+    """
+    import yt_dlp
+    from service.search.matcher import title_similarity as _tsim
+
+    query = f"{artist} {title}"
+    # YouTube Music tends to have cleaner studio-track results
+    prefix = f"ytmsearch{n_candidates}" if prefer_ytm else f"ytsearch{n_candidates}"
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+
+    entries = []
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"{prefix}:{query}", download=False)
+        entries = (info or {}).get("entries") or []
+    except Exception:
+        pass
+
+    # Fall back to regular YouTube if YouTube Music returned nothing
+    if not entries and prefer_ytm:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"ytsearch{n_candidates}:{query}", download=False)
+            entries = (info or {}).get("entries") or []
+        except Exception:
+            pass
+
+    if not entries:
+        return f"ytsearch1:{query}"
+
+    best_url = ""
+    best_score = -1.0
+
+    for entry in entries:
+        if not entry:
+            continue
+        vid_title = str(entry.get("track") or entry.get("title") or "")
+        vid_artist = str(entry.get("artist") or entry.get("uploader") or entry.get("channel") or "")
+        vid_dur = entry.get("duration")
+        vid_id = entry.get("id") or ""
+        url = str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")
+
+        # Title similarity: use track-only field if available (YouTube Music sets it)
+        t_sim = _tsim(title, vid_title)
+
+        # Duration proximity score (0–1)
+        dur_score = 0.5  # neutral when unknown
+        if duration_seconds and vid_dur:
+            delta = abs(duration_seconds - int(vid_dur))
+            if delta <= 5:
+                dur_score = 1.0
+            elif delta <= 15:
+                dur_score = 0.8
+            elif delta <= 30:
+                dur_score = 0.6
+            elif delta > 90:
+                dur_score = 0.1
+
+        score = t_sim * 0.65 + dur_score * 0.25
+
+        # Penalise live / cover / tribute versions (unless the user is searching for one)
+        if _looks_like_live(vid_title) and not _looks_like_live(title):
+            score -= 0.30
+
+        if score > best_score:
+            best_score = score
+            best_url = url
+
+    return best_url or f"ytsearch1:{query}"
+
+
 # ── Discography ───────────────────────────────────────────────────────────
 
 @router.get("/discography", response_class=HTMLResponse)
@@ -3585,15 +3948,25 @@ async def discography_acquire_single_track(
     from service.acquisition.jobs import create_job
     from service.core.models import TrackCandidate
 
-    search_q = f"{artist} {title}".strip()
+    dur_s = int(duration_seconds) if duration_seconds.isdigit() else None
+
+    # Pre-search YouTube Music for the best-matching studio result, filtering
+    # out live concerts, tributes, and covers.
+    provider_ref = await asyncio.to_thread(
+        _yt_search_best,
+        artist or "Unknown",
+        title or "Unknown",
+        dur_s,
+    )
+
     candidate = TrackCandidate(
         provider="ytdlp",
-        provider_ref=f"ytsearch1:{search_q}",
+        provider_ref=provider_ref,
         title=title or "Unknown",
         artist=artist or "Unknown",
         album=album or None,
         track_number=int(track_number) if track_number.isdigit() else None,
-        duration_seconds=int(duration_seconds) if duration_seconds.isdigit() else None,
+        duration_seconds=dur_s,
         mb_recording_id=recording_id or None,
     )
 

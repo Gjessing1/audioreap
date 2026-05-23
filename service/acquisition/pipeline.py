@@ -295,7 +295,9 @@ async def run_acquisition(
 
             if mb is not None:
                 resolved_recording_id = mb.recording_id  # type: ignore[union-attr]
-                # When album coordinator locked a recording ID, only override via AcoustID fingerprint
+                # When the candidate has a locked recording ID, only accept a different
+                # recording via AcoustID fingerprint — text search is not authoritative.
+                _recording_id_overridden = False
                 if candidate.mb_recording_id and not mb_from_acoustid:
                     if resolved_recording_id != candidate.mb_recording_id:
                         logger.info(
@@ -304,6 +306,7 @@ async def run_acquisition(
                             resolved_recording_id, candidate.mb_recording_id, title,
                         )
                         resolved_recording_id = candidate.mb_recording_id
+                        _recording_id_overridden = True
 
                 mb_recording_id = resolved_recording_id
                 mb_release_id = mb_release_id or mb.release_id  # type: ignore[union-attr]
@@ -313,10 +316,15 @@ async def run_acquisition(
                 mb_release_group_id = mb.release_group_id  # type: ignore[union-attr]
                 isrc = mb.isrc  # type: ignore[union-attr]
                 prov_recording = mb_match_source or "mb"
-                if mb.title:  # type: ignore[union-attr]
+                # Only accept title/artist from MB if the MB result actually corresponds
+                # to the track we expected.  When the recording ID was overridden back to
+                # the candidate's value, the MB result is for the WRONG track — using its
+                # title/artist would mislabel the file (e.g. "For Whom the Bell Tolls"
+                # instead of "The God That Failed").
+                if mb.title and not _recording_id_overridden:  # type: ignore[union-attr]
                     title = mb.title  # type: ignore[union-attr]
                     prov_title = f"mb:{mb_match_source}"
-                if mb.artist:  # type: ignore[union-attr]
+                if mb.artist and not _recording_id_overridden:  # type: ignore[union-attr]
                     artist = mb.artist  # type: ignore[union-attr]
                     prov_artist = f"mb:{mb_match_source}"
                 if not candidate_album_locked:
@@ -330,8 +338,7 @@ async def run_acquisition(
                 if mb.original_year:  # type: ignore[union-attr]
                     prov_year = "mb:original"
 
-                # In strict album mode, flag if the identified artist differs significantly
-                # from the expected album artist — likely a wrong track was downloaded.
+                # Flag artist mismatch in strict album mode (AcoustID identified wrong artist)
                 if candidate_album_locked and mb_from_acoustid:
                     identified_artist = normalize((mb.artist or "").lower())  # type: ignore[union-attr]
                     expected_artist = normalize(candidate.artist.lower())
@@ -345,6 +352,24 @@ async def run_acquisition(
                             if force_staging_reason else mismatch
                         )
                         logger.warning("Job %s %r: %s", job_id, candidate.title, mismatch)
+
+            # ── 3c. Title mismatch detection ──────────────────────────────────────────
+            # When the candidate specifies an expected title and the resolved title is
+            # substantially different, the wrong track was likely downloaded.  Force to
+            # staging so the user sees it before it lands in /music.
+            if candidate.title and title:
+                from service.search.matcher import title_similarity as _title_sim
+                t_sim = _title_sim(clean_for_search(candidate.title), clean_for_search(title))
+                if t_sim < 0.55:
+                    mismatch_note = (
+                        f"Title mismatch: expected \"{candidate.title}\", "
+                        f"got \"{title}\" (similarity {t_sim:.2f}) — may be wrong track"
+                    )
+                    force_staging_reason = (
+                        f"{force_staging_reason} | {mismatch_note}"
+                        if force_staging_reason else mismatch_note
+                    )
+                    logger.warning("Job %s: %s", job_id, mismatch_note)
 
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
