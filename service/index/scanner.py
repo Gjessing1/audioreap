@@ -219,8 +219,8 @@ async def _process_file(
     track_row = await session.get(Track, track_id)
     track_is_new = track_row is None
     if track_row is None:
-        # musicbrainz_recording_id is NOT set from file tags here — authority rule #5.
-        # The pipeline sets it once at approval; the scanner never overwrites it.
+        # Recording ID: read from file tag if present. Authority rule #5 still holds —
+        # the pipeline's value is never overwritten (see the else branch below).
         track_row = Track(
             id=track_id,
             title=title,
@@ -230,21 +230,22 @@ async def _process_file(
             track_number=tagged.track_number,
             disc_number=tagged.disc_number,
             genre=tagged.genre or None,
+            musicbrainz_recording_id=tagged.mb_recording_id or None,
             tag_quality_score=quality_score,
             created_at=_now(),
             updated_at=_now(),
         )
         session.add(track_row)
     else:
-        # Update indexable tag fields only. Do NOT touch musicbrainz_recording_id,
-        # title, or artist — those are set by the pipeline and are not the scanner's
-        # authority to change. Album grouping follows the file's albumartist tag
-        # (which the pipeline writes at approval), so reassigning album_id here is
-        # correct and does not violate authority.
+        # Update indexable tag fields only. Never overwrite musicbrainz_recording_id
+        # set by the pipeline — but populate it from the file tag if it's still NULL
+        # (covers pre-existing files imported before the pipeline ran).
         track_row.album_id = album_id
         track_row.track_number = tagged.track_number
         if tagged.genre:
             track_row.genre = tagged.genre
+        if tagged.mb_recording_id and not track_row.musicbrainz_recording_id:
+            track_row.musicbrainz_recording_id = tagged.mb_recording_id
         # Preserve MB ID in quality score computation if already enriched
         quality_score = compute_quality_score(
             title=title,

@@ -553,6 +553,16 @@ def get_release_group_tracks(
     if not release_id:
         return album_title, None, rg_year, []
 
+    return _fetch_release_tracks(release_id, album_title, rg_year, cache_dir)
+
+
+def _fetch_release_tracks(
+    release_id: str,
+    album_title: str = "Unknown Album",
+    rg_year: int | None = None,
+    cache_dir: Path | None = None,
+) -> tuple[str, str, int | None, list[MBTrack]]:
+    """Fetch track list for a known MB release ID. Returns (album_title, release_id, year, tracks)."""
     key_rel = f"release_tracks:{release_id}"
     raw_rel: dict[str, object] | None = None
     if cache_dir is not None:
@@ -576,7 +586,8 @@ def get_release_group_tracks(
     if not isinstance(rel_data, dict):
         return album_title, release_id, rg_year, []
 
-    # Use specific release date as fallback if release group year not available
+    album_title = str(rel_data.get("title") or album_title)
+
     if rg_year is None:
         rel_date = str(rel_data.get("date") or "")
         if rel_date and len(rel_date) >= 4:
@@ -605,3 +616,15 @@ def get_release_group_tracks(
 
     tracks.sort(key=lambda t: t.number)
     return album_title, release_id, rg_year, tracks
+
+
+def get_release_tracks_by_id(
+    release_id: str,
+    cache_dir: Path | None = None,
+) -> tuple[str, str, int | None, list[MBTrack]]:
+    """Fetch tracks for a known MB release ID (skips the release-group lookup).
+
+    Use when you have musicbrainz_release_id (a specific pressing) rather than
+    mb_release_group_id (the abstract release group). Cached.
+    """
+    return _fetch_release_tracks(release_id, cache_dir=cache_dir)

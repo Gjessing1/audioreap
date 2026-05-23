@@ -1572,14 +1572,20 @@ async def album_mb_compare(
         .options(_jl(Album.tracks))
         .where(Album.id == album_id)
     )).unique().scalar_one_or_none()
-    mb_rg_id = (album.mb_release_group_id if album else None) or (album.musicbrainz_release_id if album else None)
-    if album is None or not mb_rg_id:
+    if album is None or (not album.mb_release_group_id and not album.musicbrainz_release_id):
         return HTMLResponse('<p class="muted" style="font-size:12px">No MusicBrainz release linked — approve at least one track with a MB ID to enable comparison.</p>')
 
     try:
-        _, _, _, mb_tracks = await asyncio.to_thread(
-            get_release_group_tracks, mb_rg_id, settings.cache_dir
-        )
+        if album.mb_release_group_id:
+            from service.metadata.musicbrainz import get_release_group_tracks as _get_rg_tracks
+            _, _, _, mb_tracks = await asyncio.to_thread(
+                _get_rg_tracks, album.mb_release_group_id, settings.cache_dir
+            )
+        else:
+            from service.metadata.musicbrainz import get_release_tracks_by_id as _get_rel_tracks
+            _, _, _, mb_tracks = await asyncio.to_thread(
+                _get_rel_tracks, album.musicbrainz_release_id, settings.cache_dir
+            )
     except Exception as exc:
         return HTMLResponse(f'<p class="muted" style="font-size:12px">MB fetch failed: {exc}</p>')
 
