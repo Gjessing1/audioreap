@@ -4290,6 +4290,15 @@ async def merge_album(
     already_there = 0
     collisions = 0
 
+    # Collect source dirs BEFORE mutating track.file.path — the loop below
+    # updates those paths in-memory, so collecting after would yield canonical_dir.
+    src_dirs: set[Path] = set()
+    for track in source.tracks:
+        if track.file:
+            d = Path(track.file.path).parent
+            if d != canonical_dir:
+                src_dirs.add(d)
+
     for track in source.tracks:
         if not track.file:
             # Reassign album even if no file
@@ -4327,19 +4336,12 @@ async def merge_album(
         except Exception as exc:
             logger.warning("Merge: failed to move %s → %s: %s", src, dst, exc)
 
-    # Remove now-empty source directories
-    try:
-        src_dirs: set[Path] = set()
-        for track in source.tracks:
-            if track.file:
-                d = Path(track.file.path).parent
-                if d != canonical_dir:
-                    src_dirs.add(d)
-        for src_dir in src_dirs:
-            if src_dir.exists() and not list(src_dir.iterdir()):
-                src_dir.rmdir()
-    except Exception:
-        pass
+    # Clean up source dirs: trash any remaining sidecars (cover.jpg etc.) and rmdir.
+    for src_dir in src_dirs:
+        try:
+            _trash_empty_album_dir(src_dir, settings.music_dir / ".trash")
+        except Exception:
+            pass
 
     # Delete the source Album row — all its tracks have been reassigned.
     # We flush first to commit the album_id updates, then expunge source from the
