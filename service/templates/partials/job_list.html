@@ -106,8 +106,16 @@
 {% endif %}
 
 {% if completed %}
+{% set failed_count = completed | selectattr('state', 'eq', 'failed') | list | length %}
 <div class="section-title {% if review or active %}section-title--spaced{% endif %}">
   Completed
+  {% if failed_count %}
+  <button class="btn btn-sm btn-ghost" style="margin-left:8px;font-size:11px"
+          hx-post="/jobs/retry-all-failed"
+          hx-target="#job-list"
+          hx-swap="innerHTML"
+          hx-confirm="Retry all {{ failed_count }} failed job(s)?">Retry all failed</button>
+  {% endif %}
   <button class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:11px"
           hx-delete="/jobs/clear"
           hx-target="#job-list"

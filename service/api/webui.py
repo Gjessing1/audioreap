@@ -1006,6 +1006,48 @@ async def dismiss_job(
     return HTMLResponse("")
 
 
+@router.post("/jobs/retry-all-failed", response_class=HTMLResponse)
+async def retry_all_failed(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (
+        await session.execute(
+            select(AcquisitionJobRow).where(
+                AcquisitionJobRow.state == "failed",
+                AcquisitionJobRow.candidate_json.isnot(None),
+            )
+        )
+    ).scalars().all()
+
+    if rows:
+        try:
+            from arq import create_pool
+            from arq.connections import RedisSettings
+            redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+            for row in rows:
+                retry_suffix = uuid.uuid4().hex[:8]
+                await redis.enqueue_job(
+                    "acquire_track",
+                    job_id=row.id,
+                    provider_name=row.provider,
+                    provider_ref=row.provider_ref,
+                    candidate_json=row.candidate_json,
+                    music_dir=str(settings.music_dir),
+                    tmp_acquire_dir=str(settings.tmp_acquire_dir),
+                    _job_id=f"acquire:{row.id}:{retry_suffix}",
+                )
+                row.state = "queued"
+                row.failure_class = None
+                row.error = None
+            await redis.aclose()
+            await session.commit()
+        except Exception as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    return templates.TemplateResponse(request, "partials/job_list.html", await _job_list_ctx(session))
+
+
 @router.delete("/jobs/clear", response_class=HTMLResponse)
 async def clear_done_jobs(
     request: Request,
@@ -3823,6 +3865,59 @@ async def enrich_track_now(
         return HTMLResponse(f'<span style="color:var(--danger);font-size:12px">Error: {exc}</span>')
 
     return HTMLResponse('<span style="color:var(--success);font-size:12px">✓ Enrichment queued — check the Jobs page</span>')
+
+
+@router.post("/library/enrich", response_class=HTMLResponse)
+async def library_enrich_filtered(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    artist: str = Form(""),
+    album: str = Form(""),
+) -> HTMLResponse:
+    """Queue MusicBrainz enrichment for tracks without a Recording ID.
+
+    Optional artist/album name filters narrow the scope — useful for re-enriching
+    a specific artist or album rather than the entire library.
+    """
+    from sqlalchemy.orm import joinedload as _jl
+    from service.core.normalize import normalize as _norm
+
+    stmt = (
+        select(Track)
+        .options(_jl(Track.artist), _jl(Track.album))
+        .where(Track.musicbrainz_recording_id.is_(None))
+    )
+    rows = (await session.execute(stmt)).unique().scalars().all()
+
+    artist_filter = _norm(artist.strip())
+    album_filter = _norm(album.strip())
+    if artist_filter:
+        rows = [r for r in rows if artist_filter in _norm(r.artist.name)]
+    if album_filter:
+        rows = [r for r in rows if r.album and album_filter in _norm(r.album.title)]
+
+    if not rows:
+        return HTMLResponse('<p class="empty" style="font-size:12px;padding:4px 0">No matching tracks without a MB Recording ID.</p>')
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        for track in rows:
+            await redis.enqueue_job("enrich_track", track_id=track.id)
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+
+    label = f"{len(rows)} track{'s' if len(rows) != 1 else ''}"
+    if artist_filter or album_filter:
+        parts = []
+        if artist_filter:
+            parts.append(f'artist “{artist.strip()}”')
+        if album_filter:
+            parts.append(f'album “{album.strip()}”')
+        label += f" matching {' + '.join(parts)}"
+    return HTMLResponse(f'<p style="font-size:12px;padding:4px 0;color:var(--success)">✓ Queued enrichment for {label} — results appear in Jobs.</p>')
 
 
 @router.delete("/library/albums/{album_id}", response_class=HTMLResponse)

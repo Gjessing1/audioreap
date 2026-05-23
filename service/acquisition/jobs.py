@@ -193,6 +193,11 @@ async def enrich_track(
             "is_enrichment": True,
             "current_title": track.title,
             "current_artist": track.artist.name,
+            "current_album": track.album.title if track.album else None,
+            "current_year": track.album.year if track.album else None,
+            "current_track_number": track.track_number,
+            "current_mb_recording_id": track.musicbrainz_recording_id,
+            "current_genre": track.genre,
             "quality_score": quality,
         }
 

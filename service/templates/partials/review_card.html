@@ -47,9 +47,8 @@
   {# ── Alerts ─────────────────────────────────────────────────────────── #}
   {% if is_enrichment %}
   <div class="rv-alert rv-alert--warn" style="display:flex;flex-direction:column;gap:2px">
-    <span style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Enrichment suggestion</span>
-    <span>Currently: <strong>{{ meta.current_title }}</strong> by <strong>{{ meta.current_artist }}</strong></span>
-    <span style="color:var(--t3);font-size:12px">Approving will write the suggested MB metadata to the existing file in place.</span>
+    <span style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Enrichment suggestion — fields marked ← show what will change</span>
+    <span style="color:var(--t3);font-size:12px">Approving will write the suggested MB metadata to the existing file in place. Edit any field before approving.</span>
   </div>
   {% elif not staging_exists %}
   <div class="rv-alert rv-alert--error">
@@ -91,11 +90,17 @@
         <label class="rv-label">Title</label>
         <input class="rv-input" name="title" value="{{ meta.title or '' }}"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        {% if is_enrichment and meta.current_title and meta.current_title != meta.title %}
+        <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_title }}</strong></div>
+        {% endif %}
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">Artist</label>
         <input class="rv-input" name="artist" value="{{ meta.artist or '' }}"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        {% if is_enrichment and meta.current_artist and meta.current_artist != meta.artist %}
+        <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_artist }}</strong></div>
+        {% endif %}
         {% if show_multi_artists %}
         <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
           <span style="font-size:11px;color:var(--t4)">→ ARTISTS:</span>
@@ -111,18 +116,27 @@
         <input class="rv-input" name="album" value="{{ meta.album or '' }}"
                placeholder="Leave blank for Singles" autocomplete="off"
                {% if not staging_exists %}disabled{% endif %}>
+        {% if is_enrichment and meta.current_album != None and meta.current_album != meta.album %}
+        <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_album or '(none)' }}</strong></div>
+        {% endif %}
       </div>
       <div class="rv-field">
         <label class="rv-label">Year</label>
         <input class="rv-input" name="year" type="number"
                value="{{ meta.year or '' }}" placeholder="YYYY"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        {% if is_enrichment and meta.current_year != None and meta.current_year != meta.year %}
+        <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_year }}</strong></div>
+        {% endif %}
       </div>
       <div class="rv-field">
         <label class="rv-label">Track #</label>
         <input class="rv-input" name="track_number" type="number"
                value="{{ meta.track_number or '' }}"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        {% if is_enrichment and meta.current_track_number != None and meta.current_track_number != meta.track_number %}
+        <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_track_number }}</strong></div>
+        {% endif %}
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">Genre <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--t4)">(one genre preferred)</span></label>
@@ -155,6 +169,11 @@
                value="{{ meta.mb_recording_id or '' }}"
                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        {% if is_enrichment and not meta.current_mb_recording_id and meta.mb_recording_id %}
+        <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>(none — this will be written for the first time)</strong></div>
+        {% elif is_enrichment and meta.current_mb_recording_id and meta.current_mb_recording_id != meta.mb_recording_id %}
+        <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_mb_recording_id }}</strong></div>
+        {% endif %}
       </div>
     </div>
 
