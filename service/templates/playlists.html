@@ -11,7 +11,7 @@
       hx-indicator="#resolve-spinner">
   <div style="display:flex;gap:8px;margin-bottom:8px">
     <input name="url" type="url"
-           placeholder="YouTube or YouTube Music playlist URL…"
+           placeholder="YouTube, YouTube Music, or Spotify playlist URL…"
            inputmode="url" autocomplete="off"
            style="flex:1;min-width:0"
            required>
@@ -20,11 +20,10 @@
       <span id="resolve-spinner" class="htmx-indicator"><span class="spinner"></span></span>
     </button>
   </div>
-  {% if not spotify_enabled %}
   <p class="empty" style="margin-top:4px;font-size:12px">
-    Spotify playlist support requires AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET.
+    Public Spotify playlists work without any API key. Private playlists require
+    AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET.
   </p>
-  {% endif %}
 </form>
 
 <div id="playlist-preview" style="margin-top:20px"></div>

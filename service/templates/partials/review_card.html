@@ -13,7 +13,7 @@
     <div class="rv-info">
       <div class="rv-badges">
         {% if is_enrichment %}
-        <span class="badge badge-busy">MB Enrichment suggestion</span>
+        <span class="badge badge-busy">Metadata suggestion</span>
         {% elif meta.mb_match_source == 'acoustid' %}
         <span class="badge badge-done" title="AcoustID fingerprint · {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}% confidence">✓ Verified</span>
         {% elif meta.mb_match_source == 'text_search' %}
@@ -149,7 +149,7 @@
         </datalist>
         {% if meta.mb_genres %}
         <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">
-          <span style="font-size:11px;color:var(--t4);align-self:center">MB:</span>
+          <span style="font-size:11px;color:var(--t4);align-self:center">Suggested:</span>
           {% for g in meta.mb_genres %}
           <button type="button" class="badge badge-queued"
                   style="cursor:pointer;border:none;font-size:11px"
@@ -160,14 +160,15 @@
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">
-          MB Recording ID
+          Recording ID
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--t4)">(MusicBrainz)</span>
           {% if meta.mb_recording_id %}
-          <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}" target="_blank">↗ view</a>
+          <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}" target="_blank" style="font-size:10px">↗</a>
           {% endif %}
         </label>
         <input class="rv-input rv-input--mono" name="mb_recording_id"
                value="{{ meta.mb_recording_id or '' }}"
-               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+               placeholder="paste a MusicBrainz recording ID, or use Search above"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
         {% if is_enrichment and not meta.current_mb_recording_id and meta.mb_recording_id %}
         <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>(none — this will be written for the first time)</strong></div>
@@ -180,7 +181,7 @@
     {# ── Provenance (collapsed) ──────────────────────────────────────────── #}
     {% if meta.prov_title or meta.prov_recording %}
     <details style="padding:8px 16px;border-top:1px solid var(--b1)">
-      <summary style="font-size:11px;color:var(--t4);cursor:pointer;user-select:none;letter-spacing:.04em">Metadata provenance</summary>
+      <summary style="font-size:11px;color:var(--t4);cursor:pointer;user-select:none;letter-spacing:.04em">Where did this metadata come from?</summary>
       <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;color:var(--t3)">
         {% if meta.prov_title %}<span><span style="color:var(--t4)">Title:</span> {{ meta.prov_title }}</span>{% endif %}
         {% if meta.prov_artist %}<span><span style="color:var(--t4)">Artist:</span> {{ meta.prov_artist }}</span>{% endif %}
@@ -194,14 +195,14 @@
     <div class="rv-actions">
       {% if staging_exists %}
       <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}" title="Keyboard: a">
-        {% if is_enrichment %}✓ Apply MB Tags{% else %}✓ Approve &amp; Place{% endif %}
+        {% if is_enrichment %}✓ Apply suggestions{% else %}✓ Approve &amp; Place{% endif %}
         <kbd class="rv-kbd">a</kbd>
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}','art-panel-{{ job_id }}')"
               title="Keyboard: s">
-        Search MB <kbd class="rv-kbd">s</kbd>
+        Find recording <kbd class="rv-kbd">s</kbd>
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview file — keyboard: p">▶ Play <kbd class="rv-kbd">p</kbd></button>
@@ -238,7 +239,7 @@
   {# ── MB search panel ─────────────────────────────────────────────────── #}
   {% if staging_exists %}
   <div id="mb-panel-{{ job_id }}" class="mb-panel {% if not show_mb_search %}hidden{% endif %}">
-    <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Search MusicBrainz</div>
+    <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find recording in MusicBrainz</div>
     <form class="mb-search-row"
           hx-get="/jobs/{{ job_id }}/mb-search"
           hx-target="#mb-results-{{ job_id }}"

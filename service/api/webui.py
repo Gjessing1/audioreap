@@ -3143,17 +3143,14 @@ async def resolve_playlist(
         )
 
     if "spotify.com" in url:
-        if not settings.spotify_client_id:
+        try:
+            title, source, candidates = await _resolve_spotify_playlist(url)
+        except Exception as exc:
+            logger.warning("Spotify resolve failed for %r: %s", url, exc)
             return templates.TemplateResponse(
                 request, "partials/playlist_preview.html",
-                {
-                    "error": (
-                        "Spotify playlist support requires AUDIOREAP_SPOTIFY_CLIENT_ID and "
-                        "AUDIOREAP_SPOTIFY_CLIENT_SECRET environment variables."
-                    )
-                },
+                {"error": f"Could not resolve Spotify playlist: {exc}"},
             )
-        title, source, candidates = await _resolve_spotify_playlist(url)
     else:
         try:
             import service.providers.ytdlp  # noqa: F401  ensure registered
@@ -3306,7 +3303,12 @@ async def acquire_playlist(
 
 
 async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandidate]]:
-    """Resolve a Spotify playlist via the Spotify Web API + YouTube search fallback."""
+    """Resolve a Spotify playlist via the Spotify API (credential-based or anonymous).
+
+    When AUDIOREAP_SPOTIFY_CLIENT_ID is set, uses the official client-credentials
+    OAuth flow. Otherwise, falls back to Spotify's anonymous web-player token so
+    that public playlists can be imported without any API key.
+    """
     import re as _re
 
     match = _re.search(r"playlist/([A-Za-z0-9]+)", url)
@@ -3314,24 +3316,32 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
         raise ValueError("Could not extract Spotify playlist ID from URL")
     playlist_id = match.group(1)
 
-    token = await _spotify_client_token()
+    if settings.spotify_client_id:
+        token = await _spotify_client_token()
+    else:
+        token = await _spotify_anonymous_token()
 
     import httpx
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; audioreap/0.1)",
+            "Authorization": f"Bearer {token}",
+        },
+    ) as client:
         items: list[dict[str, object]] = []
-        next_url: str | None = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=50"
         pl_title = "Spotify Playlist"
 
-        # Fetch playlist name
-        r = await client.get(
-            f"https://api.spotify.com/v1/playlists/{playlist_id}",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        r = await client.get(f"https://api.spotify.com/v1/playlists/{playlist_id}?fields=name")
         r.raise_for_status()
         pl_title = str(r.json().get("name") or pl_title)
 
+        next_url: str | None = (
+            f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+            "?fields=items(track(name,artists,album,duration_ms,type)),next&limit=50"
+        )
         while next_url:
-            r = await client.get(next_url, headers={"Authorization": f"Bearer {token}"})
+            r = await client.get(next_url)
             r.raise_for_status()
             data = r.json()
             items.extend(data.get("items") or [])
@@ -3350,7 +3360,6 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
         duration_ms = track.get("duration_ms")
         duration_s = int(duration_ms) // 1000 if duration_ms else None
 
-        # Use yt-dlp YouTube search to get a provider_ref
         search_q = f"{artist} {title}"
         yt_url = await asyncio.to_thread(_yt_search_one, search_q)
 
@@ -3365,6 +3374,33 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
         ))
 
     return pl_title, "spotify", candidates
+
+
+async def _spotify_anonymous_token() -> str:
+    """Obtain a Spotify anonymous access token via the web-player endpoint.
+
+    This is the same token Spotify's own web player uses for unauthenticated
+    browsing of public playlists/albums. No developer account or API key needed.
+    Raises on failure so callers can surface the error to the user.
+    """
+    import httpx
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(
+            "https://open.spotify.com/get_access_token",
+            params={"reason": "transport", "productType": "web_player"},
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                ),
+                "Referer": "https://open.spotify.com/",
+            },
+        )
+        r.raise_for_status()
+        token = r.json().get("accessToken")
+        if not token:
+            raise ValueError("Spotify anonymous token endpoint returned no token")
+    return str(token)
 
 
 async def _spotify_client_token() -> str:

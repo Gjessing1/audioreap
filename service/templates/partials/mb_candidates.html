@@ -16,19 +16,19 @@
       <div class="mb-candidate-sub">
         {{ rec.artist }}{% if rec.album %} · <em>{{ rec.album }}</em>{% endif %}{% if rec.year %} · {{ rec.year }}{% endif %}
       </div>
-      <div class="mb-candidate-id">{{ rec.recording_id }}</div>
+      <div class="mb-candidate-id" title="MusicBrainz Recording ID: {{ rec.recording_id }}" style="cursor:help">ID: {{ rec.recording_id[:8] }}…</div>
     </div>
     {% if job_id %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/{{ job_id }}/mb-apply"
             hx-vals='{"recording_id": "{{ rec.recording_id }}"}'
             hx-target="#job-{{ job_id }}"
-            hx-swap="outerHTML">Use</button>
+            hx-swap="outerHTML">Link</button>
     {% elif track_id %}
     {% set safe_track_id = track_id | replace(':', '_') %}
     <button class="btn btn-sm btn-ghost"
             onclick="applyMbToLibraryEditor('{{ safe_track_id }}','{{ rec.recording_id }}','{{ rec.title|e }}','{{ rec.artist|e }}','{{ rec.album|e }}','{{ rec.year or '' }}')">
-      Use
+      Link
     </button>
     {% endif %}
   </div>
