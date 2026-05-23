@@ -238,7 +238,10 @@ async def acquire_album_from_mb(
     from arq import create_pool
     from arq.connections import RedisSettings
     from service.config import settings as _settings
-    from service.db.schema import AcquisitionJobRow as _JobRow, AlbumAcquisitionJob as _AlbumJob, Track as _Track
+    from service.db.schema import (
+        AcquisitionJobRow as _JobRow, AlbumAcquisitionJob as _AlbumJob,
+        ImportSession as _ImportSession, Track as _Track,
+    )
     from service.metadata.musicbrainz import get_release_group_tracks
     from sqlalchemy import select as _select
 
@@ -288,11 +291,28 @@ async def acquire_album_from_mb(
             )).scalars().all()
             owned_recording_ids = {r.musicbrainz_recording_id for r in existing if r.musicbrainz_recording_id}
 
-    # ── 3. Create child jobs with locked album metadata ─────────────────────
+    # ── 3. Create import session + child jobs with locked album metadata ───────
     redis = await create_pool(RedisSettings.from_dsn(_settings.redis_url))
     queued_count = 0
 
     async with session_factory() as session, session.begin():
+        # Create a persistent ImportSession so provenance is queryable later
+        import_session = _ImportSession(
+            id=str(uuid.uuid4()),
+            session_type="album",
+            user_intent="album",
+            strict_album_mode=True,
+            target_release_group=release_group_id,
+            target_release=release_id,
+            album_job_id=album_job_id,
+            title=album_title,
+            artist=artist_name,
+            created_at=_now(),
+        )
+        session.add(import_session)
+        await session.flush()
+        import_session_id = import_session.id
+
         for t in mb_tracks:
             if t.recording_id and t.recording_id in owned_recording_ids:
                 continue
@@ -317,10 +337,13 @@ async def acquire_album_from_mb(
                 candidate=candidate,
                 query=f"{artist_name} - {t.title}",
             )
-            # Stamp album relationship
+            # Stamp album relationship + import session provenance
             child_row = await session.get(_JobRow, job_id)
             if child_row:
                 child_row.album_job_id = album_job_id
+                child_row.import_session_id = import_session_id
+                child_row.acquired_from_release_group = release_group_id
+                child_row.acquired_from_release = release_id
 
             await redis.enqueue_job(
                 "acquire_track",

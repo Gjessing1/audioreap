@@ -87,6 +87,32 @@ class TrackFile(Base):
     track: Mapped["Track"] = relationship(back_populates="file")
 
 
+class ImportSession(Base):
+    """Records user acquisition intent for a batch of tracks (album, playlist, or single).
+
+    Persists the 'why' behind a group of child jobs — which release group the user
+    selected, whether album grouping is strict, and the original source reference.
+    Every child AcquisitionJobRow FK-links back here via import_session_id.
+    """
+    __tablename__ = "import_sessions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_type: Mapped[str] = mapped_column(String, nullable=False)  # "album" | "playlist" | "track"
+    user_intent: Mapped[str | None] = mapped_column(String, nullable=True)  # "discography" | "album" | "track"
+    strict_album_mode: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)
+    target_release_group: Mapped[str | None] = mapped_column(String, nullable=True)  # MB release group MBID
+    target_release: Mapped[str | None] = mapped_column(String, nullable=True)        # MB release MBID
+    source_playlist_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("playlist_imports.id"), nullable=True
+    )
+    album_job_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("album_acquisition_jobs.id"), nullable=True
+    )
+    title: Mapped[str | None] = mapped_column(String, nullable=True)    # human label (album title, playlist name)
+    artist: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class AlbumAcquisitionJob(Base):
     __tablename__ = "album_acquisition_jobs"
 
@@ -126,6 +152,12 @@ class AcquisitionJobRow(Base):
     staging_path: Mapped[str | None] = mapped_column(String, nullable=True)
     resolved_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Acquisition provenance
+    import_session_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("import_sessions.id"), nullable=True, index=True
+    )
+    acquired_from_release_group: Mapped[str | None] = mapped_column(String, nullable=True)
+    acquired_from_release: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
