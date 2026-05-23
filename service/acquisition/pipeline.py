@@ -533,9 +533,13 @@ async def place_approved_track(
         albumartist = await stable_albumartist(session, albumartist, mb_artist_id)
         canonical = await find_canonical_album(session, album, albumartist, mb_release_group_id)
         if canonical is not None:
-            album, albumartist, canonical_year = canonical
+            album, albumartist, canonical_year, canonical_release_id = canonical
             if canonical_year is not None:
                 year = canonical_year
+            # Use the album's established release ID so all tracks share the same
+            # MUSICBRAINZ_ALBUMID tag — differing IDs cause Navidrome to split the album
+            if canonical_release_id:
+                mb_release_id = canonical_release_id
 
     # Write final tags — raise on failure so the approval is aborted and the
     # job stays in needs_review rather than placing an untagged file in /music.
@@ -651,12 +655,18 @@ async def place_approved_track(
                     artist_row = await session.get(_Artist, track_row.artist_id)
                     if artist_row is not None and not artist_row.musicbrainz_artist_id:
                         artist_row.musicbrainz_artist_id = mb_artist_id
-                # Store MB release group ID on Album row for canonical album lookup
-                if mb_release_group_id and track_row.album_id:
+                # Store MB IDs on Album row for cohesion on future tracks
+                if track_row.album_id and (mb_release_group_id or mb_release_id):
                     from service.db.schema import Album as _Album
                     album_row = await session.get(_Album, track_row.album_id)
-                    if album_row is not None and not album_row.mb_release_group_id:
-                        album_row.mb_release_group_id = mb_release_group_id
+                    if album_row is not None:
+                        if mb_release_group_id and not album_row.mb_release_group_id:
+                            album_row.mb_release_group_id = mb_release_group_id
+                        # First track to land in an album sets the release ID; all
+                        # subsequent tracks inherit it (prevents Navidrome album splits
+                        # caused by different editions matching different release IDs)
+                        if mb_release_id and not album_row.musicbrainz_release_id:
+                            album_row.musicbrainz_release_id = mb_release_id
                 await session.flush()
     except Exception as exc:
         logger.warning("Approve: DB index failed for %s: %s", dest, exc)

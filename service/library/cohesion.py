@@ -30,12 +30,14 @@ async def find_canonical_album(
     album: str | None,
     albumartist: str,
     mb_release_group_id: str | None,
-) -> tuple[str, str, int | None] | None:
+) -> tuple[str, str, int | None, str | None] | None:
     """Find an existing local album to anchor this track to.
 
-    Returns (canonical_album_title, canonical_albumartist, canonical_year) or None if no match.
-    The year is included so tracks land in the same filesystem directory as existing ones —
-    preventing split album directories caused by year metadata drift between editions.
+    Returns (canonical_album_title, canonical_albumartist, canonical_year, canonical_release_id)
+    or None if no match. The year prevents split directories from year metadata drift.
+    The release_id is the album's musicbrainz_release_id — callers should use it for the
+    new track's tag so all tracks in the album share the same MUSICBRAINZ_ALBUMID (Navidrome
+    splits the album into two entries if any track differs).
 
     Priority:
     1. MB release-group ID — strongest; same release group = same album regardless
@@ -69,7 +71,8 @@ async def find_canonical_album(
                     album, albumartist,
                     existing_album.title, existing_artist.name,
                 )
-            return (existing_album.title, existing_artist.name, existing_album.year)
+            return (existing_album.title, existing_artist.name, existing_album.year,
+                    existing_album.musicbrainz_release_id)
 
     # --- Priority 2: normalized title + same AlbumArtist ---
     norm_new = normalize_album_for_grouping(album)
@@ -86,7 +89,8 @@ async def find_canonical_album(
                 "Album cohesion (normalized title): %r → %r (AlbumArtist: %r)",
                 album, existing.title, albumartist,
             )
-            return (existing.title, albumartist, existing.year)
+            return (existing.title, albumartist, existing.year,
+                    existing.musicbrainz_release_id)
 
     return None
 
