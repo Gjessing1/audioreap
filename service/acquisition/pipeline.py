@@ -277,6 +277,7 @@ async def run_acquisition(
                     clean_for_search(artist),
                     duration,
                     cache_dir=settings.cache_dir,
+                    preferred_release_group=candidate.mb_release_group_id,
                 )
                 if mb is not None:
                     mb_match_source = "text_search"

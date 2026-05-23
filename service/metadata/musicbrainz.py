@@ -54,6 +54,7 @@ class MBRecording:
     original_year: int | None = None        # first-ever release year (for ORIGINALDATE tag)
     release_group_id: str | None = None     # MB release group MBID (for genre lookup)
     isrc: str | None = None                 # International Standard Recording Code
+    duration_seconds: int | None = None     # recording length from MB (for duration weighting)
 
 
 def _cache_key(title: str, artist: str) -> str:
@@ -125,6 +126,14 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
     if isinstance(isrc_list, list) and isrc_list:
         isrc = str(isrc_list[0])
 
+    duration_seconds: int | None = None
+    length_ms = rec.get("length")
+    if length_ms:
+        try:
+            duration_seconds = int(int(length_ms) / 1000)
+        except (ValueError, TypeError):
+            pass
+
     releases = rec.get("release-list") or []
     if isinstance(releases, list) and releases:
         release = releases[0]
@@ -170,6 +179,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
         original_year=original_year,
         release_group_id=release_group_id,
         isrc=isrc,
+        duration_seconds=duration_seconds,
     )
 
 
@@ -179,10 +189,13 @@ def lookup_recording(
     duration_seconds: int | None = None,
     cache_dir: Path | None = None,
     confidence_threshold: float = DEDUP_THRESHOLD,
+    preferred_release_group: str | None = None,
 ) -> MBRecording | None:
     """Search MusicBrainz for a recording. Returns best match or None.
 
     Results are cached on disk. Pass cache_dir=None to skip disk cache (tests).
+    When preferred_release_group is set, recordings in that group get a small
+    boost so album-context searches prefer the expected release.
     """
     key = _cache_key(title, artist)
 
@@ -218,8 +231,12 @@ def lookup_recording(
         parsed = _parse_recording(rec)
         sim = track_similarity(
             title, artist, duration_seconds,
-            parsed.title, parsed.artist, None,
+            parsed.title, parsed.artist, parsed.duration_seconds,
         )
+        # Small boost for recordings in the preferred release group so that
+        # album-context text searches stay within the expected release.
+        if preferred_release_group and parsed.release_group_id == preferred_release_group:
+            sim = min(sim + 0.05, 1.0)
         if sim > best_sim:
             best_sim = sim
             best = parsed
