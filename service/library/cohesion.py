@@ -75,20 +75,25 @@ async def find_canonical_album(
                     existing_album.musicbrainz_release_id)
 
     # --- Priority 2: normalized title + same AlbumArtist ---
+    # Matches "Metallica" (year=None) to existing "Metallica" (year=1991), and
+    # "Abbey Road (Remaster)" to existing "Abbey Road".  Albums WITH a year sort
+    # first so we anchor to the better-tagged entry when multiple candidates exist.
     norm_new = normalize_album_for_grouping(album)
     artist_id = _artist_id(albumartist)
 
+    from sqlalchemy import case as _case
     result = await session.execute(
         select(Album)
         .where(Album.artist_id == artist_id)
-        .order_by(Album.created_at)
+        .order_by(_case((Album.year.is_not(None), 0), else_=1), Album.created_at)
     )
     for existing in result.scalars().all():
-        if normalize_album_for_grouping(existing.title) == norm_new and existing.title != album:
-            logger.info(
-                "Album cohesion (normalized title): %r → %r (AlbumArtist: %r)",
-                album, existing.title, albumartist,
-            )
+        if normalize_album_for_grouping(existing.title) == norm_new:
+            if existing.title != album or existing.year is not None:
+                logger.info(
+                    "Album cohesion (normalized title): %r → %r (year %s, AlbumArtist: %r)",
+                    album, existing.title, existing.year, albumartist,
+                )
             return (existing.title, albumartist, existing.year,
                     existing.musicbrainz_release_id)
 

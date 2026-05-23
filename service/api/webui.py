@@ -3434,30 +3434,16 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
 
 
 async def _spotify_anonymous_token() -> str:
-    """Obtain a Spotify anonymous access token via the web-player endpoint.
+    """Spotify blocked anonymous server-side API access entirely in 2024.
 
-    This is the same token Spotify's own web player uses for unauthenticated
-    browsing of public playlists/albums. No developer account or API key needed.
-    Raises on failure so callers can surface the error to the user.
+    This function now always raises with a clear message directing the user to
+    configure Spotify API credentials via the admin config panel.
     """
-    import httpx
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(
-            "https://open.spotify.com/get_access_token",
-            params={"reason": "transport", "productType": "web_player"},
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-                ),
-                "Referer": "https://open.spotify.com/",
-            },
-        )
-        r.raise_for_status()
-        token = r.json().get("accessToken")
-        if not token:
-            raise ValueError("Spotify anonymous token endpoint returned no token")
-    return str(token)
+    raise ValueError(
+        "Spotify requires API credentials for server-side playlist import. "
+        "Go to Settings → Config and set AUDIOREAP_SPOTIFY_CLIENT_ID and "
+        "AUDIOREAP_SPOTIFY_CLIENT_SECRET (free at developer.spotify.com/dashboard)."
+    )
 
 
 async def _spotify_client_token() -> str:
