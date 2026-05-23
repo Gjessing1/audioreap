@@ -76,6 +76,15 @@ async def startup(ctx: dict[str, object]) -> None:
 
 
 async def shutdown(ctx: dict[str, object]) -> None:
+    import asyncio
+
+    from service.acquisition.jobs import _bg_tasks
+    if _bg_tasks:
+        for task in list(_bg_tasks):
+            task.cancel()
+        await asyncio.gather(*list(_bg_tasks), return_exceptions=True)
+        logger.info("Cancelled %d background progress task(s) on shutdown", len(_bg_tasks))
+
     engine = ctx.get("engine")
     if isinstance(engine, AsyncEngine):
         await engine.dispose()

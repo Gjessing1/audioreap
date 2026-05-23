@@ -53,6 +53,7 @@ class MBRecording:
     artist_sort: str | None = None          # e.g. "Beatles, The" (for ARTISTSORT tag)
     original_year: int | None = None        # first-ever release year (for ORIGINALDATE tag)
     release_group_id: str | None = None     # MB release group MBID (for genre lookup)
+    isrc: str | None = None                 # International Standard Recording Code
 
 
 def _cache_key(title: str, artist: str) -> str:
@@ -119,6 +120,11 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
     release_id: str | None = None
     release_group_id: str | None = None
 
+    isrc: str | None = None
+    isrc_list = rec.get("isrc-list")
+    if isinstance(isrc_list, list) and isrc_list:
+        isrc = str(isrc_list[0])
+
     releases = rec.get("release-list") or []
     if isinstance(releases, list) and releases:
         release = releases[0]
@@ -163,6 +169,7 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
         artist_sort=artist_sort,
         original_year=original_year,
         release_group_id=release_group_id,
+        isrc=isrc,
     )
 
 
@@ -378,7 +385,7 @@ def get_recording_by_id(
         try:
             result = musicbrainzngs.get_recording_by_id(
                 recording_id,
-                includes=["artists", "releases", "media"],
+                includes=["artists", "releases", "media", "isrcs"],
             )
             raw = dict(result)
             if cache_dir is not None:

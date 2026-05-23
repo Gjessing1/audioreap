@@ -16,6 +16,10 @@ from service.providers.base import Provider
 
 logger = logging.getLogger(__name__)
 
+# Module-level set tracking fire-and-forget progress tasks so they can be
+# cancelled cleanly on worker shutdown instead of being abandoned mid-flight.
+_bg_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
@@ -391,7 +395,9 @@ async def acquire_track(
             pass
 
     def on_progress(fraction: float) -> None:
-        asyncio.create_task(_write_progress(fraction))
+        task = asyncio.create_task(_write_progress(fraction))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
     async with session_factory() as session, session.begin():
         await run_acquisition(

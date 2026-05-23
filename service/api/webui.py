@@ -18,7 +18,7 @@ from sqlalchemy.orm import joinedload
 
 from service.config import settings
 from service.core.models import AcquisitionJob, TrackCandidate, TrackQuality, TrackRef
-from service.db.schema import AcquisitionJobRow, Album, Artist, PlaylistImport, Track, TrackFile
+from service.db.schema import AcquisitionJobRow, Album, Artist, DeletedTrack, PlaylistImport, Track, TrackFile
 from service.library.writer import safe_trash
 from service.db.session import get_session
 
@@ -953,7 +953,7 @@ async def delete_track(
     from sqlalchemy.orm import joinedload as _joinedload
     stmt = (
         select(Track)
-        .options(_joinedload(Track.file))
+        .options(_joinedload(Track.file), _joinedload(Track.artist))
         .where(Track.id == internal_id)
     )
     row = (await session.execute(stmt)).unique().scalar_one_or_none()
@@ -969,6 +969,14 @@ async def delete_track(
                 logger.warning("Trash move failed for %s: %s", file_path, exc)
         await session.delete(row.file)
 
+    from datetime import UTC as _UTC, datetime as _dt
+    tombstone = DeletedTrack(
+        mb_recording_id=row.musicbrainz_recording_id,
+        track_title=row.title,
+        track_artist=row.artist.name if row.artist else None,
+        deleted_at=_dt.now(_UTC).replace(tzinfo=None),
+    )
+    session.add(tombstone)
     await session.delete(row)
     await session.commit()
     return HTMLResponse("")

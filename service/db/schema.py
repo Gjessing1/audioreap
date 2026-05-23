@@ -151,3 +151,21 @@ class RejectedId(Base):
     internal_id: Mapped[str] = mapped_column(String, primary_key=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     rejected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class DeletedTrack(Base):
+    """Tombstone row written when a user explicitly deletes a track.
+
+    The scanner checks this table to avoid re-indexing a file that was
+    intentionally removed. prevent_reimport=True additionally blocks the
+    track from being re-downloaded via acquisition.
+    """
+    __tablename__ = "deleted_tracks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mb_recording_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    file_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    track_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    track_artist: Mapped[str | None] = mapped_column(String, nullable=True)
+    prevent_reimport: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

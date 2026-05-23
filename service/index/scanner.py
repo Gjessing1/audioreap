@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from service.core.identity import make_id
 from service.core.normalize import normalize
-from service.db.schema import Album, Artist, Track, TrackFile
+from service.db.schema import Album, Artist, DeletedTrack, Track, TrackFile
 from service.library.tagger import SUPPORTED_EXTENSIONS, TaggedFile, read_tags
 from service.metadata.quality import compute_quality_score
 
@@ -165,6 +165,15 @@ async def _process_file(
     tagged = read_tags(path)
     if tagged is None:
         return "error"
+
+    # Skip files whose MB recording ID matches a user-deleted tombstone
+    if tagged.mb_recording_id:
+        tombstone = (await session.execute(
+            select(DeletedTrack).where(DeletedTrack.mb_recording_id == tagged.mb_recording_id)
+        )).scalar_one_or_none()
+        if tombstone is not None:
+            logger.debug("Skipping tombstoned recording %s (%s)", tagged.mb_recording_id, path)
+            return "skipped"
 
     artist_name = tagged.albumartist or tagged.artist or "Unknown Artist"
     title = tagged.title or path.stem

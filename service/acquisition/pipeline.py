@@ -232,6 +232,7 @@ async def run_acquisition(
         mb_artist_sort: str | None = None
         mb_original_year: int | None = None
         mb_release_group_id: str | None = None
+        isrc: str | None = None
         acoustid_confidence: float | None = None
         mb_match_source: str | None = None
 
@@ -297,6 +298,7 @@ async def run_acquisition(
                 mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
                 mb_original_year = mb.original_year  # type: ignore[union-attr]
                 mb_release_group_id = mb.release_group_id  # type: ignore[union-attr]
+                isrc = mb.isrc  # type: ignore[union-attr]
                 title = mb.title or title  # type: ignore[union-attr]
                 artist = mb.artist or artist  # type: ignore[union-attr]
                 if not candidate_album_locked:
@@ -376,6 +378,7 @@ async def run_acquisition(
             "mb_release_id": mb_release_id,
             "mb_artist_id": mb_artist_id,
             "mb_artist_sort": mb_artist_sort,
+            "isrc": isrc,
             "acoustid_confidence": acoustid_confidence,
             "mb_match_source": mb_match_source,
             "is_compilation": is_compilation,
@@ -468,6 +471,7 @@ async def place_approved_track(
     mb_release_id: str | None = meta.get("mb_release_id") or None  # type: ignore[assignment]
     mb_artist_id: str | None = meta.get("mb_artist_id") or None  # type: ignore[assignment]
     mb_artist_sort: str | None = meta.get("mb_artist_sort") or None  # type: ignore[assignment]
+    isrc: str | None = meta.get("isrc") or None  # type: ignore[assignment]
     is_compilation: bool = bool(meta.get("is_compilation", False))
     genre: str | None = meta.get("genre") or None  # type: ignore[assignment]
     duration_seconds: int | None = meta.get("duration_seconds")  # type: ignore[assignment]
@@ -492,6 +496,7 @@ async def place_approved_track(
         mb_recording_id=mb_recording_id,
         mb_release_id=mb_release_id,
         mb_artist_id=mb_artist_id,
+        isrc=isrc,
     )
 
     if is_enrichment:

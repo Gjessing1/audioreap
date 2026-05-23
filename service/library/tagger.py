@@ -68,6 +68,7 @@ class TaggedFile:
     genre: str | None = None
     artist_sort: str | None = None
     mb_artist_id: str | None = None
+    mb_recording_id: str | None = None
 
 
 def _parse_tracknum(value: str | None) -> int | None:
@@ -185,6 +186,7 @@ def read_tags(path: Path) -> TaggedFile | None:
     genre: str | None = None
     artist_sort: str | None = None
     mb_artist_id: str | None = None
+    mb_recording_id: str | None = None
 
     if isinstance(audio, MP4):
         # note: MP4 check must come before ID3 check
@@ -205,6 +207,10 @@ def read_tags(path: Path) -> TaggedFile | None:
         if mb_aid_raw and isinstance(mb_aid_raw, list) and mb_aid_raw:
             val = mb_aid_raw[0]
             mb_artist_id = val.decode() if isinstance(val, bytes) else str(val)
+        mb_rid_raw = tags.get("----:com.apple.iTunes:MusicBrainz Track Id") if tags else None
+        if mb_rid_raw and isinstance(mb_rid_raw, list) and mb_rid_raw:
+            val = mb_rid_raw[0]
+            mb_recording_id = val.decode() if isinstance(val, bytes) else str(val)
 
     elif isinstance(tags, ID3):
         # MP3, WAV, AIFF — all have ID3-based tags regardless of audio FileType
@@ -218,6 +224,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         genre = _id3_str(tags, "TCON")
         artist_sort = _id3_str(tags, "TSOP")
         mb_artist_id = _id3_str(tags, "TXXX:MusicBrainz Artist Id")
+        mb_recording_id = _id3_str(tags, "TXXX:MusicBrainz Track Id")
 
     else:
         # Vorbis comment: FLAC, OGG Vorbis, Opus
@@ -231,6 +238,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         genre = _vorbis_str(tags, "genre")
         artist_sort = _vorbis_str(tags, "artistsort")
         mb_artist_id = _vorbis_str(tags, "musicbrainz_artistid")
+        mb_recording_id = _vorbis_str(tags, "musicbrainz_trackid")
 
     cover = _check_cover_art(audio, tags)
 
@@ -252,6 +260,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         genre=genre,
         artist_sort=artist_sort,
         mb_artist_id=mb_artist_id,
+        mb_recording_id=mb_recording_id,
     )
 
 
@@ -303,6 +312,7 @@ def write_tags(
     mb_recording_id: str | None = None,
     mb_release_id: str | None = None,
     mb_artist_id: str | None = None,
+    isrc: str | None = None,
     artwork_bytes: bytes | None = None,
 ) -> None:
     """Write normalized tags back to an audio file.
@@ -359,6 +369,8 @@ def write_tags(
             tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [  # type: ignore[index]
                 mb_artist_id.encode()
             ]
+        if isrc is not None:
+            tags["----:com.apple.iTunes:ISRC"] = [isrc.encode()]  # type: ignore[index]
         if genre is not None:
             tags["©gen"] = [genre]  # type: ignore[index]
         if artwork_bytes is not None:
@@ -402,6 +414,9 @@ def write_tags(
             tags["TXXX:MusicBrainz Artist Id"] = TXXX(
                 encoding=3, desc="MusicBrainz Artist Id", text=[mb_artist_id]
             )
+        if isrc is not None:
+            from mutagen.id3 import TSRC
+            tags["TSRC"] = TSRC(encoding=3, text=[isrc])
         if genre is not None:
             from mutagen.id3 import TCON
             tags["TCON"] = TCON(encoding=3, text=[genre])
@@ -450,6 +465,8 @@ def write_tags(
             tags["musicbrainz_albumid"] = [mb_release_id]  # type: ignore[index]
         if mb_artist_id is not None:
             tags["musicbrainz_artistid"] = [mb_artist_id]  # type: ignore[index]
+        if isrc is not None:
+            tags["isrc"] = [isrc]  # type: ignore[index]
         if genre is not None:
             tags["genre"] = [genre]  # type: ignore[index]
         if artwork_bytes is not None:
