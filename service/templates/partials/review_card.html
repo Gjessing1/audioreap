@@ -144,6 +144,20 @@
       </div>
     </div>
 
+    {# ── Provenance (collapsed) ──────────────────────────────────────────── #}
+    {% if meta.prov_title or meta.prov_recording %}
+    <details style="padding:8px 16px;border-top:1px solid var(--b1)">
+      <summary style="font-size:11px;color:var(--t4);cursor:pointer;user-select:none;letter-spacing:.04em">Metadata provenance</summary>
+      <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;color:var(--t3)">
+        {% if meta.prov_title %}<span><span style="color:var(--t4)">Title:</span> {{ meta.prov_title }}</span>{% endif %}
+        {% if meta.prov_artist %}<span><span style="color:var(--t4)">Artist:</span> {{ meta.prov_artist }}</span>{% endif %}
+        {% if meta.prov_album %}<span><span style="color:var(--t4)">Album:</span> {{ meta.prov_album }}</span>{% endif %}
+        {% if meta.prov_year %}<span><span style="color:var(--t4)">Year:</span> {{ meta.prov_year }}</span>{% endif %}
+        {% if meta.prov_recording %}<span><span style="color:var(--t4)">Recording ID:</span> {{ meta.prov_recording }}</span>{% endif %}
+      </div>
+    </details>
+    {% endif %}
+
     <div class="rv-actions">
       {% if staging_exists %}
       <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}" title="Keyboard: a">

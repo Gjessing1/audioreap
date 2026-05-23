@@ -193,6 +193,14 @@ async def run_acquisition(
         # ── 3. Read tags + merge ───────────────────────────────────────────────
         await _set_state(session, job_id, "tagging")
         tagged = read_tags(audio_path)
+
+        # Initial provenance: "tagged" > "provider" > "candidate"
+        _t = tagged
+        prov_title  = "tagged" if (_t and _t.title)  else ("provider" if _fetch_title  else "candidate")
+        prov_artist = "tagged" if (_t and _t.artist) else ("provider" if _fetch_artist else "candidate")
+        prov_album  = "tagged" if (_t and _t.album)  else ("provider" if _fetch_album  else "candidate")
+        prov_year   = "tagged" if (_t and _t.year)   else ("provider" if _fetch_year   else "candidate")
+
         title = (tagged.title if tagged else None) or _fetch_title or candidate.title
         artist = (tagged.artist if tagged else None) or _fetch_artist or candidate.artist
         album = (tagged.album if tagged else None) or _fetch_album or candidate.album
@@ -222,11 +230,14 @@ async def run_acquisition(
         # Apply candidate's pre-resolved fields (from album coordinator)
         if candidate.album:
             album = candidate.album
+            prov_album = "candidate:locked" if candidate_album_locked else "candidate"
         if candidate.year:
             year = candidate.year
+            prov_year = "candidate:locked" if candidate_album_locked else "candidate"
         if candidate.track_number:
             track_number = candidate.track_number
 
+        prov_recording = "candidate" if candidate.mb_recording_id else "none"
         mb_recording_id: str | None = candidate.mb_recording_id
         mb_release_id: str | None = candidate.mb_release_id
         mb_artist_id: str | None = None
@@ -301,12 +312,23 @@ async def run_acquisition(
                 mb_original_year = mb.original_year  # type: ignore[union-attr]
                 mb_release_group_id = mb.release_group_id  # type: ignore[union-attr]
                 isrc = mb.isrc  # type: ignore[union-attr]
-                title = mb.title or title  # type: ignore[union-attr]
-                artist = mb.artist or artist  # type: ignore[union-attr]
+                prov_recording = mb_match_source or "mb"
+                if mb.title:  # type: ignore[union-attr]
+                    title = mb.title  # type: ignore[union-attr]
+                    prov_title = f"mb:{mb_match_source}"
+                if mb.artist:  # type: ignore[union-attr]
+                    artist = mb.artist  # type: ignore[union-attr]
+                    prov_artist = f"mb:{mb_match_source}"
                 if not candidate_album_locked:
-                    album = mb.album or album  # type: ignore[union-attr]
-                    year = mb.year or year  # type: ignore[union-attr]
+                    if mb.album:  # type: ignore[union-attr]
+                        album = mb.album  # type: ignore[union-attr]
+                        prov_album = f"mb:{mb_match_source}"
+                    if mb.year:  # type: ignore[union-attr]
+                        year = mb.year  # type: ignore[union-attr]
+                        prov_year = "mb:release"
                     track_number = mb.track_number or track_number  # type: ignore[union-attr]
+                if mb.original_year:  # type: ignore[union-attr]
+                    prov_year = "mb:original"
 
                 # In strict album mode, flag if the identified artist differs significantly
                 # from the expected album artist — likely a wrong track was downloaded.
@@ -404,6 +426,12 @@ async def run_acquisition(
             "quality_score": quality_score,
             "thumbnail_url": candidate.thumbnail_url,
             "mb_genres": mb_genres,
+            # Metadata provenance: which source contributed each key field
+            "prov_title": prov_title,
+            "prov_artist": prov_artist,
+            "prov_album": prov_album,
+            "prov_year": prov_year,
+            "prov_recording": prov_recording,
         }
 
         row = await session.get(AcquisitionJobRow, job_id)
