@@ -81,6 +81,9 @@ class TrackCandidate(BaseModel):
     # placement metadata (album/year/track_number) with a different release.
     mb_release_id: str | None = None
     mb_recording_id: str | None = None
+    # Explicit lock: when True the pipeline never lets MB re-route this track to
+    # a different album, regardless of whether track_number is populated.
+    album_locked: bool = False
 
 
 class FetchResult(BaseModel):

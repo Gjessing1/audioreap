@@ -501,6 +501,14 @@ async def _review_card_ctx(
     parsed_artists = _parse_artists(meta.get("artist") or "")
     show_multi_artists = len(parsed_artists) > 1
 
+    album_batch_label: str | None = None
+    if row.album_job_id:
+        from service.db.schema import AlbumAcquisitionJob as _AlbumJob
+        album_job = await session.get(_AlbumJob, row.album_job_id)
+        if album_job:
+            parts = [p for p in [album_job.album_artist, album_job.album_title] if p]
+            album_batch_label = " — ".join(parts) if parts else row.album_job_id[:8]
+
     return {
         "job_id": job_id,
         "meta": meta,
@@ -509,6 +517,7 @@ async def _review_card_ctx(
         "genres": genres,
         "is_enrichment": is_enrichment,
         "album_consistency_warning": album_consistency_warning,
+        "album_batch_label": album_batch_label,
         "parsed_artists": parsed_artists,
         "show_multi_artists": show_multi_artists,
         "show_mb_search": show_mb_search,

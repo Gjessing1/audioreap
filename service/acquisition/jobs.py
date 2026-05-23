@@ -308,6 +308,7 @@ async def acquire_album_from_mb(
                 duration_seconds=t.duration_seconds,
                 mb_release_id=release_id,
                 mb_recording_id=t.recording_id,
+                album_locked=True,
             )
             job_id = await create_job(
                 session,

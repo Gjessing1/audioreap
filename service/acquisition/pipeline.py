@@ -202,8 +202,10 @@ async def run_acquisition(
         disc_number = (tagged.disc_number if tagged else None)
         duration = (tagged.duration_seconds if tagged else None) or candidate.duration_seconds
 
-        # When album coordinator locked album+track_number, treat them as authoritative
-        candidate_album_locked = bool(candidate.album and candidate.track_number)
+        # When album coordinator locked album metadata, treat it as authoritative.
+        # Explicit album_locked flag takes priority; also infer from album+track_number
+        # for backwards-compatibility with candidates created before the flag existed.
+        candidate_album_locked = candidate.album_locked or bool(candidate.album and candidate.track_number)
 
         # ── 3a. Wrong-track detection (duration delta) ─────────────────────────
         force_staging_reason: str | None = None

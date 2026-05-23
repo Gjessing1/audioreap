@@ -31,6 +31,11 @@
         {% elif meta.force_staging_reason and not is_enrichment %}
         <span class="badge badge-warn">⚠ Mismatch</span>
         {% endif %}
+        {% if album_batch_label %}
+        <span class="badge badge-queued" title="Part of album batch acquisition" style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ♫ {{ album_batch_label }}
+        </span>
+        {% endif %}
       </div>
       {% if query %}
       <div class="rv-source">{{ query }}</div>
