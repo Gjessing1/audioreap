@@ -1780,6 +1780,100 @@ async def artist_page(
     )
 
 
+@router.get("/library/artists/{artist_id}/image", response_class=HTMLResponse)
+async def artist_image(
+    artist_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Serve artist.jpg from the artist's music folder, or 404."""
+    from fastapi.responses import FileResponse
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+    img_path = settings.music_dir / artist.name / "artist.jpg"
+    if img_path.exists():
+        return FileResponse(str(img_path), media_type="image/jpeg")
+    raise HTTPException(404)
+
+
+@router.get("/library/artists/{artist_id}/image-search", response_class=HTMLResponse)
+async def artist_image_search(
+    request: Request,
+    artist_id: str,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Search Deezer for artist images (no API key required)."""
+    import httpx
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+    search_name = q.strip() or artist.name
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.deezer.com/search/artist",
+                params={"q": search_name, "limit": 6},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        return HTMLResponse(f'<p class="muted" style="font-size:12px">Image search failed: {exc}</p>')
+
+    results = [
+        {"name": item["name"], "image_url": item.get("picture_medium", ""), "deezer_id": item["id"]}
+        for item in data.get("data", [])
+        if item.get("picture_medium") and "default_artist" not in item.get("picture_medium", "")
+    ]
+    return templates.TemplateResponse(
+        request, "partials/artist_image_candidates.html",
+        {"artist_id": artist_id, "results": results, "q": search_name},
+    )
+
+
+@router.post("/library/artists/{artist_id}/save-artist-image", response_class=HTMLResponse)
+async def save_artist_image(
+    request: Request,
+    artist_id: str,
+    image_url: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Download an artist image and save as artist.jpg in the artist's music folder."""
+    import httpx
+    if not image_url:
+        raise HTTPException(400, "image_url required")
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+
+    artist_dir = settings.music_dir / artist.name
+    artist_dir.mkdir(parents=True, exist_ok=True)
+    img_path = artist_dir / "artist.jpg"
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+            img_path.write_bytes(resp.content)
+    except Exception as exc:
+        return HTMLResponse(f'<p style="font-size:12px;color:var(--danger)">Download failed: {exc}</p>')
+
+    # Trigger Navidrome rescan so the new image is picked up
+    try:
+        from service.navidrome.client import trigger_scan
+        await trigger_scan()
+    except Exception:
+        pass
+
+    cache_bust = int(datetime.now(UTC).timestamp())
+    return HTMLResponse(
+        f'<img src="/library/artists/{artist_id}/image?v={cache_bust}" '
+        f'style="width:80px;height:80px;object-fit:cover;border-radius:8px;display:block;margin-bottom:6px" '
+        f'alt="{artist.name}">'
+        f'<p style="font-size:12px;color:var(--success)">✓ Artist image saved — Navidrome rescan triggered.</p>'
+    )
+
+
 @router.post("/artist/{artist_id}/acquire-missing", response_class=HTMLResponse)
 async def artist_acquire_missing(
     request: Request,
@@ -3365,6 +3459,67 @@ async def discography_tracklist(
             "tracks": tracks,
             "owned_recording_ids": owned_recording_ids,
         },
+    )
+
+
+@router.post("/discography/{artist_mbid}/{release_group_id}/acquire-track", response_class=HTMLResponse)
+async def discography_acquire_single_track(
+    request: Request,
+    artist_mbid: str,
+    release_group_id: str,
+    recording_id: str = Form(""),
+    title: str = Form(""),
+    artist: str = Form(""),
+    album: str = Form(""),
+    track_number: str = Form(""),
+    duration_seconds: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue acquisition of a single track from the discography tracklist."""
+    from service.acquisition.jobs import create_job
+    from service.core.models import TrackCandidate
+
+    search_q = f"{artist} {title}".strip()
+    candidate = TrackCandidate(
+        provider="ytdlp",
+        provider_ref=f"ytsearch1:{search_q}",
+        title=title or "Unknown",
+        artist=artist or "Unknown",
+        album=album or None,
+        track_number=int(track_number) if track_number.isdigit() else None,
+        duration_seconds=int(duration_seconds) if duration_seconds.isdigit() else None,
+        mb_recording_id=recording_id or None,
+    )
+
+    job_id = await create_job(
+        session,
+        provider_name="ytdlp",
+        provider_ref=candidate.provider_ref,
+        candidate=candidate,
+        query=f"{artist} – {title}",
+    )
+    await session.commit()
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name="ytdlp",
+            provider_ref=candidate.provider_ref,
+            candidate_json=candidate.model_dump_json(),
+            music_dir=str(settings.music_dir),
+            tmp_acquire_dir=str(settings.tmp_acquire_dir),
+            _job_id=f"acquire:{job_id}",
+        )
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+
+    return HTMLResponse(
+        f'<span class="badge badge-busy">Queued → <a href="/jobs" style="color:inherit">Jobs</a></span>'
     )
 
 

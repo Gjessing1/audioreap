@@ -1,0 +1,21 @@
+{% if results %}
+<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+  {% for r in results %}
+  <div style="text-align:center">
+    <img src="{{ r.image_url }}" alt="{{ r.name }}"
+         style="width:80px;height:80px;object-fit:cover;border-radius:8px;display:block;cursor:pointer;border:2px solid transparent;transition:border-color .15s"
+         onclick="
+           document.querySelectorAll('#artist-img-results img').forEach(i=>i.style.borderColor='transparent');
+           this.style.borderColor='var(--primary)';
+           document.getElementById('artist-img-url-input').value='{{ r.image_url }}'
+         "
+         alt="{{ r.name }}">
+    <div style="font-size:10px;color:var(--t3);margin-top:3px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.name }}</div>
+  </div>
+  {% endfor %}
+</div>
+<input type="hidden" id="artist-img-url-input" name="image_url" value="">
+<button type="submit" class="btn btn-sm">Save selected image</button>
+{% else %}
+<p class="muted" style="font-size:12px;padding:4px 0">No results for "{{ q }}".</p>
+{% endif %}
