@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import subprocess
 import sys
@@ -10,6 +11,29 @@ from datetime import datetime
 from pathlib import Path
 
 import secrets
+
+# ── Per-request context var for log correlation ───────────────────────────
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+
+
+class _RequestIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_var.get("-")
+        return True
+
+
+def _configure_logging() -> None:
+    fmt = logging.Formatter("%(asctime)s [%(request_id)s] %(levelname)s %(name)s: %(message)s")
+    filt = _RequestIdFilter()
+    root = logging.getLogger()
+    for handler in root.handlers or [logging.StreamHandler()]:
+        handler.setFormatter(fmt)
+        handler.addFilter(filt)
+        if handler not in root.handlers:
+            root.addHandler(handler)
+
+
+_configure_logging()
 
 import aiofiles
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Query, Request, Response
@@ -62,6 +86,22 @@ app = FastAPI(title="audioreap", version="0.1.0", lifespan=lifespan)
 # ── Basic auth middleware (optional) ──────────────────────────────────────
 
 _UNPROTECTED = frozenset({"/health", "/static"})
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next: object) -> Response:
+    """Attach a short request ID to each request for log correlation."""
+    from collections.abc import Callable
+    import uuid
+    call_next_fn: Callable = call_next  # type: ignore[assignment]
+    rid = secrets.token_hex(4)  # 8 hex chars, compact but unique enough
+    token = _request_id_var.set(rid)
+    try:
+        response: Response = await call_next_fn(request)
+        response.headers["X-Request-ID"] = rid
+        return response
+    finally:
+        _request_id_var.reset(token)
 
 
 @app.middleware("http")
