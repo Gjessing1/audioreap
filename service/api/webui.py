@@ -4393,6 +4393,36 @@ async def merge_album(
         except Exception:
             pass
 
+    # Normalize MUSICBRAINZ_ALBUMID on merged tracks so Navidrome keeps one album.
+    # File paths in track.file.path are already updated to canonical_dir above.
+    canonical_release_id: str | None = canonical.musicbrainz_release_id
+    if not canonical_release_id:
+        for t in canonical.tracks:
+            if t.file:
+                fp = Path(t.file.path)
+                if fp.exists():
+                    canonical_release_id = _read_mb_release_id(fp)
+                    if canonical_release_id:
+                        break
+    if canonical_release_id:
+        from service.library.tagger import write_tags as _write_tags_merge
+        for track in source.tracks:
+            if track.file:
+                fpath = Path(track.file.path)
+                if fpath.exists():
+                    existing = _read_mb_release_id(fpath)
+                    if existing and existing != canonical_release_id:
+                        try:
+                            await asyncio.to_thread(
+                                _write_tags_merge, fpath, mb_release_id=canonical_release_id
+                            )
+                            logger.info("Merge: fixed MUSICBRAINZ_ALBUMID on %s", fpath.name)
+                        except Exception as exc:
+                            logger.warning("Merge: tag fix failed for %s: %s", fpath.name, exc)
+        # Persist the release ID on the canonical album row if not already set
+        if not canonical.musicbrainz_release_id:
+            canonical.musicbrainz_release_id = canonical_release_id
+
     # Delete the source Album row — all its tracks have been reassigned.
     # We flush first to commit the album_id updates, then expunge source from the
     # session and use raw SQL to delete it.  If we called session.delete(source)
