@@ -3,7 +3,7 @@
 {% endfor %}
 {% if completed_has_more %}
 <div id="jobs-more-btn"
-     hx-get="/jobs/completed/more?offset={{ completed_next_offset }}"
+     hx-get="/jobs/completed/more?after_ts={{ completed_cursor_ts|urlencode }}&after_id={{ completed_cursor_id|urlencode }}"
      hx-trigger="click"
      hx-target="#jobs-more-btn"
      hx-swap="outerHTML"

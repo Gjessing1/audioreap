@@ -1,0 +1,31 @@
+{% set safe_id = track.id | replace(':', '_') %}
+{% if candidates %}
+{% for c in candidates %}
+<div class="card" style="gap:10px" id="replace-candidate-{{ loop.index }}">
+  {% if c.thumbnail_url %}
+  <img class="result-thumb" src="{{ c.thumbnail_url }}" alt="" loading="lazy">
+  {% else %}
+  <div class="result-thumb result-thumb-empty">♪</div>
+  {% endif %}
+  <div class="card-info">
+    <div class="card-title" style="font-size:13px">{{ c.title }}</div>
+    <div class="card-sub">
+      {{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}{% endif %}
+    </div>
+  </div>
+  <div class="card-actions">
+    <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
+    <form hx-post="/library/tracks/{{ track.id }}/queue-replacement"
+          hx-target="#replace-status-{{ safe_id }}"
+          hx-swap="innerHTML"
+          style="display:contents">
+      <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
+      <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
+      <button type="submit" class="btn btn-sm">Replace</button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% elif q %}
+<p class="muted" style="font-size:13px;padding:8px 0">No results for "{{ q }}".</p>
+{% endif %}

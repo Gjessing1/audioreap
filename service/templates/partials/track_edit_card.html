@@ -150,6 +150,10 @@
               onclick="document.getElementById('mb-edit-panel-{{ safe_id }}').classList.toggle('hidden')">
         Search MB
       </button>
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="document.getElementById('replace-panel-{{ safe_id }}').classList.toggle('hidden')">
+        Replace source
+      </button>
       {% if provider_ref and bitrate_kbps and min_bitrate_kbps and bitrate_kbps < min_bitrate_kbps %}
       <button type="button" class="btn btn-sm btn-ghost"
               hx-post="/library/tracks/{{ track.id }}/reacquire"
@@ -175,7 +179,32 @@
         Cancel
       </button>
     </div>
+    <div id="replace-status-{{ safe_id }}"></div>
   </form>
+
+  {# ── Replace source panel ────────────────────────────────────────────────── #}
+  <div id="replace-panel-{{ safe_id }}" class="mb-panel hidden">
+    <div style="font-size:11px;color:var(--t3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">
+      Replace audio source
+    </div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">
+      Search for a different version (explicit, higher bitrate, etc.). Album grouping is preserved.
+      The existing file stays until you delete it after approving the replacement.
+    </div>
+    <form hx-get="/library/tracks/{{ track.id }}/search-replacement"
+          hx-target="#replace-results-{{ safe_id }}"
+          hx-swap="innerHTML"
+          hx-indicator="#replace-spin-{{ safe_id }}"
+          style="display:flex;gap:6px;margin-bottom:8px">
+      <input class="rv-input" name="q"
+             value="{{ track.artist.name }} - {{ track.title }}"
+             placeholder="Artist - Title" style="flex:1;font-size:12px" autocomplete="off">
+      <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">
+        Search <span id="replace-spin-{{ safe_id }}" class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </form>
+    <div id="replace-results-{{ safe_id }}"></div>
+  </div>
 
   <div id="mb-edit-panel-{{ safe_id }}" class="mb-panel hidden">
     <form class="mb-search-row"

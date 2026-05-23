@@ -44,14 +44,17 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     completed_rows = (await session.execute(
         select(AcquisitionJobRow)
         .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
-        .order_by(AcquisitionJobRow.created_at.desc())
+        .order_by(AcquisitionJobRow.created_at.desc(), AcquisitionJobRow.id.desc())
         .limit(_JOBS_COMPLETED_PAGE + 1)
     )).scalars().all()
     has_more = len(completed_rows) > _JOBS_COMPLETED_PAGE
-    rows = list(active_rows) + list(completed_rows[:_JOBS_COMPLETED_PAGE])
+    page = list(completed_rows[:_JOBS_COMPLETED_PAGE])
+    rows = list(active_rows) + page
     ctx = _grouped_jobs(rows)
     ctx["completed_has_more"] = has_more
-    ctx["completed_next_offset"] = _JOBS_COMPLETED_PAGE
+    # Cursor = (created_at ISO, id) of the last item on this page
+    ctx["completed_cursor_ts"] = page[-1].created_at.isoformat() if page else ""
+    ctx["completed_cursor_id"] = page[-1].id if page else ""
     return ctx
 
 
@@ -207,27 +210,7 @@ async def jobs_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    active_rows = (
-        await session.execute(
-            select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.notin_(_ACTIVE_STATES_EXCLUDE))
-            .order_by(AcquisitionJobRow.created_at.desc())
-            .limit(200)
-        )
-    ).scalars().all()
-    completed_rows = (
-        await session.execute(
-            select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
-            .order_by(AcquisitionJobRow.created_at.desc())
-            .limit(_JOBS_COMPLETED_PAGE + 1)
-        )
-    ).scalars().all()
-    has_more_completed = len(completed_rows) > _JOBS_COMPLETED_PAGE
-    rows = list(active_rows) + list(completed_rows[:_JOBS_COMPLETED_PAGE])
-    ctx = _grouped_jobs(rows)
-    ctx["completed_has_more"] = has_more_completed
-    ctx["completed_next_offset"] = _JOBS_COMPLETED_PAGE
+    ctx = await _job_list_ctx(session)
     return templates.TemplateResponse(
         request, "jobs.html", {"active": "jobs", **ctx}
     )
@@ -236,33 +219,9 @@ async def jobs_page(
 @router.get("/jobs/list", response_class=HTMLResponse)
 async def jobs_list_partial(
     request: Request,
-    completed_offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    # Active/review: fetch all (they're typically few)
-    active_rows = (
-        await session.execute(
-            select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.notin_(_ACTIVE_STATES_EXCLUDE))
-            .order_by(AcquisitionJobRow.created_at.desc())
-            .limit(200)
-        )
-    ).scalars().all()
-    # Completed: paginated
-    completed_rows = (
-        await session.execute(
-            select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
-            .order_by(AcquisitionJobRow.created_at.desc())
-            .offset(completed_offset)
-            .limit(_JOBS_COMPLETED_PAGE + 1)
-        )
-    ).scalars().all()
-    has_more_completed = len(completed_rows) > _JOBS_COMPLETED_PAGE
-    rows = list(active_rows) + list(completed_rows[:_JOBS_COMPLETED_PAGE])
-    ctx = _grouped_jobs(rows)
-    ctx["completed_has_more"] = has_more_completed
-    ctx["completed_next_offset"] = completed_offset + _JOBS_COMPLETED_PAGE
+    ctx = await _job_list_ctx(session)
     return templates.TemplateResponse(
         request, "partials/job_list.html", ctx
     )
@@ -271,25 +230,40 @@ async def jobs_list_partial(
 @router.get("/jobs/completed/more", response_class=HTMLResponse)
 async def jobs_completed_more(
     request: Request,
-    offset: int = 0,
+    after_ts: str = "",
+    after_id: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Return additional completed job cards for the Load more button."""
-    rows = (
-        await session.execute(
-            select(AcquisitionJobRow)
-            .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
-            .order_by(AcquisitionJobRow.created_at.desc())
-            .offset(offset)
-            .limit(_JOBS_COMPLETED_PAGE + 1)
-        )
-    ).scalars().all()
+    """Return additional completed job cards, cursor-paginated by (created_at, id)."""
+    from datetime import datetime as _dt
+    stmt = (
+        select(AcquisitionJobRow)
+        .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
+        .order_by(AcquisitionJobRow.created_at.desc(), AcquisitionJobRow.id.desc())
+        .limit(_JOBS_COMPLETED_PAGE + 1)
+    )
+    if after_ts:
+        try:
+            cursor_dt = _dt.fromisoformat(after_ts)
+            if after_id:
+                stmt = stmt.where(
+                    (AcquisitionJobRow.created_at < cursor_dt)
+                    | ((AcquisitionJobRow.created_at == cursor_dt) & (AcquisitionJobRow.id < after_id))
+                )
+            else:
+                stmt = stmt.where(AcquisitionJobRow.created_at < cursor_dt)
+        except ValueError:
+            pass
+    rows = (await session.execute(stmt)).scalars().all()
     has_more = len(rows) > _JOBS_COMPLETED_PAGE
-    jobs = [_job_to_model(r) for r in rows[:_JOBS_COMPLETED_PAGE]]
+    page = list(rows[:_JOBS_COMPLETED_PAGE])
+    jobs = [_job_to_model(r) for r in page]
+    next_ts = page[-1].created_at.isoformat() if page else ""
+    next_id = page[-1].id if page else ""
     return templates.TemplateResponse(
         request, "partials/jobs_completed_more.html",
         {"completed": jobs, "completed_has_more": has_more,
-         "completed_next_offset": offset + _JOBS_COMPLETED_PAGE},
+         "completed_cursor_ts": next_ts, "completed_cursor_id": next_id},
     )
 
 
@@ -1011,8 +985,9 @@ async def cloud_search_page(
                     "_score": _explicit_score(c.title),
                 })
 
-            # Sort: explicit first, clean last; stable so original order wins ties
-            raw.sort(key=lambda x: -int(x["_score"]))  # type: ignore[arg-type]
+            # Sort: explicit first (when prefer_explicit is on), clean last; stable
+            if settings.prefer_explicit:
+                raw.sort(key=lambda x: -int(x["_score"]))  # type: ignore[arg-type]
             for item in raw:
                 del item["_score"]
 
@@ -2259,6 +2234,132 @@ async def reacquire_track(
         f'<div class="card-title">{row.title}</div>'
         f'<div class="card-sub">{row.artist.name} · Re-acquisition queued → <a href="/jobs">Jobs</a></div>'
         f"</div></div>"
+    )
+
+
+@router.get("/library/tracks/{internal_id}/search-replacement", response_class=HTMLResponse)
+async def search_replacement_sources(
+    request: Request,
+    internal_id: str,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Search for a replacement audio source for an existing library track."""
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+
+    search_q = q.strip() or f"{row.artist.name} - {row.title}"
+    candidates: list[dict[str, object]] = []
+    try:
+        import service.providers.ytdlp  # noqa: F401
+        from service.core.models import SearchQuery
+        from service.providers import get
+
+        provider = get("ytdlp")()
+        raw: list[dict[str, object]] = []
+        async for c in provider.search(SearchQuery(q=search_q, limit=10)):
+            raw.append({
+                "title": c.title,
+                "artist": c.artist,
+                "duration_seconds": c.duration_seconds,
+                "provider_ref": c.provider_ref,
+                "thumbnail_url": c.thumbnail_url,
+                "candidate_json": c.model_dump_json(),
+                "_score": _explicit_score(c.title),
+            })
+        if settings.prefer_explicit:
+            raw.sort(key=lambda x: -int(x["_score"]))  # type: ignore[arg-type]
+        for item in raw:
+            del item["_score"]
+        candidates = raw[:8]
+    except Exception as exc:
+        logger.warning("Replacement search failed for %s: %s", internal_id, exc)
+
+    return templates.TemplateResponse(
+        request, "partials/replacement_results.html",
+        {"candidates": candidates, "track": row, "q": search_q},
+    )
+
+
+@router.post("/library/tracks/{internal_id}/queue-replacement", response_class=HTMLResponse)
+async def queue_replacement_track(
+    request: Request,
+    internal_id: str,
+    provider_ref: str = Form(...),
+    candidate_json: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue a new acquisition to replace a library track's audio source.
+
+    Locks the existing track's album/artist/MB ID into the candidate so album
+    grouping is preserved. The old track remains until the user deletes it after
+    approving the replacement in the review queue.
+    """
+    from service.acquisition.jobs import create_job
+    from service.core.models import TrackCandidate
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+
+    try:
+        base = TrackCandidate.model_validate_json(candidate_json)
+    except Exception:
+        raise HTTPException(400, "Invalid candidate JSON")
+
+    # Lock existing track's metadata so album grouping is preserved
+    locked = base.model_copy(update={
+        "title": row.title,
+        "artist": row.artist.name,
+        "album": row.album.title if row.album else None,
+        "year": row.album.year if row.album else None,
+        "track_number": row.track_number,
+        "mb_recording_id": row.musicbrainz_recording_id,
+        "mb_release_id": row.album.musicbrainz_release_id if row.album else None,
+    })
+
+    job_id = await create_job(
+        session,
+        provider_name=locked.provider,
+        provider_ref=provider_ref,
+        candidate=locked,
+        query=f"{locked.artist} - {locked.title} [replacement]",
+    )
+    await session.commit()
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name=locked.provider,
+            provider_ref=provider_ref,
+            candidate_json=locked.model_dump_json(),
+            music_dir=str(settings.music_dir),
+            tmp_acquire_dir=str(settings.tmp_acquire_dir),
+            _job_id=f"acquire:{job_id}",
+        )
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+
+    safe_id = internal_id.replace(":", "_")
+    return HTMLResponse(
+        f'<span class="badge badge-done" id="replace-status-{safe_id}">'
+        f'Queued → <a href="/jobs">Jobs ↗</a></span>'
     )
 
 
