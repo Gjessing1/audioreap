@@ -161,7 +161,7 @@
   <div style="border-top:1px solid var(--b1);padding:14px 16px">
     <div class="section-title" style="margin:0 0 10px">Tracks</div>
     <div class="track-list">
-      {% for track in album.tracks | sort(attribute='track_number') %}
+      {% for track in sorted_tracks %}
       {% set safe_id = track.id | replace(':', '_') %}
       <div class="track-row" id="altrack-{{ safe_id }}">
         <span class="track-num">{{ track.track_number or '—' }}</span>

@@ -1502,9 +1502,10 @@ async def album_detail(
         raise HTTPException(404)
     # Find cover art path (sidecar or embedded)
     cover_track = next((t for t in album.tracks if t.file and Path(t.file.path).exists()), None)
+    sorted_tracks = sorted(album.tracks, key=lambda t: (t.track_number is None, t.track_number or 0))
     return templates.TemplateResponse(
         request, "partials/album_detail.html",
-        {"album": album, "cover_track": cover_track},
+        {"album": album, "sorted_tracks": sorted_tracks, "cover_track": cover_track},
     )
 
 
