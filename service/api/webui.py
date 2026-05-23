@@ -3964,7 +3964,7 @@ async def merge_album(
     # while the ORM still sees its tracks collection, SQLAlchemy would auto-NULL
     # every track's album_id (nullable FK, no cascade), undoing our reassignments.
     await session.flush()
-    await session.expunge(source)
+    session.expunge(source)
     from sqlalchemy import delete as _sa_delete
     await session.execute(_sa_delete(Album).where(Album.id == source_id))
 
