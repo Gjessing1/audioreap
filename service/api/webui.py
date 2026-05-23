@@ -58,7 +58,10 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     # Build structured review groups (album batches + solo items)
     review_rows_only = [r for r in active_rows if r.state == "needs_review"]
     review_jobs_only: list[AcquisitionJob] = ctx["review"]  # type: ignore[assignment]
-    ctx["review_groups"] = await _build_review_groups(session, review_rows_only, review_jobs_only)
+    review_groups, safe_ids = await _build_review_groups(session, review_rows_only, review_jobs_only)
+    ctx["review_groups"] = review_groups
+    ctx["safe_review_ids"] = safe_ids
+    ctx["safe_review_count"] = len(safe_ids)
     return ctx
 
 
@@ -156,10 +159,13 @@ async def _build_review_groups(
     session: AsyncSession,
     review_rows: list[AcquisitionJobRow],
     review_jobs: list[AcquisitionJob],
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     """Group review jobs: album batches together, solo jobs individually.
 
-    Returns a list where each item is either:
+    Returns (review_groups, safe_ids) where safe_ids are jobs eligible for
+    one-click approval (AcoustID verified, no flags, staging file present).
+
+    Each review_group item is either:
       {"type": "single", "job": AcquisitionJob}
       {"type": "album", "album_job_id": str, "label": str, "jobs": list,
        "clean_ids": list[str], "clean_count": int, "flagged_count": int, "total_count": int}
@@ -180,18 +186,28 @@ async def _build_review_groups(
     # Classify each review item
     album_buckets: dict[str, list[dict]] = {}
     singles: list[dict] = []
+    safe_ids: list[str] = []
 
     for r, j in zip(review_rows, review_jobs):
         is_flagged = False
-        if not (r.staging_path and Path(r.staging_path).exists()):
+        is_acoustid_verified = False
+        has_staging = bool(r.staging_path and Path(r.staging_path).exists())
+
+        if not has_staging:
             is_flagged = True
         elif r.resolved_metadata_json:
             try:
                 m = json.loads(r.resolved_metadata_json)
                 if m.get("force_staging_reason"):
                     is_flagged = True
+                if m.get("mb_match_source") == "acoustid":
+                    is_acoustid_verified = True
             except Exception:
                 pass
+
+        # Safe = AcoustID verified, no flags, staging file present
+        if has_staging and is_acoustid_verified and not is_flagged:
+            safe_ids.append(j.id)
 
         item = {"job": j, "is_flagged": is_flagged}
         if r.album_job_id:
@@ -212,7 +228,7 @@ async def _build_review_groups(
             "flagged_count": sum(1 for it in items if it["is_flagged"]),
             "total_count": len(items),
         })
-    return groups
+    return groups, safe_ids
 
 
 async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:

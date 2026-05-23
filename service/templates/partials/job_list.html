@@ -10,6 +10,16 @@
   <div class="section-title section-title--review">
     Needs Review <span class="badge badge-review">{{ review|length }}</span>
   </div>
+  {% if safe_review_count %}
+  <form style="display:contents"
+        hx-post="/jobs/batch-approve"
+        hx-target="#job-list"
+        hx-swap="innerHTML"
+        hx-confirm="Approve {{ safe_review_count }} verified track(s)? These all matched via AcoustID fingerprint with no warnings.">
+    {% for jid in safe_review_ids %}<input type="hidden" name="job_id" value="{{ jid }}">{% endfor %}
+    <button type="submit" class="btn btn-sm btn-success" title="Approve all AcoustID-verified tracks with no warnings">✓ Approve {{ safe_review_count }} verified</button>
+  </form>
+  {% endif %}
   <div class="batch-bar hidden" id="batch-toolbar">
     <span id="batch-count-label">0 selected</span>
     <button class="btn btn-sm btn-success"
