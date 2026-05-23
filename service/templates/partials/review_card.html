@@ -14,13 +14,13 @@
         {% if is_enrichment %}
         <span class="badge badge-busy">MB Enrichment suggestion</span>
         {% elif meta.mb_match_source == 'acoustid' %}
-        <span class="badge badge-done">✓ AcoustID {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}%</span>
+        <span class="badge badge-done" title="AcoustID fingerprint · {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}% confidence">✓ Verified</span>
         {% elif meta.mb_match_source == 'text_search' %}
-        <span class="badge badge-busy">≈ Text match</span>
+        <span class="badge badge-busy" title="MusicBrainz text search match — confirm metadata before approving">≈ Probable</span>
         {% elif meta.mb_match_source == 'manual' %}
-        <span class="badge badge-done">✓ Manual link</span>
+        <span class="badge badge-done" title="Manually linked to MusicBrainz">✓ Verified</span>
         {% else %}
-        <span class="badge badge-fail">✕ No MB match</span>
+        <span class="badge badge-fail" title="No MusicBrainz match found — review metadata carefully">⚠ Needs Review</span>
         {% endif %}
         {% if meta.mb_recording_id %}
         <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}"

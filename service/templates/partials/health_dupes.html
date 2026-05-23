@@ -27,7 +27,7 @@
         <span style="color:var(--text)">{{ t.codec }}</span>
         {% if t.bitrate_kbps %} · <span>{{ t.bitrate_kbps }} kbps</span>{% endif %}
         {% if t.has_cover_art %} · <span style="color:var(--success)">cover ✓</span>{% endif %}
-        {% if t.quality_score %} · <span>{{ "%.0f"|format(t.quality_score * 100) }}% quality</span>{% endif %}
+        {% if t.quality_score is not none %} · <span title="Metadata quality: {{ "%.0f"|format(t.quality_score * 100) }}%">{% if t.quality_score >= 0.7 %}Verified{% elif t.quality_score >= 0.4 %}Probable{% else %}Needs Review{% endif %}</span>{% endif %}
       </div>
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0">
