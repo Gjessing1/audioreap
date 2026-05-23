@@ -583,6 +583,40 @@ async def _review_card_ctx(
     )).scalars().all()
     genres = [g for g in genre_rows if g]
 
+    # Artist name autocomplete
+    artist_name_rows = (await session.execute(
+        select(_distinct(Artist.name)).order_by(Artist.name)
+    )).scalars().all()
+    artist_names = [n for n in artist_name_rows if n]
+
+    # Album name autocomplete — scoped to the current artist where possible
+    current_aa = (meta.get("albumartist") or meta.get("artist") or "").strip()
+    if current_aa:
+        scoped = (await session.execute(
+            select(_distinct(Album.title))
+            .join(Artist, Album.artist_id == Artist.id)
+            .where(Artist.name == current_aa)
+            .order_by(Album.title)
+        )).scalars().all()
+        album_names = [t for t in scoped if t] if scoped else []
+    else:
+        album_names = []
+    if not album_names:
+        all_albums = (await session.execute(
+            select(_distinct(Album.title)).order_by(Album.title)
+        )).scalars().all()
+        album_names = [t for t in all_albums if t]
+
+    # Expected track number from the original candidate (for album batch reference)
+    candidate_track_number: int | None = None
+    if row.album_job_id and row.candidate_json:
+        try:
+            from service.core.models import TrackCandidate as _TC
+            _cand = _TC.model_validate_json(row.candidate_json)
+            candidate_track_number = _cand.track_number
+        except Exception:
+            pass
+
     album_consistency_warning: str | None = None
     if row.album_job_id and not is_enrichment:
         siblings = (await session.execute(
@@ -643,6 +677,9 @@ async def _review_card_ctx(
         "show_multi_artists": show_multi_artists,
         "show_mb_search": show_mb_search,
         "show_src_panel": show_src_panel,
+        "artist_names": artist_names,
+        "album_names": album_names,
+        "candidate_track_number": candidate_track_number,
     }
 
 

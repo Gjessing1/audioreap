@@ -100,7 +100,11 @@
       <div class="rv-field rv-field--full">
         <label class="rv-label">Artist</label>
         <input class="rv-input" name="artist" value="{{ meta.artist or '' }}"
+               list="artist-list-rv-{{ job_id }}"
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
+        <datalist id="artist-list-rv-{{ job_id }}">
+          {% for a in artist_names|default([]) %}<option value="{{ a }}">{% endfor %}
+        </datalist>
         {% if is_enrichment and meta.current_artist and meta.current_artist != meta.artist %}
         <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_artist }}</strong></div>
         {% endif %}
@@ -117,8 +121,12 @@
       <div class="rv-field rv-field--full">
         <label class="rv-label">Album</label>
         <input class="rv-input" name="album" value="{{ meta.album or '' }}"
+               list="album-list-rv-{{ job_id }}"
                placeholder="Leave blank for Singles" autocomplete="off"
                {% if not staging_exists %}disabled{% endif %}>
+        <datalist id="album-list-rv-{{ job_id }}">
+          {% for a in album_names|default([]) %}<option value="{{ a }}">{% endfor %}
+        </datalist>
         {% if is_enrichment and meta.current_album != None and meta.current_album != meta.album %}
         <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_album or '(none)' }}</strong></div>
         {% endif %}
@@ -139,6 +147,8 @@
                autocomplete="off" {% if not staging_exists %}disabled{% endif %}>
         {% if is_enrichment and meta.current_track_number != None and meta.current_track_number != meta.track_number %}
         <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_track_number }}</strong></div>
+        {% elif candidate_track_number %}
+        <div style="font-size:11px;color:var(--t4);margin-top:2px">tracklist: <strong>{{ candidate_track_number }}</strong></div>
         {% endif %}
       </div>
       <div class="rv-field rv-field--full">
