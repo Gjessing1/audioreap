@@ -807,7 +807,13 @@ async def jobs_bulk_action(
             if row is None:
                 continue
             if action == "reject" and row.state == "needs_review":
-                if row.staging_path:
+                is_enrichment = False
+                if row.resolved_metadata_json:
+                    try:
+                        is_enrichment = bool(json.loads(row.resolved_metadata_json).get("is_enrichment"))
+                    except Exception:
+                        pass
+                if row.staging_path and not is_enrichment:
                     try:
                         p = Path(row.staging_path)
                         if p.exists():
