@@ -22,7 +22,7 @@ from service.acquisition.states import classify_failure
 from service.config import settings
 from service.core.identity import make_id
 from service.core.models import TrackCandidate
-from service.core.normalize import clean_for_search
+from service.core.normalize import clean_for_search, normalize
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
 from service.library.layout import track_path
@@ -90,7 +90,6 @@ async def _find_local_match(
     from sqlalchemy import select
     from sqlalchemy.orm import joinedload
 
-    from service.core.normalize import normalize
     from service.db.schema import Track
     from service.search.matcher import is_confident_match
 
@@ -307,6 +306,22 @@ async def run_acquisition(
                     album = mb.album or album  # type: ignore[union-attr]
                     year = mb.year or year  # type: ignore[union-attr]
                     track_number = mb.track_number or track_number  # type: ignore[union-attr]
+
+                # In strict album mode, flag if the identified artist differs significantly
+                # from the expected album artist — likely a wrong track was downloaded.
+                if candidate_album_locked and mb_from_acoustid:
+                    identified_artist = normalize((mb.artist or "").lower())  # type: ignore[union-attr]
+                    expected_artist = normalize(candidate.artist.lower())
+                    if identified_artist and expected_artist and identified_artist != expected_artist:
+                        mismatch = (
+                            f"Artist mismatch: expected \"{candidate.artist}\","
+                            f" fingerprint identified \"{mb.artist}\"— may be wrong track"  # type: ignore[union-attr]
+                        )
+                        force_staging_reason = (
+                            f"{force_staging_reason} | {mismatch}"
+                            if force_staging_reason else mismatch
+                        )
+                        logger.warning("Job %s %r: %s", job_id, candidate.title, mismatch)
 
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
