@@ -21,6 +21,14 @@
     <div class="stat-val" style="color:{% if no_cover_count == 0 %}var(--success){% else %}var(--muted){% endif %}">{{ no_cover_count }}</div>
     <div class="stat-label">Albums without cover</div>
   </div>
+  <div class="stat">
+    <div class="stat-val" style="color:{% if no_mbid_count == 0 %}var(--success){% else %}var(--muted){% endif %}">{{ no_mbid_count }}</div>
+    <div class="stat-label">Tracks without MB ID</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val" style="color:{% if low_bitrate_count == 0 %}var(--success){% else %}var(--warn){% endif %}">{{ low_bitrate_count }}</div>
+    <div class="stat-label">Low bitrate (&lt;{{ min_bitrate_kbps }}k)</div>
+  </div>
 </div>
 
 <div class="section-title">Duplicate tracks
@@ -83,6 +91,34 @@
   Runs as a background job.
 </p>
 <div id="covers-result"></div>
+
+<div class="section-title" style="margin-top:24px">Tracks without MB ID
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/health/no-mbid"
+          hx-target="#health-no-mbid"
+          hx-swap="innerHTML"
+          hx-indicator="#no-mbid-spinner">
+    Load <span id="no-mbid-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Tracks with no MusicBrainz recording ID. Re-enrich to run AcoustID fingerprinting and MB text search — results appear as review suggestions in the Jobs queue.
+</p>
+<div id="health-no-mbid"></div>
+
+<div class="section-title" style="margin-top:24px">Low bitrate tracks
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/health/low-bitrate"
+          hx-target="#health-low-bitrate"
+          hx-swap="innerHTML"
+          hx-indicator="#low-bitrate-spinner">
+    Load <span id="low-bitrate-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Tracks with bitrate below {{ min_bitrate_kbps }} kbps. Use "Find →" to open the library and replace the source with a higher-quality version.
+</p>
+<div id="health-low-bitrate"></div>
 
 <div class="section-title" style="margin-top:24px">Trash
   <button class="btn btn-ghost btn-sm" style="margin-left:8px"

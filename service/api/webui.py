@@ -3503,12 +3503,28 @@ async def library_health_page(
         )
     )).scalar_one()
 
+    no_mbid_count = (await session.execute(
+        select(func.count(Track.id))
+        .join(Track.file)
+        .where(Track.musicbrainz_recording_id.is_(None))
+    )).scalar_one()
+
+    low_bitrate_count = (await session.execute(
+        select(func.count(TrackFile.id)).where(
+            TrackFile.bitrate_kbps.isnot(None),
+            TrackFile.bitrate_kbps < settings.min_bitrate_kbps,
+        )
+    )).scalar_one()
+
     return templates.TemplateResponse(
         request, "library_health.html",
         {
             "active": "lib-health",
             "dupe_count": dupe_count,
             "no_cover_count": no_cover_count,
+            "no_mbid_count": no_mbid_count,
+            "low_bitrate_count": low_bitrate_count,
+            "min_bitrate_kbps": settings.min_bitrate_kbps,
         },
     )
 
@@ -3644,6 +3660,99 @@ async def library_health_splits(
     return templates.TemplateResponse(
         request, "partials/health_splits.html", {"groups": split_groups}
     )
+
+
+@router.get("/library/health/no-mbid", response_class=HTMLResponse)
+async def library_health_no_mbid(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: tracks without a MusicBrainz recording ID."""
+    from sqlalchemy.orm import joinedload as _jl
+
+    rows = (await session.execute(
+        select(Track)
+        .options(_jl(Track.artist), _jl(Track.album), _jl(Track.file))
+        .join(Track.file)
+        .where(Track.musicbrainz_recording_id.is_(None))
+        .order_by(Track.tag_quality_score.asc().nulls_first())
+        .limit(50)
+    )).unique().scalars().all()
+
+    tracks = [
+        {
+            "id": t.id,
+            "title": t.title,
+            "artist": t.artist.name,
+            "album": t.album.title if t.album else None,
+            "quality_score": t.tag_quality_score,
+        }
+        for t in rows
+    ]
+    return templates.TemplateResponse(
+        request, "partials/health_no_mbid.html",
+        {"tracks": tracks, "total": len(tracks)},
+    )
+
+
+@router.get("/library/health/low-bitrate", response_class=HTMLResponse)
+async def library_health_low_bitrate(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: tracks with bitrate below the configured threshold."""
+    from sqlalchemy.orm import joinedload as _jl
+
+    min_br = settings.min_bitrate_kbps
+    rows = (await session.execute(
+        select(Track)
+        .options(_jl(Track.artist), _jl(Track.album), _jl(Track.file))
+        .join(Track.file)
+        .where(
+            TrackFile.bitrate_kbps.isnot(None),
+            TrackFile.bitrate_kbps < min_br,
+        )
+        .order_by(TrackFile.bitrate_kbps.asc())
+        .limit(50)
+    )).unique().scalars().all()
+
+    tracks = [
+        {
+            "id": t.id,
+            "title": t.title,
+            "artist": t.artist.name,
+            "album": t.album.title if t.album else None,
+            "bitrate_kbps": t.file.bitrate_kbps if t.file else None,
+            "codec": t.file.codec if t.file else None,
+        }
+        for t in rows
+    ]
+    return templates.TemplateResponse(
+        request, "partials/health_low_bitrate.html",
+        {"tracks": tracks, "min_bitrate_kbps": min_br},
+    )
+
+
+@router.post("/library/tracks/{track_id}/enrich", response_class=HTMLResponse)
+async def enrich_track_now(
+    track_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Enqueue a MusicBrainz enrichment job for a specific library track."""
+    row = await session.get(Track, track_id)
+    if row is None:
+        raise HTTPException(404)
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job("enrich_track", track_id=track_id)
+        await redis.aclose()
+    except Exception as exc:
+        return HTMLResponse(f'<span style="color:var(--danger);font-size:12px">Error: {exc}</span>')
+
+    return HTMLResponse('<span style="color:var(--success);font-size:12px">✓ Enrichment queued — check the Jobs page</span>')
 
 
 @router.delete("/library/albums/{album_id}", response_class=HTMLResponse)

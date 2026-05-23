@@ -1,0 +1,42 @@
+{% if not tracks %}
+<p class="empty">All tracks have a MusicBrainz recording ID.</p>
+{% else %}
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+  <span style="font-size:13px;color:var(--t3)">{{ total }} track{{ 's' if total != 1 }} shown (max 50)</span>
+  <span id="enrich-no-mbid-result">
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/api/enrich/all"
+            hx-target="#enrich-no-mbid-result"
+            hx-swap="innerHTML"
+            hx-confirm="Queue MusicBrainz enrichment for all {{ total }} track(s)? Results appear in the Jobs review queue.">
+      Re-enrich all
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </span>
+</div>
+{% for t in tracks %}
+<div class="card" style="padding:8px 14px;gap:8px" id="no-mbid-{{ t.id | replace(':', '_') }}">
+  <div class="card-info" style="flex:1;min-width:0">
+    <div class="card-title">{{ t.title }}</div>
+    <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}
+      {% if t.quality_score is not none %}
+      · <span class="{% if t.quality_score >= 0.7 %}quality-good{% elif t.quality_score >= 0.4 %}quality-mid{% else %}quality-low{% endif %}">
+        {{ "%.0f"|format(t.quality_score * 100) }}%
+      </span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-actions">
+    <span id="enrich-result-{{ t.id | replace(':', '_') }}">
+      <button class="btn btn-sm btn-ghost"
+              hx-post="/library/tracks/{{ t.id }}/enrich"
+              hx-target="#enrich-result-{{ t.id | replace(':', '_') }}"
+              hx-swap="innerHTML">
+        Re-enrich
+        <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </span>
+  </div>
+</div>
+{% endfor %}
+{% endif %}

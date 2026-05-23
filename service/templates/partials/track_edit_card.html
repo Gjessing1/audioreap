@@ -150,6 +150,18 @@
               onclick="document.getElementById('mb-edit-panel-{{ safe_id }}').classList.toggle('hidden')">
         Search MB
       </button>
+      {% if not track.musicbrainz_recording_id %}
+      <span id="enrich-btn-{{ safe_id }}">
+        <button type="button" class="btn btn-sm btn-ghost"
+                hx-post="/library/tracks/{{ track.id }}/enrich"
+                hx-target="#enrich-btn-{{ safe_id }}"
+                hx-swap="innerHTML"
+                title="Run AcoustID fingerprint + MusicBrainz text search. Result appears in the Jobs review queue.">
+          Re-enrich MB
+          <span class="htmx-indicator"><span class="spinner"></span></span>
+        </button>
+      </span>
+      {% endif %}
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="document.getElementById('replace-panel-{{ safe_id }}').classList.toggle('hidden')">
         Replace source
