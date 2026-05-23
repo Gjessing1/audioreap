@@ -498,6 +498,33 @@ input::placeholder { color: var(--t4); }
 /* ── Job sections ────────────────────────────────────────────────────────── */
 .job-section { margin-bottom: 4px; }
 
+.album-batch-group {
+  border: 1px solid var(--b2);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.album-batch-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--s2);
+  border-bottom: 1px solid var(--b2);
+  font-size: 12px;
+}
+.album-batch-title {
+  font-weight: 600;
+  color: var(--t2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.album-batch-stats { font-size: 11px; flex: 1; min-width: 0; }
+.album-batch-group .card { border-radius: 0; border-left: none; border-right: none; border-top: none; margin: 0; }
+
 /* ── Misc utilities ──────────────────────────────────────────────────────── */
 .muted { color: var(--t3); }
 .card-list { display: flex; flex-direction: column; }

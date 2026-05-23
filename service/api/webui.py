@@ -52,9 +52,13 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     rows = list(active_rows) + page
     ctx = _grouped_jobs(rows)
     ctx["completed_has_more"] = has_more
-    # Cursor = (created_at ISO, id) of the last item on this page
     ctx["completed_cursor_ts"] = page[-1].created_at.isoformat() if page else ""
     ctx["completed_cursor_id"] = page[-1].id if page else ""
+
+    # Build structured review groups (album batches + solo items)
+    review_rows_only = [r for r in active_rows if r.state == "needs_review"]
+    review_jobs_only: list[AcquisitionJob] = ctx["review"]  # type: ignore[assignment]
+    ctx["review_groups"] = await _build_review_groups(session, review_rows_only, review_jobs_only)
     return ctx
 
 
@@ -146,6 +150,69 @@ def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
         "completed_has_more": False,
         "completed_next_offset": 0,
     }
+
+
+async def _build_review_groups(
+    session: AsyncSession,
+    review_rows: list[AcquisitionJobRow],
+    review_jobs: list[AcquisitionJob],
+) -> list[dict]:
+    """Group review jobs: album batches together, solo jobs individually.
+
+    Returns a list where each item is either:
+      {"type": "single", "job": AcquisitionJob}
+      {"type": "album", "album_job_id": str, "label": str, "jobs": list,
+       "clean_ids": list[str], "clean_count": int, "flagged_count": int, "total_count": int}
+    """
+    from service.db.schema import AlbumAcquisitionJob as _AlbumJob
+
+    # Fetch labels for all album_job_ids in one query
+    album_job_ids = {r.album_job_id for r in review_rows if r.album_job_id}
+    album_labels: dict[str, str] = {}
+    if album_job_ids:
+        album_jobs = (await session.execute(
+            select(_AlbumJob).where(_AlbumJob.id.in_(album_job_ids))
+        )).scalars().all()
+        for aj in album_jobs:
+            parts = [p for p in [aj.album_artist, aj.album_title] if p]
+            album_labels[aj.id] = " — ".join(parts) if parts else aj.id[:8]
+
+    # Classify each review item
+    album_buckets: dict[str, list[dict]] = {}
+    singles: list[dict] = []
+
+    for r, j in zip(review_rows, review_jobs):
+        is_flagged = False
+        if not (r.staging_path and Path(r.staging_path).exists()):
+            is_flagged = True
+        elif r.resolved_metadata_json:
+            try:
+                m = json.loads(r.resolved_metadata_json)
+                if m.get("force_staging_reason"):
+                    is_flagged = True
+            except Exception:
+                pass
+
+        item = {"job": j, "is_flagged": is_flagged}
+        if r.album_job_id:
+            album_buckets.setdefault(r.album_job_id, []).append(item)
+        else:
+            singles.append({"type": "single", "job": j})
+
+    groups: list[dict] = list(singles)
+    for ajid, items in album_buckets.items():
+        clean_ids = [it["job"].id for it in items if not it["is_flagged"]]
+        groups.append({
+            "type": "album",
+            "album_job_id": ajid,
+            "label": album_labels.get(ajid, ajid[:8]),
+            "jobs": items,
+            "clean_ids": clean_ids,
+            "clean_count": len(clean_ids),
+            "flagged_count": sum(1 for it in items if it["is_flagged"]),
+            "total_count": len(items),
+        })
+    return groups
 
 
 async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:

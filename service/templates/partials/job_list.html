@@ -34,8 +34,34 @@
   </div>
 </div>
 <div class="job-section">
-  {% for job in review %}
-  {% include "partials/job_card.html" %}
+  {% for group in review_groups %}
+  {% if group.type == "single" %}
+    {% set job = group.job %}
+    {% include "partials/job_card.html" %}
+  {% elif group.type == "album" %}
+  <div class="album-batch-group" id="album-group-{{ group.album_job_id[:8] }}">
+    <div class="album-batch-header">
+      <span class="album-batch-title">♫ {{ group.label }}</span>
+      <span class="album-batch-stats muted">{{ group.total_count }} track{{ 's' if group.total_count != 1 }}
+        {%- if group.flagged_count %} · <span style="color:var(--warn)">{{ group.flagged_count }} flagged</span>{% endif -%}
+      </span>
+      {% if group.clean_count > 0 %}
+      <form style="display:contents"
+            hx-post="/jobs/batch-approve"
+            hx-target="#job-list"
+            hx-swap="innerHTML"
+            hx-confirm="Approve {{ group.clean_count }} clean track(s) from "{{ group.label }}"?">
+        {% for jid in group.clean_ids %}<input type="hidden" name="job_id" value="{{ jid }}">{% endfor %}
+        <button type="submit" class="btn btn-sm btn-success">✓ Approve {{ group.clean_count }}{% if group.flagged_count %} clean{% endif %}</button>
+      </form>
+      {% endif %}
+    </div>
+    {% for item in group.jobs %}
+    {% set job = item.job %}
+    {% include "partials/job_card.html" %}
+    {% endfor %}
+  </div>
+  {% endif %}
   {% endfor %}
 </div>
 {% endif %}
