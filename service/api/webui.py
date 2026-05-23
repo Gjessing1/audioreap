@@ -1614,6 +1614,43 @@ async def job_cover_art(
                 headers={"Cache-Control": "no-store"})
 
 
+@router.post("/jobs/{job_id}/apply-art", response_class=HTMLResponse)
+async def job_apply_art(
+    request: Request,
+    job_id: str,
+    art_url: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Download art from a URL and embed it into the staging file for a review job."""
+    from service.library.tagger import write_tags as _write_tags
+    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small, fetch_from_url
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    if not row or not row.staging_path:
+        raise HTTPException(404)
+    staging_path = Path(row.staging_path)
+    if not staging_path.exists():
+        raise HTTPException(404, "Staging file not on disk")
+
+    art = await fetch_from_url(art_url)
+    if not art:
+        return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
+    if _image_too_small(art, _MIN_USER_COVER_PX):
+        return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
+
+    await asyncio.to_thread(_write_tags, staging_path, artwork_bytes=art)
+
+    import time as _time
+    cache_bust = int(_time.time())
+    oob_img = (
+        f'<img src="/jobs/{job_id}/cover-art?t={cache_bust}" '
+        f'id="rv-cover-img-{job_id}" hx-swap-oob="true" '
+        f'onerror="this.src=\'\'" '
+        f'style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">'
+    )
+    return HTMLResponse(f'<span class="badge badge-done">Art applied ✓</span>{oob_img}')
+
+
 @router.get("/library/artists/{artist_id}", response_class=HTMLResponse)
 async def artist_page(
     request: Request,

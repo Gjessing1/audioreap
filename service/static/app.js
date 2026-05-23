@@ -92,10 +92,12 @@ window.playJobStaged = function(jobId, title) {
 };
 
 /* ── Toggle panels mutually exclusive ───────────────────────────────────── */
-window.togglePanel = function(showId, hideId) {
+window.togglePanel = function(showId, ...hideIds) {
   const show = document.getElementById(showId);
-  const hide = document.getElementById(hideId);
-  if (hide) hide.classList.add('hidden');
+  hideIds.forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  });
   if (show) show.classList.toggle('hidden');
 };
 
