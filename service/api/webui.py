@@ -1589,13 +1589,16 @@ async def album_mb_compare(
     except Exception as exc:
         return HTMLResponse(f'<p class="muted" style="font-size:12px">MB fetch failed: {exc}</p>')
 
-    local_titles = {t.title.lower().strip() for t in album.tracks}
+    from service.search.matcher import title_similarity as _tsim
+    local_track_titles = [t.title for t in album.tracks]
     local_rids = {t.musicbrainz_recording_id for t in album.tracks if t.musicbrainz_recording_id}
 
     lines = []
     owned_count = 0
     for mt in mb_tracks:
-        owned = (mt.recording_id in local_rids) if mt.recording_id else (mt.title.lower().strip() in local_titles)
+        owned = (mt.recording_id in local_rids) or any(
+            _tsim(mt.title, lt) >= 0.80 for lt in local_track_titles
+        )
         if owned:
             owned_count += 1
         icon = "✓" if owned else "✕"
@@ -3534,6 +3537,36 @@ async def discography_tracklist(
         session, [t.recording_id for t in tracks if t.recording_id]
     )
 
+    # Title fallback: find local tracks for this album so unmatched recordings
+    # can still be matched by title similarity (different pressings share titles
+    # but may have different MB recording IDs)
+    owned_titles: set[str] = set()
+    local_album_tracks = (await session.execute(
+        select(Track).join(Track.album).where(Album.mb_release_group_id == release_group_id)
+    )).scalars().all()
+    if not local_album_tracks and album_title:
+        # Fall back: find artist + album by name similarity
+        from service.search.matcher import title_similarity as _tsim
+        from service.core.normalize import normalize as _norm
+        local_artists = (await session.execute(
+            select(Artist).where(Artist.name.ilike(f"%{artist.split()[0]}%")) if artist else select(Artist).where(False)
+        )).scalars().all()
+        best_album: "Album | None" = None
+        best_score = 0.0
+        for la in local_artists:
+            if _tsim(la.name, artist) < 0.80:
+                continue
+            albums = (await session.execute(
+                select(Album).options(joinedload(Album.tracks)).where(Album.artist_id == la.id)
+            )).unique().scalars().all()
+            for alb in albums:
+                s = _tsim(_norm(alb.title), _norm(album_title))
+                if s > best_score:
+                    best_score, best_album = s, alb
+        if best_album and best_score >= 0.75:
+            local_album_tracks = list(best_album.tracks)
+    owned_titles = {t.title.lower().strip() for t in local_album_tracks}
+
     return templates.TemplateResponse(
         request, "partials/release_tracklist.html",
         {
@@ -3544,6 +3577,7 @@ async def discography_tracklist(
             "release_id": release_id,
             "tracks": tracks,
             "owned_recording_ids": owned_recording_ids,
+            "owned_titles": owned_titles,
         },
     )
 

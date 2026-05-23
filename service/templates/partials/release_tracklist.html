@@ -6,7 +6,7 @@
   {% if tracks %}
   <table style="width:100%;font-size:13px;border-collapse:collapse">
     {% for t in tracks %}
-    {% set is_owned = t.recording_id and t.recording_id in owned_recording_ids %}
+    {% set is_owned = (t.recording_id and t.recording_id in owned_recording_ids) or (t.title|lower|trim in owned_titles) %}
     <tr id="disco-track-{{ t.recording_id or loop.index }}"
         style="border-bottom:1px solid var(--border)">
       <td style="padding:4px 6px 4px 0;width:20px;text-align:center;font-weight:700;font-size:13px;color:{% if is_owned %}var(--success){% else %}var(--danger){% endif %}">
@@ -42,7 +42,7 @@
   </table>
 
   {% set missing_count = [] %}
-  {% for t in tracks %}{% if not (t.recording_id and t.recording_id in owned_recording_ids) %}{% set _ = missing_count.append(1) %}{% endif %}{% endfor %}
+  {% for t in tracks %}{% if not ((t.recording_id and t.recording_id in owned_recording_ids) or (t.title|lower|trim in owned_titles)) %}{% set _ = missing_count.append(1) %}{% endif %}{% endfor %}
   {% set n_missing = missing_count | length %}
 
   {% if n_missing > 0 %}
