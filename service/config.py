@@ -57,3 +57,48 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Path for runtime config overrides (written by /admin/config UI)
+_OVERRIDES_FILE = settings.data_dir / "config_overrides.json"
+
+# Keys that the config UI may override (must match Settings field names)
+CONFIG_EDITABLE_KEYS = (
+    "staging_quality_threshold",
+    "min_bitrate_kbps",
+    "prefer_explicit",
+    "worker_concurrency",
+)
+
+
+def load_config_overrides() -> None:
+    """Apply /data/config_overrides.json on top of the singleton settings object.
+
+    Called once at startup after migrations. Changes take effect without
+    editing the .env file; a process restart is still required.
+    """
+    import json
+    if not _OVERRIDES_FILE.exists():
+        return
+    try:
+        overrides = json.loads(_OVERRIDES_FILE.read_text())
+        for key, value in overrides.items():
+            if key in CONFIG_EDITABLE_KEYS and hasattr(settings, key):
+                field_type = type(getattr(settings, key))
+                try:
+                    setattr(settings, key, field_type(value))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def save_config_overrides(overrides: dict) -> None:
+    """Persist runtime overrides to /data/config_overrides.json and apply them."""
+    import json
+    _OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    clean: dict = {}
+    for key in CONFIG_EDITABLE_KEYS:
+        if key in overrides:
+            clean[key] = overrides[key]
+    _OVERRIDES_FILE.write_text(json.dumps(clean, indent=2))
+    load_config_overrides()

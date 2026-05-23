@@ -4034,3 +4034,36 @@ async def admin_update_ytdlp(request: Request) -> HTMLResponse:
         return HTMLResponse(f'<span class="badge-warn">pip failed (exit {result.returncode}): {result.stderr[:200]}</span>')
     except Exception as exc:
         return HTMLResponse(f'<span class="badge-warn">Update failed: {exc}</span>')
+
+
+@router.get("/admin/config", response_class=HTMLResponse)
+async def admin_config_page(request: Request) -> HTMLResponse:
+    from service.config import CONFIG_EDITABLE_KEYS
+    current = {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS}
+    return templates.TemplateResponse(
+        request, "admin_config.html", {"active": "library", "current": current}
+    )
+
+
+@router.post("/admin/config", response_class=HTMLResponse)
+async def admin_config_save(request: Request) -> HTMLResponse:
+    from service.config import CONFIG_EDITABLE_KEYS, save_config_overrides
+    form = await request.form()
+    overrides: dict = {}
+    for key in CONFIG_EDITABLE_KEYS:
+        val = form.get(key)
+        if val is not None:
+            field_type = type(getattr(settings, key))
+            if field_type is bool:
+                overrides[key] = val == "true"
+            else:
+                try:
+                    overrides[key] = field_type(val)
+                except Exception:
+                    pass
+    save_config_overrides(overrides)
+    current = {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS}
+    return templates.TemplateResponse(
+        request, "admin_config.html",
+        {"active": "library", "current": current, "saved": True}
+    )

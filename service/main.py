@@ -77,6 +77,8 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await asyncio.to_thread(_run_migrations)
+    from service.config import load_config_overrides
+    load_config_overrides()
     yield
 
 

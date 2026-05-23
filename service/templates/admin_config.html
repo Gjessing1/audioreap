@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Config — audioreap{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <h1>Runtime Config</h1>
+    <a href="/library/health" class="btn btn-ghost btn-sm">← Health</a>
+  </div>
+</div>
+
+<p style="font-size:13px;color:var(--t3);margin-bottom:20px">
+  Overrides are saved to <code>/data/config_overrides.json</code> and applied on next restart.
+  Environment variables take precedence over these overrides.
+</p>
+
+{% if saved %}
+<div class="rv-alert rv-alert--warn" style="margin-bottom:16px">
+  ✓ Config saved — restart the worker and API containers to apply changes.
+</div>
+{% endif %}
+
+<form method="post" action="/admin/config" style="display:flex;flex-direction:column;gap:16px;max-width:480px">
+
+  <div class="rv-field rv-field--full">
+    <label class="rv-label">Staging quality threshold
+      <span style="font-weight:400;color:var(--t4)">(0.0 = off, 0.4 = default)</span>
+    </label>
+    <input class="rv-input" name="staging_quality_threshold" type="number"
+           step="0.05" min="0.0" max="1.0"
+           value="{{ current.staging_quality_threshold }}">
+    <div style="font-size:11px;color:var(--t3);margin-top:4px">
+      Tracks below this 7-factor score go to staging for manual review instead of landing directly in /music.
+    </div>
+  </div>
+
+  <div class="rv-field rv-field--full">
+    <label class="rv-label">Min bitrate (kbps)
+      <span style="font-weight:400;color:var(--t4)">(default 128)</span>
+    </label>
+    <input class="rv-input" name="min_bitrate_kbps" type="number"
+           step="32" min="0" max="1411"
+           value="{{ current.min_bitrate_kbps }}">
+    <div style="font-size:11px;color:var(--t3);margin-top:4px">
+      Tracks below this bitrate are flagged as low quality in the library health view.
+    </div>
+  </div>
+
+  <div class="rv-field rv-field--full">
+    <label class="rv-label">Prefer explicit versions</label>
+    <select class="rv-input" name="prefer_explicit">
+      <option value="true" {% if current.prefer_explicit %}selected{% endif %}>Yes (default)</option>
+      <option value="false" {% if not current.prefer_explicit %}selected{% endif %}>No</option>
+    </select>
+    <div style="font-size:11px;color:var(--t3);margin-top:4px">
+      Rank explicit results above clean in search and source replacement.
+    </div>
+  </div>
+
+  <div class="rv-field rv-field--full">
+    <label class="rv-label">Worker concurrency
+      <span style="font-weight:400;color:var(--t4)">(default 2)</span>
+    </label>
+    <input class="rv-input" name="worker_concurrency" type="number"
+           step="1" min="1" max="8"
+           value="{{ current.worker_concurrency }}">
+    <div style="font-size:11px;color:var(--t3);margin-top:4px">
+      Max simultaneous acquisition jobs. Requires worker restart to take effect.
+    </div>
+  </div>
+
+  <div>
+    <button type="submit" class="btn btn-lg">Save overrides</button>
+  </div>
+</form>
+{% endblock %}
