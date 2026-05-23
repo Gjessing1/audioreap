@@ -209,7 +209,9 @@ async def _build_review_groups(
                 pass
 
         # Safe = AcoustID verified, no flags, staging file present
-        if has_staging and is_acoustid_verified and not is_flagged:
+        # Only standalone (non-album-batch) jobs go into the top-level "Approve N verified"
+        # button. Album-batch jobs are handled per-batch by the "Approve N clean" button.
+        if has_staging and is_acoustid_verified and not is_flagged and not r.album_job_id:
             safe_ids.append(j.id)
 
         item = {"job": j, "is_flagged": is_flagged, "flag_reason": flag_reason}
@@ -383,6 +385,9 @@ async def retry_job(
         from arq import create_pool
         from arq.connections import RedisSettings
         redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        # Use a unique arq job ID per retry so arq's NX dedup doesn't block
+        # re-enqueue when a prior attempt's key still lingers in Redis.
+        retry_suffix = uuid.uuid4().hex[:8]
         await redis.enqueue_job(
             "acquire_track",
             job_id=job_id,
@@ -391,7 +396,7 @@ async def retry_job(
             candidate_json=row.candidate_json,
             music_dir=str(settings.music_dir),
             tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
+            _job_id=f"acquire:{job_id}:{retry_suffix}",
         )
         await redis.aclose()
         row.state = "queued"
@@ -2950,16 +2955,36 @@ async def playlists_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    from sqlalchemy import func as sa_func
     rows = (
         await session.execute(
             select(PlaylistImport).order_by(PlaylistImport.created_at.desc()).limit(20)
         )
     ).scalars().all()
+
+    # Compute real state per playlist from its jobs instead of trusting the
+    # stored state (which was never updated after creation).
+    _ACTIVE_JOB_STATES = ("queued", "downloading", "processing", "enriching", "tagging", "importing")
+    import_states: dict[str, str] = {}
+    if rows:
+        active_counts = (await session.execute(
+            select(AcquisitionJobRow.playlist_import_id, sa_func.count())
+            .where(
+                AcquisitionJobRow.playlist_import_id.in_([r.id for r in rows]),
+                AcquisitionJobRow.state.in_(list(_ACTIVE_JOB_STATES)),
+            )
+            .group_by(AcquisitionJobRow.playlist_import_id)
+        )).all()
+        active_by_id = {pid: cnt for pid, cnt in active_counts}
+        for r in rows:
+            import_states[r.id] = "active" if active_by_id.get(r.id, 0) > 0 else "done"
+
     return templates.TemplateResponse(
         request, "playlists.html",
         {
             "active": "playlists",
             "imports": rows,
+            "import_states": import_states,
             "spotify_enabled": bool(settings.spotify_client_id),
         },
     )

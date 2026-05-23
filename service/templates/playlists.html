@@ -42,8 +42,9 @@
       </div>
     </div>
     <div class="card-actions">
-      <span class="badge {% if imp.state == 'active' %}badge-busy{% else %}badge-done{% endif %}">
-        {{ imp.state }}
+      {% set computed_state = import_states.get(imp.id, 'done') %}
+      <span class="badge {% if computed_state == 'active' %}badge-busy{% else %}badge-done{% endif %}">
+        {{ computed_state }}
       </span>
     </div>
   </div>
