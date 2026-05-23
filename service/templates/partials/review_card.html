@@ -59,6 +59,9 @@
   <div class="rv-alert rv-alert--warn">
     <div style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">⚠ Flagged</div>
     <div>{{ meta.force_staging_reason }}</div>
+    {% if 'title mismatch' in (meta.force_staging_reason or '')|lower and not is_enrichment %}
+    <div style="font-size:12px;margin-top:6px;color:var(--t3)">The "Different source" panel below is open — search for the correct track or paste a YouTube URL.</div>
+    {% endif %}
     {% if album_batch_label and meta.album and not is_enrichment %}
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer">
       <input type="checkbox" id="keep-album-{{ job_id }}" checked
@@ -257,7 +260,7 @@
 
   {# ── Source replacement panel (not applicable for enrichment suggestions) ── #}
   {% if not is_enrichment %}
-  <div id="src-panel-{{ job_id }}" class="mb-panel hidden">
+  <div id="src-panel-{{ job_id }}" class="mb-panel {% if not show_src_panel %}hidden{% endif %}">
     <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find a different YouTube version</div>
     <form class="mb-search-row"
           hx-get="/jobs/{{ job_id }}/search-source"

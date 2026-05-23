@@ -624,6 +624,13 @@ async def _review_card_ctx(
             parts = [p for p in [album_job.album_artist, album_job.album_title] if p]
             album_batch_label = " — ".join(parts) if parts else row.album_job_id[:8]
 
+    force_reason = meta.get("force_staging_reason") or ""
+    show_src_panel = (
+        not is_enrichment
+        and staging_exists
+        and "title mismatch" in force_reason.lower()
+    )
+
     return {
         "job_id": job_id,
         "meta": meta,
@@ -636,6 +643,7 @@ async def _review_card_ctx(
         "parsed_artists": parsed_artists,
         "show_multi_artists": show_multi_artists,
         "show_mb_search": show_mb_search,
+        "show_src_panel": show_src_panel,
     }
 
 
@@ -3758,16 +3766,16 @@ def _yt_search_best(
     duration_seconds: int | None = None,
     n_candidates: int = 5,
     prefer_ytm: bool = True,
-) -> str:
+) -> tuple[str, float]:
     """Search for the best-matching studio version on YouTube (Music).
 
     Fetches up to *n_candidates* results, scores each by:
-    - Title similarity to expected title (60 %)
-    - Duration proximity (20 %)
+    - Title similarity to expected title (65 %)
+    - Duration proximity (25 %)
     - Live/cover penalty (−0.30 if flagged)
 
-    Returns the URL of the highest-scoring result, falling back to a plain
-    ytsearch query if nothing looks good.
+    Returns (url, best_score). Score < 0.35 means no confident match was found.
+    Caller should abort the download rather than queuing a likely-wrong result.
     """
     import yt_dlp
     from service.search.matcher import title_similarity as _tsim
@@ -3795,7 +3803,7 @@ def _yt_search_best(
             pass
 
     if not entries:
-        return f"ytsearch1:{query}"
+        return f"ytsearch1:{query}", 0.0
 
     best_url = ""
     best_score = -1.0
@@ -3804,7 +3812,6 @@ def _yt_search_best(
         if not entry:
             continue
         vid_title = str(entry.get("track") or entry.get("title") or "")
-        vid_artist = str(entry.get("artist") or entry.get("uploader") or entry.get("channel") or "")
         vid_dur = entry.get("duration")
         vid_id = entry.get("id") or ""
         url = str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")
@@ -3835,7 +3842,7 @@ def _yt_search_best(
             best_score = score
             best_url = url
 
-    return best_url or f"ytsearch1:{query}"
+    return best_url or f"ytsearch1:{query}", max(best_score, 0.0)
 
 
 # ── Discography ───────────────────────────────────────────────────────────
@@ -3952,12 +3959,22 @@ async def discography_acquire_single_track(
 
     # Pre-search YouTube Music for the best-matching studio result, filtering
     # out live concerts, tributes, and covers.
-    provider_ref = await asyncio.to_thread(
+    provider_ref, yt_score = await asyncio.to_thread(
         _yt_search_best,
         artist or "Unknown",
         title or "Unknown",
         dur_s,
     )
+
+    # If no candidate scored above the confidence floor, don't download at all.
+    # Better to surface a clean "not found" than to queue a likely-wrong track.
+    if yt_score < 0.35 and not provider_ref.startswith("ytsearch1:"):
+        return HTMLResponse(
+            f'<span class="badge badge-fail" title="No YouTube result scored high enough for '
+            f'&quot;{title}&quot; (best score: {yt_score:.2f}). '
+            f'Try the search box to find a different version.">'
+            f'No confident match — use search</span>'
+        )
 
     candidate = TrackCandidate(
         provider="ytdlp",
