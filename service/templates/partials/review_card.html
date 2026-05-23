@@ -56,7 +56,20 @@
     Use Re-download to fetch it again.
   </div>
   {% elif meta.force_staging_reason %}
-  <div class="rv-alert rv-alert--warn">{{ meta.force_staging_reason }}</div>
+  <div class="rv-alert rv-alert--warn">
+    <div style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">⚠ Flagged</div>
+    <div>{{ meta.force_staging_reason }}</div>
+    {% if album_batch_label and meta.album and not is_enrichment %}
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer">
+      <input type="checkbox" id="keep-album-{{ job_id }}" checked
+             data-album="{{ meta.album|e }}"
+             onchange="var inp=this.closest('.card-review').querySelector('[name=album]');inp.value=this.checked?this.dataset.album:''"
+             style="width:14px;height:14px;accent-color:var(--primary)">
+      Keep album grouping: <strong>{{ meta.album }}</strong>
+      <span style="color:var(--t4)">(uncheck to place as single)</span>
+    </label>
+    {% endif %}
+  </div>
   {% endif %}
   {% if album_consistency_warning %}
   <div class="rv-alert rv-alert--warn">⚠ {{ album_consistency_warning }}</div>

@@ -232,6 +232,29 @@ def test_review_card_with_album_batch() -> None:
     assert "Abbey Road" in html
 
 
+def test_review_card_flagged_with_album_batch() -> None:
+    meta = _meta()
+    meta["force_staging_reason"] = "Artist mismatch: expected 'Beatles', fingerprint says 'Lennon'"
+    meta["album"] = "Abbey Road"
+    html = _render("partials/review_card.html", {
+        "job_id": "abc12345",
+        "meta": meta,
+        "query": "",
+        "staging_exists": True,
+        "genres": [],
+        "is_enrichment": False,
+        "album_consistency_warning": None,
+        "album_batch_label": "The Beatles — Abbey Road",
+        "parsed_artists": ["Test Artist"],
+        "show_multi_artists": False,
+        "show_mb_search": False,
+        "error": None,
+    })
+    assert "Flagged" in html
+    assert "Keep album grouping" in html
+    assert "data-album" in html
+
+
 def test_browse_row() -> None:
     class _Track:
         id = "test:track:1"

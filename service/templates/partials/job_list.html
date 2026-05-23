@@ -68,7 +68,16 @@
     </div>
     {% for item in group.jobs %}
     {% set job = item.job %}
+    {% if item.is_flagged %}
+    <div class="flagged-track-wrapper">
+      {% include "partials/job_card.html" %}
+      {% if item.flag_reason %}
+      <div class="flag-detail">⚠ {{ item.flag_reason }}</div>
+      {% endif %}
+    </div>
+    {% else %}
     {% include "partials/job_card.html" %}
+    {% endif %}
     {% endfor %}
   </div>
   {% endif %}

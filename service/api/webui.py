@@ -191,15 +191,18 @@ async def _build_review_groups(
     for r, j in zip(review_rows, review_jobs):
         is_flagged = False
         is_acoustid_verified = False
+        flag_reason: str | None = None
         has_staging = bool(r.staging_path and Path(r.staging_path).exists())
 
         if not has_staging:
             is_flagged = True
+            flag_reason = "Staging file missing — use Re-download"
         elif r.resolved_metadata_json:
             try:
                 m = json.loads(r.resolved_metadata_json)
                 if m.get("force_staging_reason"):
                     is_flagged = True
+                    flag_reason = m["force_staging_reason"]
                 if m.get("mb_match_source") == "acoustid":
                     is_acoustid_verified = True
             except Exception:
@@ -209,7 +212,7 @@ async def _build_review_groups(
         if has_staging and is_acoustid_verified and not is_flagged:
             safe_ids.append(j.id)
 
-        item = {"job": j, "is_flagged": is_flagged}
+        item = {"job": j, "is_flagged": is_flagged, "flag_reason": flag_reason}
         if r.album_job_id:
             album_buckets.setdefault(r.album_job_id, []).append(item)
         else:

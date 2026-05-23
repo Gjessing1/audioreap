@@ -1,6 +1,16 @@
-"""Recursive library scanner.
+"""Recursive library scanner — index-only authority.
 
-Walks /music, reads tags, upserts Artist/Album/Track/TrackFile rows.
+AUTHORITY RULES (scanner never violates these):
+  1. Index only: reads files and upserts DB rows. Never writes to files.
+  2. No intent: does not rewrite MB IDs, reassign album groupings, or change
+     canonical identity established by the pipeline + user approval.
+  3. No staging: walks /music only; /music-staging is never touched.
+  4. No resurrection: skips .trash and hidden dirs; respects DeletedTrack tombstones.
+  5. Tags are truth for library files: album/year/track_number/genre reflect what
+     is in the file (written by the pipeline at approval time). The scanner
+     propagates tag changes but does NOT set musicbrainz_recording_id — that
+     identity is set once by the pipeline and preserved in the Track row.
+
 Full scan processes every file. Incremental skips files whose mtime is
 unchanged since the last index run.
 """
@@ -204,6 +214,8 @@ async def _process_file(
     track_row = await session.get(Track, track_id)
     track_is_new = track_row is None
     if track_row is None:
+        # musicbrainz_recording_id is NOT set from file tags here — authority rule #5.
+        # The pipeline sets it once at approval; the scanner never overwrites it.
         track_row = Track(
             id=track_id,
             title=title,
@@ -219,6 +231,11 @@ async def _process_file(
         )
         session.add(track_row)
     else:
+        # Update indexable tag fields only. Do NOT touch musicbrainz_recording_id,
+        # title, or artist — those are set by the pipeline and are not the scanner's
+        # authority to change. Album grouping follows the file's albumartist tag
+        # (which the pipeline writes at approval), so reassigning album_id here is
+        # correct and does not violate authority.
         track_row.album_id = album_id
         track_row.track_number = tagged.track_number
         if tagged.genre:
