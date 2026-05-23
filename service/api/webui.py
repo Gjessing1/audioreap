@@ -625,10 +625,9 @@ async def _review_card_ctx(
             album_batch_label = " — ".join(parts) if parts else row.album_job_id[:8]
 
     force_reason = meta.get("force_staging_reason") or ""
-    show_src_panel = (
-        not is_enrichment
-        and staging_exists
-        and "title mismatch" in force_reason.lower()
+    show_src_panel = not is_enrichment and (
+        (staging_exists and "title mismatch" in force_reason.lower())
+        or (not staging_exists and "no confident" in force_reason.lower())
     )
 
     return {
@@ -3966,16 +3965,6 @@ async def discography_acquire_single_track(
         dur_s,
     )
 
-    # If no candidate scored above the confidence floor, don't download at all.
-    # Better to surface a clean "not found" than to queue a likely-wrong track.
-    if yt_score < 0.35 and not provider_ref.startswith("ytsearch1:"):
-        return HTMLResponse(
-            f'<span class="badge badge-fail" title="No YouTube result scored high enough for '
-            f'&quot;{title}&quot; (best score: {yt_score:.2f}). '
-            f'Try the search box to find a different version.">'
-            f'No confident match — use search</span>'
-        )
-
     candidate = TrackCandidate(
         provider="ytdlp",
         provider_ref=provider_ref,
@@ -3986,6 +3975,45 @@ async def discography_acquire_single_track(
         duration_seconds=dur_s,
         mb_recording_id=recording_id or None,
     )
+
+    # If no candidate scored above the confidence floor, create a ghost job in
+    # needs_review with no staging file. The review card will have the source
+    # search panel open so the user can paste a URL or search manually.
+    # This keeps the track visible in the queue — never silently skipped.
+    if yt_score < 0.35:
+        import json as _json
+        from service.db.schema import AcquisitionJobRow as _JobRow
+        job_id = str(__import__("uuid").uuid4())
+        ghost_meta = {
+            "title": candidate.title,
+            "artist": candidate.artist,
+            "album": candidate.album,
+            "track_number": candidate.track_number,
+            "duration_seconds": candidate.duration_seconds,
+            "mb_recording_id": candidate.mb_recording_id,
+            "force_staging_reason": (
+                f"No confident YouTube match found (score: {yt_score:.2f}) — "
+                f"search for the correct track or paste a YouTube link below"
+            ),
+        }
+        from service.acquisition.jobs import _now
+        row = _JobRow(
+            id=job_id,
+            provider="ytdlp",
+            provider_ref=provider_ref,
+            state="needs_review",
+            query=f"{artist} – {title}",
+            candidate_json=candidate.model_dump_json(),
+            resolved_metadata_json=_json.dumps(ghost_meta),
+            staging_path=None,
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        session.add(row)
+        await session.commit()
+        return HTMLResponse(
+            f'<span class="badge badge-warn">No match → <a href="/jobs" style="color:inherit">Review</a></span>'
+        )
 
     job_id = await create_job(
         session,

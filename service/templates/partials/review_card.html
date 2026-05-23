@@ -227,6 +227,12 @@
         Re-download
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
+      {% if not is_enrichment %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="document.getElementById('src-panel-{{ job_id }}').classList.remove('hidden')">
+        Different source
+      </button>
+      {% endif %}
       {% endif %}
       <button type="button" class="btn btn-sm rv-reject"
               hx-post="/jobs/{{ job_id }}/reject"
@@ -239,7 +245,7 @@
     </div>
   </form>
 
-  {# ── MB search panel ─────────────────────────────────────────────────── #}
+  {# ── MB search panel (requires staged file to apply result) ─────────── #}
   {% if staging_exists %}
   <div id="mb-panel-{{ job_id }}" class="mb-panel {% if not show_mb_search %}hidden{% endif %}">
     <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find recording in MusicBrainz</div>
@@ -257,8 +263,9 @@
     </form>
     <div id="mb-results-{{ job_id }}" class="mb-results"></div>
   </div>
+  {% endif %}{# /staging_exists for MB panel #}
 
-  {# ── Source replacement panel (not applicable for enrichment suggestions) ── #}
+  {# ── Source replacement panel — shown with no file too (ghost track case) #}
   {% if not is_enrichment %}
   <div id="src-panel-{{ job_id }}" class="mb-panel {% if not show_src_panel %}hidden{% endif %}">
     <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find a different YouTube version</div>
@@ -302,7 +309,6 @@
     <div id="art-results-{{ job_id }}" class="mb-results"></div>
     <div id="art-apply-status-{{ job_id }}" style="font-size:12px;margin-top:4px"></div>
   </div>
-  {% endif %}
-  {% endif %}{# /if staging_exists (MB + source panels) #}
+  {% endif %}{# /staging_exists for art panel #}
 
 </div>
