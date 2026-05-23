@@ -111,3 +111,31 @@ def normalize(text: str) -> str:
     result = result.lower()
     result = _WHITESPACE.sub(" ", result).strip()
     return result
+
+
+# ── Album grouping normalization ──────────────────────────────────────────────
+# Strips edition/remaster markers from album titles so "Abbey Road (Remastered)"
+# and "Abbey Road" compare equal for library cohesion purposes. Never stored —
+# used only for grouping comparison in find_canonical_album().
+_EDITION_PAREN = re.compile(
+    r"\s*[\[(][^\])[]*"
+    r"(?:remaster(?:ed)?|\d+(?:th|st|nd|rd)\s+anniversary|deluxe|expanded|"
+    r"special|limited|collector|legacy|super\s+deluxe|bonus\s+track)"
+    r"[^\])]*[\])]",
+    re.IGNORECASE,
+)
+_EDITION_DASH = re.compile(
+    r"\s*[-–]\s*(?:remaster(?:ed)?|deluxe(?:\s+edition)?|"
+    r"anniversary(?:\s+edition)?|expanded(?:\s+edition)?|"
+    r"special(?:\s+edition)?|limited(?:\s+edition)?|"
+    r"collector[\'s]*(?:\s+edition)?|legacy(?:\s+edition)?)$",
+    re.IGNORECASE,
+)
+
+
+def normalize_album_for_grouping(title: str) -> str:
+    """Strip edition/remaster suffixes for album cohesion comparison (never stored)."""
+    result = _EDITION_PAREN.sub("", title)
+    result = _EDITION_DASH.sub("", result)
+    result = _WHITESPACE.sub(" ", result).strip()
+    return normalize(result) or normalize(title)

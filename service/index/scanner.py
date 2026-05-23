@@ -94,6 +94,7 @@ async def _upsert_album(
     title: str,
     year: int | None,
     artist_name: str,
+    mb_release_group_id: str | None = None,
 ) -> str:
     alid = _album_id(artist_name, title, year)
     row = await session.get(Album, alid)
@@ -103,10 +104,14 @@ async def _upsert_album(
             title=title,
             year=year,
             artist_id=artist_id,
+            mb_release_group_id=mb_release_group_id,
             created_at=_now(),
             updated_at=_now(),
         )
         session.add(row)
+    elif mb_release_group_id and not row.mb_release_group_id:
+        row.mb_release_group_id = mb_release_group_id
+        row.updated_at = _now()
     return alid
 
 

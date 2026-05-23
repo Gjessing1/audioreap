@@ -32,6 +32,7 @@ class Album(Base):
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     track_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     musicbrainz_release_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    mb_release_group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     artist_id: Mapped[str] = mapped_column(String, ForeignKey("artists.id"), nullable=False)
     id_algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

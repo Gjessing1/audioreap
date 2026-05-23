@@ -416,6 +416,7 @@ async def run_acquisition(
             "ext": ext,
             "mb_recording_id": mb_recording_id,
             "mb_release_id": mb_release_id,
+            "mb_release_group_id": mb_release_group_id,
             "mb_artist_id": mb_artist_id,
             "mb_artist_sort": mb_artist_sort,
             "isrc": isrc,
@@ -515,6 +516,7 @@ async def place_approved_track(
     disc_number: int | None = meta.get("disc_number")  # type: ignore[assignment]
     mb_recording_id: str | None = meta.get("mb_recording_id") or None  # type: ignore[assignment]
     mb_release_id: str | None = meta.get("mb_release_id") or None  # type: ignore[assignment]
+    mb_release_group_id: str | None = meta.get("mb_release_group_id") or None  # type: ignore[assignment]
     mb_artist_id: str | None = meta.get("mb_artist_id") or None  # type: ignore[assignment]
     mb_artist_sort: str | None = meta.get("mb_artist_sort") or None  # type: ignore[assignment]
     isrc: str | None = meta.get("isrc") or None  # type: ignore[assignment]
@@ -522,6 +524,16 @@ async def place_approved_track(
     genre: str | None = meta.get("genre") or None  # type: ignore[assignment]
     duration_seconds: int | None = meta.get("duration_seconds")  # type: ignore[assignment]
     ext: str = str(meta.get("ext") or staging_path.suffix.lstrip("."))
+
+    # ── Canonical album cohesion ───────────────────────────────────────────────
+    # Anchor to existing local album grouping before writing tags or computing
+    # the destination path. AlbumArtist stability also applied here.
+    if not is_enrichment and album:
+        from service.library.cohesion import find_canonical_album, stable_albumartist
+        albumartist = await stable_albumartist(session, albumartist, mb_artist_id)
+        canonical = await find_canonical_album(session, album, albumartist, mb_release_group_id)
+        if canonical is not None:
+            album, albumartist = canonical
 
     # Write final tags — raise on failure so the approval is aborted and the
     # job stays in needs_review rather than placing an untagged file in /music.
@@ -637,6 +649,12 @@ async def place_approved_track(
                     artist_row = await session.get(_Artist, track_row.artist_id)
                     if artist_row is not None and not artist_row.musicbrainz_artist_id:
                         artist_row.musicbrainz_artist_id = mb_artist_id
+                # Store MB release group ID on Album row for canonical album lookup
+                if mb_release_group_id and track_row.album_id:
+                    from service.db.schema import Album as _Album
+                    album_row = await session.get(_Album, track_row.album_id)
+                    if album_row is not None and not album_row.mb_release_group_id:
+                        album_row.mb_release_group_id = mb_release_group_id
                 await session.flush()
     except Exception as exc:
         logger.warning("Approve: DB index failed for %s: %s", dest, exc)
