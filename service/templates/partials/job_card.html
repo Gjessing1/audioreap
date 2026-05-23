@@ -28,8 +28,10 @@
     <div class="card-title">{{ job.track_ref.title }}</div>
     <div class="card-sub">{{ job.track_ref.artist }}<span class="muted"> · {{ job.id[:8] }}</span></div>
     {% if job.error %}
-    <div class="card-error {% if job.state != 'needs_review' %}card-error--danger{% endif %}">
-      {{ job.error[:140] }}
+    <div class="card-error {% if job.state != 'needs_review' %}card-error--danger{% endif %}"
+         title="{{ job.error }}"
+         style="cursor:help">
+      {{ job.error[:140] }}{% if job.error|length > 140 %}…{% endif %}
     </div>
     {% endif %}
   </div>

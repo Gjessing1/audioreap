@@ -610,6 +610,24 @@ async def approve_job(
         "genre": genre or None,
     }
 
+    # Guard against concurrent approvals of the same job (race condition between
+    # the state check and the file move).  A short-lived Redis lock is sufficient.
+    lock_key = f"approve_lock:{job_id}"
+    _redis = None
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        _redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        acquired = await _redis.set(lock_key, "1", ex=60, nx=True)
+        if not acquired:
+            return HTMLResponse(
+                f'<div class="card card-review" id="job-{job_id}">'
+                f'<div class="rv-form"><div class="rv-alert rv-alert--error">'
+                f'Approval already in progress for this job.</div></div></div>'
+            )
+    except Exception:
+        acquired = True  # if Redis is unavailable, proceed without the lock
+
     dest: Path | None = None
     try:
         dest = await place_approved_track(job_id, overrides, session)
@@ -636,6 +654,13 @@ async def approve_job(
                 f'<div class="card card-review" id="job-{job_id}">'
                 f'<div class="rv-form"><div class="rv-alert rv-alert--error">Approve failed: {exc}</div></div></div>'
             )
+    finally:
+        if _redis is not None:
+            try:
+                await _redis.delete(lock_key)
+                await _redis.aclose()
+            except Exception:
+                pass
 
     # ReplayGain after commit — subprocess inside a session causes greenlet conflict
     if dest is not None and dest.exists():
@@ -3614,9 +3639,15 @@ async def merge_album(
     except Exception:
         pass
 
-    # Delete the source Album row — all its tracks have been reassigned
+    # Delete the source Album row — all its tracks have been reassigned.
+    # We flush first to commit the album_id updates, then expunge source from the
+    # session and use raw SQL to delete it.  If we called session.delete(source)
+    # while the ORM still sees its tracks collection, SQLAlchemy would auto-NULL
+    # every track's album_id (nullable FK, no cascade), undoing our reassignments.
     await session.flush()
-    await session.delete(source)
+    await session.expunge(source)
+    from sqlalchemy import delete as _sa_delete
+    await session.execute(_sa_delete(Album).where(Album.id == source_id))
 
     await session.commit()
 
@@ -3626,12 +3657,23 @@ async def merge_album(
     except Exception:
         pass
 
-    parts = [f"moved {moved}"]
-    if already_there:
-        parts.append(f"{already_there} reassigned in place")
-    if collisions:
-        parts.append(f"{collisions} name collision(s)")
-    return HTMLResponse(f'<span class="badge-ok">Merged ✓ ({", ".join(parts)})</span>')
+    # Return the refreshed album list so the UI updates immediately
+    stmt2 = (
+        select(Album)
+        .join(Album.artist)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
+        .order_by(Artist.name, Album.year, Album.title)
+        .limit(300)
+    )
+    albums = (await session.execute(stmt2)).unique().scalars().all()
+    album_quality: dict[str, float | None] = {}
+    for alb in albums:
+        scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
+        album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
+    return templates.TemplateResponse(
+        request, "partials/album_list.html",
+        {"albums": albums, "q": "", "album_quality": album_quality},
+    )
 
 
 # ── Trash recovery ────────────────────────────────────────────────────────────

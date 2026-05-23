@@ -123,7 +123,6 @@ class AcquisitionJobRow(Base):
     playlist_import_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("playlist_imports.id"), nullable=True
     )
-    track_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     staging_path: Mapped[str | None] = mapped_column(String, nullable=True)
     resolved_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

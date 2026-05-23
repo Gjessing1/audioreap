@@ -2,6 +2,9 @@
 {% block title %}{{ artist.name }} — audioreap{% endblock %}
 
 {% block content %}
+<div style="margin-bottom:12px">
+  <a href="/library/artists" class="btn btn-sm btn-ghost">← Artists</a>
+</div>
 <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
   <h2 style="font-size:20px;margin:0">{{ artist.name }}</h2>
   {% if artist.sort_name and artist.sort_name != artist.name %}

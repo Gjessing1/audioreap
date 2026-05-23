@@ -117,7 +117,6 @@ async def run_album_acquisition(
                 child_row = await session.get(AcquisitionJobRow, child_id)
                 if child_row:
                     child_row.album_job_id = album_job_id
-                    child_row.track_index = idx
             child_job_ids.append(child_id)
         except Exception as exc:
             logger.warning(

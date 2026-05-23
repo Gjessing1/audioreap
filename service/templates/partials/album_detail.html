@@ -5,6 +5,15 @@
 
 <div class="card card-review" id="album-{{ aid }}">
 
+  {# ── Back / close ─────────────────────────────────────────────────────── #}
+  <div style="padding:4px 8px 0">
+    <button class="btn btn-sm btn-ghost"
+            hx-get="/library/albums/list"
+            hx-target="#album-list"
+            hx-swap="innerHTML"
+            style="font-size:11px;color:var(--t3)">← Albums</button>
+  </div>
+
   {# ── Album header ──────────────────────────────────────────────────────── #}
   <div class="rv-header">
     <div class="rv-art rv-art--lg" style="cursor:pointer;position:relative"

@@ -22,6 +22,7 @@ from service.acquisition.states import classify_failure
 from service.config import settings
 from service.core.identity import make_id
 from service.core.models import TrackCandidate
+from service.core.normalize import clean_for_search
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
 from service.library.layout import track_path
@@ -269,7 +270,11 @@ async def run_acquisition(
 
             if mb is None:
                 mb = await asyncio.to_thread(
-                    lookup_recording, title, artist, duration, cache_dir=settings.cache_dir,
+                    lookup_recording,
+                    clean_for_search(title),
+                    clean_for_search(artist),
+                    duration,
+                    cache_dir=settings.cache_dir,
                 )
                 if mb is not None:
                     mb_match_source = "text_search"
@@ -301,6 +306,12 @@ async def run_acquisition(
 
         except Exception as mb_exc:
             logger.debug("MB lookup skipped: %s", mb_exc)
+
+        # When no MB match, clean the raw YouTube title/artist so the review card
+        # shows a sensible default instead of "(Official Music Video)" noise.
+        if mb_match_source is None:
+            title = clean_for_search(title)
+            artist = clean_for_search(artist)
 
         # Fetch MB folksonomy genres for the review card
         mb_genres: list[str] = []

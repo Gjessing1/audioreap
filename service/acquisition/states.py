@@ -3,11 +3,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-# Valid job states in order
-JobState = Literal[
-    "queued", "downloading", "processing", "tagging", "importing", "done", "failed"
-]
-
 # Failure classifications
 FailureClass = Literal["transient", "permanent", "match"]
 
