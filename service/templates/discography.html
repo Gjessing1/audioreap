@@ -47,26 +47,42 @@
 {% for r in releases %}
 <div class="card" style="margin-bottom:6px">
   <div class="card-info">
-    <div class="card-title" style="{% if r.owned %}color:var(--muted){% endif %}">{{ r.title }}</div>
+    <div class="card-title">{{ r.title }}</div>
     <div class="card-sub">
       {{ r.release_type }}{% if r.year %} · {{ r.year }}{% endif %}
     </div>
   </div>
   <div class="card-actions">
     {% if r.owned %}
-    <span class="badge badge-done">owned</span>
-    {% endif %}
+    <span class="badge badge-done" style="white-space:nowrap">
+      ✓ {{ r.owned_track_count }} track{% if r.owned_track_count != 1 %}s{% endif %}
+    </span>
+    <button class="btn btn-sm btn-ghost"
+            onclick="var el=document.getElementById('rg-tracks-{{ r.release_group_id }}');el.classList.toggle('hidden')"
+            style="font-size:11px">tracks ▾</button>
+    {% else %}
     <button class="btn btn-sm btn-ghost"
             hx-get="/discography/{{ artist_mbid }}/{{ r.release_group_id }}/tracks?artist={{ artist_name|urlencode }}"
             hx-target="#rg-tracks-{{ r.release_group_id }}"
             hx-swap="innerHTML"
             hx-indicator="#rg-spinner-{{ r.release_group_id }}">
-      {% if r.owned %}Show tracks{% else %}Acquire{% endif %}
+      Acquire
       <span id="rg-spinner-{{ r.release_group_id }}" class="htmx-indicator"><span class="spinner"></span></span>
     </button>
+    {% endif %}
   </div>
 </div>
+{# Owned releases: auto-load tracklist on page load, visible by default #}
+{% if r.owned %}
+<div id="rg-tracks-{{ r.release_group_id }}" style="padding:0 8px 8px"
+     hx-get="/discography/{{ artist_mbid }}/{{ r.release_group_id }}/tracks?artist={{ artist_name|urlencode }}"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <span class="muted" style="font-size:12px"><span class="spinner" style="width:10px;height:10px"></span> Loading…</span>
+</div>
+{% else %}
 <div id="rg-tracks-{{ r.release_group_id }}" style="padding:0 8px 8px"></div>
+{% endif %}
 {% endfor %}
 {% else %}
 <p class="empty">No releases found for the selected types.</p>

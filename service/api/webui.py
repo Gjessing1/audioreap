@@ -3721,8 +3721,8 @@ async def discography_view(
 
     filtered = [rg for rg in release_groups if rg.release_type in selected_types]
 
-    # Find artist in local DB by fuzzy name match
-    local_album_titles: set[str] = set()
+    # Find artist in local DB by fuzzy name match; load albums with track counts
+    local_albums_list: list[Album] = []
     all_local_artists = (
         await session.execute(
             select(Artist).where(Artist.name.ilike(f"%{artist_name.split()[0]}%"))
@@ -3730,25 +3730,47 @@ async def discography_view(
     ).scalars().all()
     for la in all_local_artists:
         if title_similarity(la.name, artist_name) >= 0.85:
-            local_albums = (
-                await session.execute(select(Album).where(Album.artist_id == la.id))
-            ).scalars().all()
-            local_album_titles = {_normalize(a.title) for a in local_albums}
+            local_albums_list = (
+                await session.execute(
+                    select(Album)
+                    .options(joinedload(Album.tracks))
+                    .where(Album.artist_id == la.id)
+                )
+            ).unique().scalars().all()
             break
+
+    # Build lookup maps: release_group_id → track_count, normalized_title → track_count
+    rg_to_track_count: dict[str, int] = {}
+    title_to_track_count: dict[str, int] = {}
+    for la in local_albums_list:
+        tc = len(la.tracks)
+        if la.mb_release_group_id:
+            rg_to_track_count[la.mb_release_group_id] = tc
+        title_to_track_count[_normalize(la.title)] = tc
 
     release_entries = []
     for rg in filtered:
         normalized_title = _normalize(rg.title)
-        owned = any(
-            title_similarity(normalized_title, local_t) >= 0.80
-            for local_t in local_album_titles
-        )
+        # Prefer release-group ID match, fall back to title similarity
+        if rg.release_group_id in rg_to_track_count:
+            owned = True
+            owned_track_count = rg_to_track_count[rg.release_group_id]
+        else:
+            best_match = max(
+                ((tc, title_similarity(normalized_title, local_t))
+                 for local_t, tc in title_to_track_count.items()),
+                key=lambda x: x[1],
+                default=(0, 0.0),
+            )
+            owned = best_match[1] >= 0.80
+            owned_track_count = best_match[0] if owned else 0
         release_entries.append({
             "release_group_id": rg.release_group_id,
             "title": rg.title,
             "year": rg.year,
             "release_type": rg.release_type,
             "owned": owned,
+            "owned_track_count": owned_track_count,
         })
 
     owned_count = sum(1 for r in release_entries if r["owned"])
