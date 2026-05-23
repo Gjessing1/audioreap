@@ -2772,63 +2772,71 @@ async def _search_itunes_art(q: str) -> list[dict]:
     return results
 
 
+async def _fetch_caa_for_rg(client: "Any", rg_id: str) -> list[dict]:
+    """List all releases in an MB release group and probe CAA for covers (inner helper)."""
+    releases_url = f"https://musicbrainz.org/ws/2/release?release-group={rg_id}&fmt=json&limit=25"
+    rels_resp = await client.get(releases_url)
+    if rels_resp.status_code != 200:
+        return []
+    releases = rels_resp.json().get("releases", [])
+
+    async def _fetch_caa(rel_id: str, rel_label: str) -> "dict | None":
+        try:
+            caa = await client.get(
+                f"https://coverartarchive.org/release/{rel_id}/front-250",
+                follow_redirects=True,
+            )
+            if caa.status_code == 200 and caa.headers.get("content-type", "").startswith("image/"):
+                full = await client.get(
+                    f"https://coverartarchive.org/release/{rel_id}/front",
+                    follow_redirects=False,
+                )
+                full_url = full.headers.get("location", f"https://coverartarchive.org/release/{rel_id}/front")
+                return {"thumb": f"https://coverartarchive.org/release/{rel_id}/front-250",
+                        "full": full_url, "label": rel_label, "source": "CAA"}
+        except Exception:
+            pass
+        return None
+
+    import asyncio as _asyncio
+    tasks = [
+        _fetch_caa(
+            r["id"],
+            f"{r.get('title', '')} ({r.get('date', '')[:4] if r.get('date') else '?'})"
+            f" [{r.get('country', '') or r.get('status', '')}]"
+        )
+        for r in releases[:15]
+    ]
+    return [r for r in await _asyncio.gather(*tasks) if r is not None]
+
+
 async def _search_caa_editions(release_id: str) -> list[dict]:
-    """Fetch all CAA covers for every edition in the same MB release group."""
-    results: list[dict] = []
+    """Fetch all CAA covers for every edition in the same MB release group (given a release ID)."""
     try:
         import httpx
-        # Step 1: get the release group from the known release_id
-        rg_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=release-groups&fmt=json"
         async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "audioreap/0.1"}) as client:
+            rg_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=release-groups&fmt=json"
             rg_resp = await client.get(rg_url)
             if rg_resp.status_code != 200:
-                return results
-            rg_data = rg_resp.json()
-            rg_id = (rg_data.get("release-group") or {}).get("id")
+                return []
+            rg_id = (rg_resp.json().get("release-group") or {}).get("id")
             if not rg_id:
-                return results
-
-            # Step 2: list all releases in the group
-            releases_url = f"https://musicbrainz.org/ws/2/release?release-group={rg_id}&fmt=json&limit=25"
-            rels_resp = await client.get(releases_url)
-            if rels_resp.status_code != 200:
-                return results
-            releases = rels_resp.json().get("releases", [])
-
-            # Step 3: probe CAA for each release (in parallel, best-effort)
-            async def _fetch_caa(rel_id: str, rel_label: str) -> dict | None:
-                try:
-                    caa = await client.get(
-                        f"https://coverartarchive.org/release/{rel_id}/front-250",
-                        follow_redirects=True,
-                    )
-                    if caa.status_code == 200 and caa.headers.get("content-type", "").startswith("image/"):
-                        # We have the actual image; get the redirect URL for the full-size
-                        full = await client.get(
-                            f"https://coverartarchive.org/release/{rel_id}/front",
-                            follow_redirects=False,
-                        )
-                        full_url = full.headers.get("location", f"https://coverartarchive.org/release/{rel_id}/front")
-                        thumb_url = f"https://coverartarchive.org/release/{rel_id}/front-250"
-                        return {"thumb": thumb_url, "full": full_url, "label": rel_label, "source": "CAA"}
-                except Exception:
-                    pass
-                return None
-
-            import asyncio as _asyncio
-            tasks = [
-                _fetch_caa(
-                    r["id"],
-                    f"{r.get('title', '')} ({r.get('date', '')[:4] if r.get('date') else '?'})"
-                    f" [{r.get('country', '') or r.get('status', '')}]"
-                )
-                for r in releases[:15]
-            ]
-            found = await _asyncio.gather(*tasks)
-            results = [r for r in found if r is not None]
+                return []
+            return await _fetch_caa_for_rg(client, rg_id)
     except Exception as exc:
         logger.debug("CAA editions search failed: %s", exc)
-    return results
+    return []
+
+
+async def _search_caa_by_rg(rg_id: str) -> list[dict]:
+    """Fetch all CAA covers for every edition in an MB release group (given the group ID directly)."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "audioreap/0.1"}) as client:
+            return await _fetch_caa_for_rg(client, rg_id)
+    except Exception as exc:
+        logger.debug("CAA by-rg search failed: %s", exc)
+    return []
 
 
 @router.get("/art/search", response_class=HTMLResponse)
@@ -2836,6 +2844,7 @@ async def art_search(
     request: Request,
     q: str = "",
     release_id: str = "",
+    release_group_id: str = "",
     apply_url: str = "",
     result_target: str = "",
 ) -> HTMLResponse:
@@ -2846,6 +2855,9 @@ async def art_search(
         results.extend(itunes)
     if release_id.strip():
         caa = await _search_caa_editions(release_id.strip())
+        results.extend(caa)
+    elif release_group_id.strip():
+        caa = await _search_caa_by_rg(release_group_id.strip())
         results.extend(caa)
 
     if not results:
@@ -3511,14 +3523,10 @@ async def discography_tracklist(
     )
 
     # Check which tracks are already in local library by MB recording ID
-    owned_recording_ids: set[str] = set()
-    if tracks:
-        rids = [t.recording_id for t in tracks if t.recording_id]
-        if rids:
-            rows = (await session.execute(
-                select(Track).where(Track.musicbrainz_recording_id.in_(rids))
-            )).scalars().all()
-            owned_recording_ids = {r.musicbrainz_recording_id for r in rows if r.musicbrainz_recording_id}
+    from service.library.cohesion import get_owned_recording_ids
+    owned_recording_ids = await get_owned_recording_ids(
+        session, [t.recording_id for t in tracks if t.recording_id]
+    )
 
     return templates.TemplateResponse(
         request, "partials/release_tracklist.html",
@@ -4244,6 +4252,16 @@ async def fetch_album_cover(
             if not release_id:
                 release_id = _read_mb_release_id(Path(track.file.path))
             break
+
+    # If still no release ID, resolve one from the release group (cached)
+    if not release_id and album.mb_release_group_id:
+        try:
+            from service.metadata.musicbrainz import get_release_group_tracks
+            _, release_id, _, _ = await asyncio.to_thread(
+                get_release_group_tracks, album.mb_release_group_id, settings.cache_dir
+            )
+        except Exception:
+            pass
 
     if not release_id:
         return HTMLResponse('<span class="badge-warn">No MusicBrainz release ID — cannot fetch cover</span>')

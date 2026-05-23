@@ -91,6 +91,21 @@ async def find_canonical_album(
     return None
 
 
+async def get_owned_recording_ids(
+    session: "AsyncSession",
+    recording_ids: list[str],
+) -> set[str]:
+    """Return the subset of recording_ids already present in the local library."""
+    if not recording_ids:
+        return set()
+    from sqlalchemy import select
+    from service.db.schema import Track
+    rows = (await session.execute(
+        select(Track).where(Track.musicbrainz_recording_id.in_(recording_ids))
+    )).scalars().all()
+    return {r.musicbrainz_recording_id for r in rows if r.musicbrainz_recording_id}
+
+
 async def stable_albumartist(
     session: AsyncSession,
     albumartist: str,

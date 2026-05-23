@@ -36,7 +36,7 @@
     </div>
     {# Actions #}
     <div class="album-actions">
-      {% if album.musicbrainz_release_id %}
+      {% if album.musicbrainz_release_id or album.mb_release_group_id %}
       <span class="badge badge-done" title="MusicBrainz matched">MB</span>
       {% endif %}
       {% set aq = album_quality[album.id] if album_quality is defined and album.id in album_quality else none %}

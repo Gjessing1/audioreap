@@ -80,6 +80,8 @@
              placeholder="Artist Album…" style="flex:1;font-size:12px">
       {% if track.album and track.album.musicbrainz_release_id %}
       <input type="hidden" name="release_id" value="{{ track.album.musicbrainz_release_id }}">
+      {% elif track.album and track.album.mb_release_group_id %}
+      <input type="hidden" name="release_group_id" value="{{ track.album.mb_release_group_id }}">
       {% endif %}
       <input type="hidden" name="apply_url" value="/library/tracks/{{ track.id }}/apply-art">
       <input type="hidden" name="result_target" value="#art-apply-status-{{ safe_id }}">

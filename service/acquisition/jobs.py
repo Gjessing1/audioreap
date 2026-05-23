@@ -530,19 +530,22 @@ async def fetch_missing_covers(ctx: dict[str, object]) -> None:
     from service.db.schema import Album as _Album, Track as _Track, TrackFile as _TF
     from service.library.tagger import write_cover_jpg as _write_cover_jpg
     from service.metadata.artwork import fetch_artwork as _fetch_artwork
-    from sqlalchemy import select as _select
+    from sqlalchemy import select as _select, or_ as _or_
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
 
     async with session_factory() as session:
-        # Albums that have a MB release ID but no cover.jpg on disk
+        # Albums with any MB linkage but missing cover art
         albums = (await session.execute(
             _select(_Album)
             .join(_Album.tracks)
             .join(_Track.file)
             .where(_TF.has_cover_art == 0)
-            .where(_Album.musicbrainz_release_id.isnot(None))
+            .where(_or_(
+                _Album.musicbrainz_release_id.isnot(None),
+                _Album.mb_release_group_id.isnot(None),
+            ))
             .distinct()
         )).unique().scalars().all()
 
@@ -564,9 +567,20 @@ async def fetch_missing_covers(ctx: dict[str, object]) -> None:
         if cover_dest.exists():
             skipped += 1
             continue
+        # Resolve release MBID: prefer stored release ID, fall back to primary
+        # release from release group (cached by get_release_group_tracks)
+        release_mbid = album.musicbrainz_release_id
+        if not release_mbid and album.mb_release_group_id:
+            try:
+                from service.metadata.musicbrainz import get_release_group_tracks as _get_rg
+                _, release_mbid, _, _ = await asyncio.to_thread(
+                    _get_rg, album.mb_release_group_id, _s.cache_dir
+                )
+            except Exception:
+                pass
         try:
             art = await _fetch_artwork(
-                release_mbid=album.musicbrainz_release_id,
+                release_mbid=release_mbid,
                 cache_dir=_s.cache_dir,
             )
             if art:

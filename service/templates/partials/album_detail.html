@@ -30,10 +30,15 @@
     </div>
     <div class="rv-info">
       <div class="rv-badges">
-        {% if album.musicbrainz_release_id %}
+        {% if album.musicbrainz_release_id or album.mb_release_group_id %}
         <span class="badge badge-done">MB ✓</span>
+        {% if album.musicbrainz_release_id %}
         <a href="https://musicbrainz.org/release/{{ album.musicbrainz_release_id }}"
            target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
+        {% else %}
+        <a href="https://musicbrainz.org/release-group/{{ album.mb_release_group_id }}"
+           target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
+        {% endif %}
         {% endif %}
         <span class="badge badge-queued">{{ ntracks }} track{% if ntracks != 1 %}s{% endif %}</span>
         {% if saved %}<span class="badge badge-done">Saved ✓</span>{% endif %}
@@ -46,7 +51,7 @@
   <div id="album-art-panel-{{ aid }}" class="hidden" style="padding:10px 4px;border-bottom:1px solid var(--b1)">
     {# Quick actions #}
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
-      {% if album.musicbrainz_release_id %}
+      {% if album.musicbrainz_release_id or album.mb_release_group_id %}
       <span class="fetch-art-btn">
         <button class="btn btn-sm btn-ghost"
                 hx-post="/library/albums/{{ album.id }}/cover/fetch"
@@ -81,6 +86,8 @@
              placeholder="Artist Album…" style="flex:1;font-size:12px">
       {% if album.musicbrainz_release_id %}
       <input type="hidden" name="release_id" value="{{ album.musicbrainz_release_id }}">
+      {% elif album.mb_release_group_id %}
+      <input type="hidden" name="release_group_id" value="{{ album.mb_release_group_id }}">
       {% endif %}
       <input type="hidden" name="apply_url" value="/library/albums/{{ album.id }}/apply-art">
       <input type="hidden" name="result_target" value="#album-art-apply-status-{{ aid }}">
