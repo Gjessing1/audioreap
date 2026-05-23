@@ -253,12 +253,16 @@ def search_recordings_free(
     query: str,
     limit: int = 10,
     cache_dir: Path | None = None,
+    duration_seconds: int | None = None,
 ) -> list[MBRecording]:
     """Free-form MB recording search for the manual review lookup.
 
     Splits on ' - ' to extract 'Artist - Title' prefix; otherwise treats whole
-    string as the recording title with no artist filter. Results sorted by MB
-    relevance score descending.
+    string as the recording title with no artist filter.
+
+    Re-ranks results using a blend of MB's text relevance score and local
+    title/artist/duration similarity so that exact matches surface above
+    live versions, tribute covers, or same-title tracks by other artists.
     """
     if " - " in query:
         parts = query.split(" - ", 1)
@@ -291,7 +295,24 @@ def search_recordings_free(
         for rec in (raw.get("recording-list") or [])
         if isinstance(rec, dict)
     ]
-    # Sort by MB relevance score descending
+
+    # Re-rank: blend MB relevance with local title/artist/duration similarity.
+    # This surfaces exact artist+title matches above live versions, tributes,
+    # and same-title tracks by other artists that MB may score similarly.
+    from service.search.matcher import artist_similarity, title_similarity
+    ref_title = title_q or query
+    for rec in records:
+        t_sim = title_similarity(ref_title, rec.title)
+        a_sim = artist_similarity(artist_q, rec.artist) if artist_q else 0.5
+        local_sim = t_sim * 0.6 + a_sim * 0.4
+        if duration_seconds and rec.duration_seconds:
+            diff = abs(duration_seconds - rec.duration_seconds)
+            if diff <= 10:
+                local_sim = min(local_sim + 0.1, 1.0)
+            elif diff > 60:
+                local_sim = min(local_sim, 0.75)
+        rec.score = 0.5 * rec.score + 0.5 * local_sim
+
     records.sort(key=lambda r: r.score, reverse=True)
     return records[:limit]
 

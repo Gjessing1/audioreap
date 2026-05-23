@@ -224,6 +224,7 @@
           hx-get="/jobs/{{ job_id }}/mb-search"
           hx-target="#mb-results-{{ job_id }}"
           hx-trigger="submit">
+      {% if meta.duration_seconds %}<input type="hidden" name="duration" value="{{ meta.duration_seconds }}">{% endif %}
       <input class="rv-input" name="q" type="text"
              value="{{ (meta.artist or '') ~ ' - ' ~ (meta.title or '') }}"
              placeholder="Artist - Title" autocomplete="off">

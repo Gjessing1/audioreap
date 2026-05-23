@@ -37,18 +37,19 @@
 
 {# Load more button #}
 {% set next_limit = (limit|default(10)|int) + 10 %}
+{% set dur_param = ('&duration=' ~ duration) if duration else '' %}
 {% if results|length >= (limit|default(10)|int) %}
 <div style="text-align:center;padding:8px 0">
   {% if job_id %}
   <button class="btn btn-sm btn-ghost"
-          hx-get="/jobs/{{ job_id }}/mb-search?q={{ q|urlencode }}&limit={{ next_limit }}"
+          hx-get="/jobs/{{ job_id }}/mb-search?q={{ q|urlencode }}&limit={{ next_limit }}{{ dur_param }}"
           hx-target="closest .mb-results"
           hx-swap="innerHTML">
     Load {{ next_limit - (limit|default(10)|int) }} more results
   </button>
   {% elif track_id %}
   <button class="btn btn-sm btn-ghost"
-          hx-get="/library/tracks/{{ track_id }}/mb-search?q={{ q|urlencode }}&limit={{ next_limit }}"
+          hx-get="/library/tracks/{{ track_id }}/mb-search?q={{ q|urlencode }}&limit={{ next_limit }}{{ dur_param }}"
           hx-target="closest .mb-results"
           hx-swap="innerHTML">
     Load {{ next_limit - (limit|default(10)|int) }} more results

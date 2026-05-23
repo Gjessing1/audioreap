@@ -920,16 +920,17 @@ async def job_mb_search(
     job_id: str,
     q: str = "",
     limit: int = 10,
+    duration: int | None = None,
 ) -> HTMLResponse:
     if not q.strip():
         return HTMLResponse("")
     from service.metadata.musicbrainz import search_recordings_free
     results = await asyncio.to_thread(
-        search_recordings_free, q.strip(), limit, settings.cache_dir
+        search_recordings_free, q.strip(), limit, settings.cache_dir, duration
     )
     return templates.TemplateResponse(
         request, "partials/mb_candidates.html",
-        {"results": results, "job_id": job_id, "q": q.strip(), "limit": limit},
+        {"results": results, "job_id": job_id, "q": q.strip(), "limit": limit, "duration": duration},
     )
 
 
@@ -2152,17 +2153,18 @@ async def library_track_mb_search(
     internal_id: str,
     q: str = "",
     limit: int = 10,
+    duration: int | None = None,
 ) -> HTMLResponse:
     if not q.strip():
         return HTMLResponse("")
     from service.metadata.musicbrainz import search_recordings_free
     results = await asyncio.to_thread(
-        search_recordings_free, q.strip(), limit, settings.cache_dir
+        search_recordings_free, q.strip(), limit, settings.cache_dir, duration
     )
     return templates.TemplateResponse(
         request, "partials/mb_candidates.html",
         {"results": results, "job_id": None, "track_id": internal_id,
-         "q": q.strip(), "limit": limit},
+         "q": q.strip(), "limit": limit, "duration": duration},
     )
 
 
