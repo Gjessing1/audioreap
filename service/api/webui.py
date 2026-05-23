@@ -2440,7 +2440,21 @@ async def apply_art_to_track(
     hca = await asyncio.to_thread(_has_cover_art, file_path)
     row.file.has_cover_art = hca
     await session.commit()
-    return HTMLResponse('<span class="badge badge-done">Art applied ✓</span>')
+
+    # Refresh the cover art preview in the card header via OOB swap.
+    # The card uses id="edit-cover-{safe_id}" where safe_id = track.id.replace(':', '_').
+    import time as _time
+    safe_id = internal_id.replace(":", "_")
+    cache_bust = int(_time.time())
+    oob_img = (
+        f'<img src="/library/tracks/{internal_id}/cover-art?t={cache_bust}" '
+        f'id="edit-cover-{safe_id}" hx-swap-oob="true" '
+        f'onerror="this.style.display=\'none\';'
+        f'var ph=document.getElementById(\'edit-cover-placeholder-{safe_id}\');'
+        f'if(ph)ph.style.display=\'flex\'" '
+        f'style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">'
+    )
+    return HTMLResponse(f'<span class="badge badge-done">Art applied ✓</span>{oob_img}')
 
 
 @router.post("/library/albums/{album_id}/apply-art", response_class=HTMLResponse)

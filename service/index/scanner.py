@@ -272,7 +272,8 @@ async def scan(
         await session.flush()
         batch.clear()
 
-    for dirpath, _, filenames in os.walk(music_dir):
+    for dirpath, dirnames, filenames in os.walk(music_dir):
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
         for filename in sorted(filenames):
             path = Path(dirpath) / filename
             if path.suffix.lower() not in SUPPORTED_EXTENSIONS:

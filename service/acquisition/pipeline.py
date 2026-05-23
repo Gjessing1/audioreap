@@ -543,39 +543,41 @@ async def place_approved_track(
             logger.debug("Approve: artwork embed failed: %s", exc)
         write_cover_jpg(dest.parent, artwork_bytes)
 
-    # Index in DB using a savepoint so failures don't roll back the outer transaction
+    # Index in DB using a savepoint so failures don't roll back the outer transaction.
+    # Everything (index + track-row updates) lives inside begin_nested() so any flush
+    # failure only rolls back the savepoint — the outer transaction stays clean and the
+    # job-state update below always succeeds.
     hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
     try:
         async with session.begin_nested():
             await index_file(session, dest)
-        hca = await asyncio.to_thread(has_cover_art, dest)
-        track_row = await session.get(_Track, hash_track_id)
-        if track_row is not None:
-            if mb_recording_id:
-                track_row.musicbrainz_recording_id = mb_recording_id
-            if genre:
-                track_row.genre = genre
-            if track_row.file:
-                track_row.file.has_cover_art = hca
-            track_row.tag_quality_score = compute_quality_score(
-                title=title,
-                artist=artist,
-                album=album,
-                year=year,
-                track_number=track_number,
-                musicbrainz_recording_id=mb_recording_id,
-                has_cover_art=hca,
-            )
-            # Store MB artist ID on Artist row for artist page discography
-            if mb_artist_id and track_row.artist_id:
-                from service.db.schema import Artist as _Artist
-                artist_row = await session.get(_Artist, track_row.artist_id)
-                if artist_row is not None and not artist_row.musicbrainz_artist_id:
-                    artist_row.musicbrainz_artist_id = mb_artist_id
-            await session.flush()
+            hca = await asyncio.to_thread(has_cover_art, dest)
+            track_row = await session.get(_Track, hash_track_id)
+            if track_row is not None:
+                if mb_recording_id:
+                    track_row.musicbrainz_recording_id = mb_recording_id
+                if genre:
+                    track_row.genre = genre
+                if track_row.file:
+                    track_row.file.has_cover_art = hca
+                track_row.tag_quality_score = compute_quality_score(
+                    title=title,
+                    artist=artist,
+                    album=album,
+                    year=year,
+                    track_number=track_number,
+                    musicbrainz_recording_id=mb_recording_id,
+                    has_cover_art=hca,
+                )
+                # Store MB artist ID on Artist row for artist page discography
+                if mb_artist_id and track_row.artist_id:
+                    from service.db.schema import Artist as _Artist
+                    artist_row = await session.get(_Artist, track_row.artist_id)
+                    if artist_row is not None and not artist_row.musicbrainz_artist_id:
+                        artist_row.musicbrainz_artist_id = mb_artist_id
+                await session.flush()
     except Exception as exc:
         logger.warning("Approve: DB index failed for %s: %s", dest, exc)
-        # begin_nested() savepoint already rolled back on exception; outer transaction is intact
 
     # Navidrome scan
     try:
