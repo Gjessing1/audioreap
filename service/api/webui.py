@@ -1572,12 +1572,13 @@ async def album_mb_compare(
         .options(_jl(Album.tracks))
         .where(Album.id == album_id)
     )).unique().scalar_one_or_none()
-    if album is None or not album.musicbrainz_release_id:
-        return HTMLResponse('<p class="muted" style="font-size:12px">No MB release ID.</p>')
+    mb_rg_id = (album.mb_release_group_id if album else None) or (album.musicbrainz_release_id if album else None)
+    if album is None or not mb_rg_id:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No MusicBrainz release linked — approve at least one track with a MB ID to enable comparison.</p>')
 
     try:
         _, _, _, mb_tracks = await asyncio.to_thread(
-            get_release_group_tracks, album.musicbrainz_release_id, settings.cache_dir
+            get_release_group_tracks, mb_rg_id, settings.cache_dir
         )
     except Exception as exc:
         return HTMLResponse(f'<p class="muted" style="font-size:12px">MB fetch failed: {exc}</p>')
@@ -1586,21 +1587,30 @@ async def album_mb_compare(
     local_rids = {t.musicbrainz_recording_id for t in album.tracks if t.musicbrainz_recording_id}
 
     lines = []
+    owned_count = 0
     for mt in mb_tracks:
         owned = (mt.recording_id in local_rids) if mt.recording_id else (mt.title.lower().strip() in local_titles)
+        if owned:
+            owned_count += 1
         icon = "✓" if owned else "✕"
         color = "var(--success)" if owned else "var(--danger)"
         lines.append(
             f'<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:12px">'
-            f'<span style="color:{color};font-weight:700;min-width:14px">{icon}</span>'
+            f'<span style="color:{color};font-weight:700;width:14px;text-align:center">{icon}</span>'
             f'<span style="color:var(--t3);min-width:20px">{mt.number}.</span>'
-            f'<span style="color:{"var(--t1)" if owned else "var(--t3)"}">{mt.title}</span>'
+            f'<span style="color:{"var(--t2)" if owned else "var(--t1)"}">{mt.title}</span>'
             + (f'<a href="/search?q={mt.title}" class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:10px">Acquire</a>' if not owned else '')
             + '</div>'
         )
     if not lines:
         return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found in MB tracklist.</p>')
-    return HTMLResponse('<div style="border:1px solid var(--b1);border-radius:var(--radius-s);padding:10px">' + ''.join(lines) + '</div>')
+    total = len(mb_tracks)
+    missing = total - owned_count
+    if missing == 0:
+        summary = f'<div style="font-size:12px;color:var(--success);font-weight:600;margin-bottom:8px">✓ All {total} tracks owned</div>'
+    else:
+        summary = f'<div style="font-size:12px;color:var(--danger);font-weight:600;margin-bottom:8px">Missing {missing} of {total} tracks</div>'
+    return HTMLResponse('<div style="border:1px solid var(--b1);border-radius:var(--radius-s);padding:10px">' + summary + ''.join(lines) + '</div>')
 
 
 @router.post("/library/rescan", response_class=HTMLResponse)

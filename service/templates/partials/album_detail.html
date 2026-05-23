@@ -148,8 +148,8 @@
       {% endfor %}
     </div>
 
-    {# Missing tracks — auto-loads MB tracklist comparison if release ID known #}
-    {% if album.musicbrainz_release_id %}
+    {# Missing tracks — auto-loads MB tracklist comparison if release group or release ID known #}
+    {% if album.mb_release_group_id or album.musicbrainz_release_id %}
     <div style="margin-top:14px">
       <div class="section-title" style="margin:0 0 8px;font-size:11px">Tracklist vs MusicBrainz</div>
       <div id="mb-compare-{{ aid }}"

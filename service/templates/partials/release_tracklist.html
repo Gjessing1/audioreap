@@ -8,15 +8,18 @@
     {% for t in tracks %}
     {% set is_owned = t.recording_id and t.recording_id in owned_recording_ids %}
     <tr id="disco-track-{{ t.recording_id or loop.index }}"
-        style="border-bottom:1px solid var(--border);{% if is_owned %}opacity:0.5{% endif %}">
-      <td style="padding:4px 8px 4px 0;width:28px;color:var(--muted)">{{ t.number }}</td>
-      <td style="padding:4px 0">{{ t.title }}</td>
-      <td style="padding:4px 0 4px 8px;color:var(--muted);text-align:right">
+        style="border-bottom:1px solid var(--border)">
+      <td style="padding:4px 6px 4px 0;width:20px;text-align:center;font-weight:700;font-size:13px;color:{% if is_owned %}var(--success){% else %}var(--danger){% endif %}">
+        {% if is_owned %}✓{% else %}✕{% endif %}
+      </td>
+      <td style="padding:4px 8px 4px 0;width:24px;color:var(--muted);font-size:12px">{{ t.number }}</td>
+      <td style="padding:4px 0;color:{% if is_owned %}var(--t2){% else %}var(--t1){% endif %}">{{ t.title }}</td>
+      <td style="padding:4px 0 4px 8px;color:var(--muted);text-align:right;font-size:12px">
         {% if t.duration_seconds %}{{ t.duration_seconds // 60 }}:{{ '%02d' % (t.duration_seconds % 60) }}{% endif %}
       </td>
       <td style="padding:4px 0 4px 8px;width:80px;text-align:right">
         {% if is_owned %}
-        <span class="badge badge-done" style="font-size:11px">owned</span>
+        <span style="font-size:11px;color:var(--t3)">owned</span>
         {% elif t.recording_id %}
         <form style="display:inline"
               hx-post="/discography/{{ artist_mbid }}/{{ release_group_id }}/acquire-track"
