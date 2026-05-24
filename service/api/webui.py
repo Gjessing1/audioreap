@@ -56,6 +56,56 @@ _BROWSE_PAGE = 75
 _COMPLETED_STATES = ("done", "failed", "cancelled")
 _ACTIVE_STATES_EXCLUDE = _COMPLETED_STATES  # states NOT in active list
 
+_scan_task: asyncio.Task | None = None  # deduplicate concurrent auto-scans
+
+
+async def _run_auto_scan() -> None:
+    """Incremental scan + orphan cleanup in a throw-away session."""
+    from service.db.session import AsyncSessionLocal
+    from service.index.scanner import scan as _scan
+    from service.db.schema import Album as _Album, Artist as _Artist, Track as _Track, TrackFile as _TrackFile
+
+    try:
+        async with AsyncSessionLocal() as session:
+            await _scan(session, settings.music_dir, incremental=True)
+            # Orphan cleanup: remove Album/Artist rows that lost all their tracks
+            # (e.g. after a delete_track that leaves an empty album/artist)
+            await session.execute(
+                sa_delete(_Album).where(
+                    ~_Album.id.in_(select(_Track.album_id).where(_Track.album_id.is_not(None)))
+                )
+            )
+            await session.execute(
+                sa_delete(_Artist).where(
+                    ~_Artist.id.in_(select(_Track.artist_id))
+                )
+            )
+            await session.commit()
+    except Exception as exc:
+        logger.warning("Auto-scan failed: %s", exc)
+
+
+def _schedule_auto_scan() -> None:
+    """Fire-and-forget incremental scan after a mutation.  Skips if one is already running."""
+    global _scan_task
+    if _scan_task is not None and not _scan_task.done():
+        return  # already in progress
+    try:
+        loop = asyncio.get_running_loop()
+        _scan_task = loop.create_task(_run_auto_scan())
+    except RuntimeError:
+        pass  # no running loop (tests, startup)
+
+
+async def _do_scans() -> None:
+    """Trigger Navidrome rescan and schedule audioreap incremental scan."""
+    from service.navidrome.client import trigger_scan as _nv
+    try:
+        await _nv()
+    except Exception:
+        pass
+    _schedule_auto_scan()
+
 
 async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     """Build the paginated job list template context (first page of completed)."""
@@ -1243,14 +1293,27 @@ async def delete_track(
         track_artist=row.artist.name if row.artist else None,
         deleted_at=_dt.now(_UTC).replace(tzinfo=None),
     )
+    album_id_was = row.album_id
+    artist_id_was = row.artist_id
     session.add(tombstone)
     await session.delete(row)
+    await session.flush()
+
+    # Inline orphan cleanup so the browse UI reflects changes immediately
+    if album_id_was:
+        remaining = (await session.execute(
+            select(func.count(Track.id)).where(Track.album_id == album_id_was)
+        )).scalar_one()
+        if remaining == 0:
+            await session.execute(sa_delete(Album).where(Album.id == album_id_was))
+    remaining_artist = (await session.execute(
+        select(func.count(Track.id)).where(Track.artist_id == artist_id_was)
+    )).scalar_one()
+    if remaining_artist == 0:
+        await session.execute(sa_delete(Artist).where(Artist.id == artist_id_was))
+
     await session.commit()
-    try:
-        from service.navidrome.client import trigger_scan as _ts
-        await _ts()
-    except Exception:
-        pass
+    await _do_scans()
     return HTMLResponse("")
 
 
@@ -1745,7 +1808,6 @@ async def album_update_meta(
 ) -> HTMLResponse:
     from sqlalchemy.orm import joinedload as _jl
     from service.library.tagger import write_tags as _write_tags
-    from service.navidrome.client import trigger_scan
 
     album = (await session.execute(
         select(Album)
@@ -1781,10 +1843,7 @@ async def album_update_meta(
                     logger.warning("album update-meta tag write failed: %s", exc)
 
     await session.commit()
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     album_reloaded = (await session.execute(
         select(Album)
@@ -1807,7 +1866,6 @@ async def album_set_genre(
     """Set (or clear) genre on all tracks in an album — DB + file tags."""
     from sqlalchemy.orm import joinedload as _jl
     from service.library.tagger import write_tags as _write_tags
-    from service.navidrome.client import trigger_scan
 
     form = await request.form()
     genre_val = (form.get("genre") or "").strip() or None
@@ -1832,10 +1890,7 @@ async def album_set_genre(
                 except Exception as exc:
                     logger.warning("album set-genre tag write failed for %s: %s", fp, exc)
     await session.commit()
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     label = f'"{genre_val}"' if genre_val else "removed"
     return HTMLResponse(
@@ -2151,11 +2206,7 @@ async def move_track_to_album(
     # Clean up old dir if empty
     _trash_empty_album_dir(old_dir, settings.music_dir / ".trash")
 
-    try:
-        from service.navidrome.client import trigger_scan
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     return HTMLResponse(f'<span style="color:var(--success);font-size:12px">✓ Moved to {target_album.title}</span>')
 
@@ -2167,7 +2218,6 @@ async def library_rescan(
 ) -> HTMLResponse:
     """Full rescan of /music: adds new files, removes missing ones from DB."""
     from service.index.scanner import scan
-    from service.navidrome.client import trigger_scan
 
     try:
         result = await scan(session, settings.music_dir, incremental=False)
@@ -2176,10 +2226,7 @@ async def library_rescan(
         logger.error("Library rescan failed: %s", exc)
         return HTMLResponse(f'<span class="badge badge-fail">Rescan failed: {exc}</span>')
 
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     return HTMLResponse(
         f'<span class="badge badge-done">'
@@ -2404,7 +2451,6 @@ async def update_artist(
     """Update artist name, sort name, and/or MB artist ID.  Writes tags to all track files."""
     from sqlalchemy.orm import joinedload as _jl
     from service.library.tagger import write_tags as _write_tags
-    from service.navidrome.client import trigger_scan
 
     form = await request.form()
     name_val = (form.get("name") or "").strip()
@@ -2446,10 +2492,7 @@ async def update_artist(
                     except Exception as exc:
                         logger.warning("update_artist tag write failed for %s: %s", fp, exc)
 
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     # Re-render the artist page header section
     return HTMLResponse("", status_code=200, headers={"HX-Redirect": f"/library/artists/{artist_id}"})
@@ -2534,11 +2577,7 @@ async def save_artist_image(
         return HTMLResponse(f'<p style="font-size:12px;color:var(--danger)">Download failed: {exc}</p>')
 
     # Trigger Navidrome rescan so the new image is picked up
-    try:
-        from service.navidrome.client import trigger_scan
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     cache_bust = int(datetime.now(UTC).timestamp())
     return HTMLResponse(
@@ -2667,7 +2706,6 @@ async def genre_rename(
 ) -> HTMLResponse:
     """Rename a genre across all tracks (DB + file tags)."""
     from service.library.tagger import write_tags as _write_tags
-    from service.navidrome.client import trigger_scan
 
     form = await request.form()
     old_genre = (form.get("old_genre") or "").strip()
@@ -2690,10 +2728,7 @@ async def genre_rename(
                 except Exception as exc:
                     logger.warning("genre_rename tag write failed for %s: %s", fp, exc)
     await session.commit()
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     rows2 = (await session.execute(
         select(Track.genre, func.count(Track.id).label("track_count"))
@@ -2725,7 +2760,6 @@ async def genre_remove(
     # Delegate to rename with empty new_genre
     # Reconstruct form-like data and call rename logic inline
     from service.library.tagger import write_tags as _write_tags
-    from service.navidrome.client import trigger_scan
 
     rows = (await session.execute(
         select(Track).options(joinedload(Track.file)).where(Track.genre == genre)
@@ -2740,10 +2774,7 @@ async def genre_remove(
                 except Exception as exc:
                     logger.warning("genre_remove tag write failed for %s: %s", fp, exc)
     await session.commit()
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     rows2 = (await session.execute(
         select(Track.genre, func.count(Track.id).label("track_count"))
@@ -2870,7 +2901,6 @@ async def library_bulk_edit(
 ) -> HTMLResponse:
     """Apply genre and/or year to a batch of selected tracks."""
     from service.library.tagger import write_tags as _write_tags
-    from service.navidrome.client import trigger_scan
 
     form = await request.form()
     track_ids: list[str] = list(form.getlist("track_id"))  # type: ignore[arg-type]
@@ -2915,10 +2945,7 @@ async def library_bulk_edit(
             failed += 1
 
     await session.commit()
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     msg = f"Updated {updated} track{'s' if updated != 1 else ''}"
     if failed:
@@ -3040,7 +3067,6 @@ async def save_track_tags(
     from service.library.tagger import write_tags as _write_tags, has_cover_art as _has_cover_art
     from service.metadata.quality import compute_quality_score
     from service.index.scanner import _upsert_artist, _upsert_album
-    from service.navidrome.client import trigger_scan
 
     stmt = (
         select(Track)
@@ -3138,10 +3164,7 @@ async def save_track_tags(
                 await session.delete(old_artist)
             await session.commit()
 
-    try:
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     # When called from album detail view, reload the whole album card so the
     # track list reflects the updated metadata immediately.
@@ -3663,11 +3686,7 @@ async def fetch_track_art(
         has_cover_art=hca,
     )
     await session.commit()
-    try:
-        from service.navidrome.client import trigger_scan as _ts
-        await _ts()
-    except Exception:
-        pass
+    await _do_scans()
 
     return HTMLResponse('<span class="badge badge-done">Art embedded ✓</span>')
 
@@ -3841,11 +3860,7 @@ async def apply_art_to_track(
     hca = await asyncio.to_thread(_has_cover_art, file_path)
     row.file.has_cover_art = hca
     await session.commit()
-    try:
-        from service.navidrome.client import trigger_scan as _ts
-        await _ts()
-    except Exception:
-        pass
+    await _do_scans()
 
     # Refresh the cover art preview in the card header via OOB swap.
     # The card uses id="edit-cover-{safe_id}" where safe_id = track.id.replace(':', '_').
@@ -3910,11 +3925,7 @@ async def apply_art_to_album(
         write_cover_jpg(album_dir, art)
 
     await session.commit()
-    try:
-        from service.navidrome.client import trigger_scan as _ts
-        await _ts()
-    except Exception:
-        pass
+    await _do_scans()
     return HTMLResponse(f'<span class="badge badge-done">Art applied to {embedded} track(s) ✓</span>')
 
 
@@ -4013,11 +4024,7 @@ async def upload_album_cover(
         write_cover_jpg(album_dir, art)
 
     await session.commit()
-    try:
-        from service.navidrome.client import trigger_scan as _ts
-        await _ts()
-    except Exception:
-        pass
+    await _do_scans()
     return HTMLResponse(f'<span class="badge badge-done">Cover saved to {embedded} track(s) ✓</span>')
 
 
@@ -5317,11 +5324,7 @@ async def delete_album(
     for d in album_dirs:
         _trash_empty_album_dir(d, settings.music_dir / ".trash")
 
-    try:
-        from service.navidrome.client import trigger_scan
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     return HTMLResponse("")
 
@@ -5542,11 +5545,7 @@ async def merge_album(
 
     await session.commit()
 
-    try:
-        from service.navidrome.client import trigger_scan
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     # Return the refreshed album list so the UI updates immediately
     stmt2 = (
@@ -5653,11 +5652,7 @@ async def trash_restore(
     except Exception:
         pass
 
-    try:
-        from service.navidrome.client import trigger_scan
-        await trigger_scan()
-    except Exception:
-        pass
+    await _do_scans()
 
     return HTMLResponse(f'<span class="badge-ok">Restored → {dest.name}</span>')
 
