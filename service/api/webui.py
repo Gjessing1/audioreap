@@ -1242,7 +1242,10 @@ async def library_page(
     ).scalar_one()
     no_art_count = (
         await session.execute(
-            select(func.count(TrackFile.id)).where(
+            select(func.count(Track.id))
+            .join(Track.artist)
+            .join(Track.file)
+            .where(
                 (TrackFile.has_cover_art.is_(None)) | (TrackFile.has_cover_art == 0)
             )
         )
@@ -2629,28 +2632,16 @@ async def save_track_tags(
             resp.headers["HX-Reswap"] = "outerHTML"
             return resp
 
-    # Reload fresh row for library browse context
+    # Reload fresh row, collapse back to browse-row in library context
     stmt2 = (
         select(Track)
         .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
         .where(Track.id == internal_id)
     )
     updated = (await session.execute(stmt2)).unique().scalar_one_or_none()
-    from sqlalchemy import distinct as _distinct2
-    all_genres = [g for g in (await session.execute(
-        select(_distinct2(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
-    )).scalars().all() if g]
     return templates.TemplateResponse(
-        request, "partials/track_edit_card.html",
-        {
-            "track": updated,
-            "saved": True,
-            "genre": genre_val,
-            "genres": all_genres,
-            "provider_ref": updated.file.provider_ref if updated and updated.file else None,
-            "bitrate_kbps": updated.file.bitrate_kbps if updated and updated.file else None,
-            "min_bitrate_kbps": settings.min_bitrate_kbps,
-        },
+        request, "partials/browse_row.html",
+        {"t": updated},
     )
 
 
