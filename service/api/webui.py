@@ -2391,6 +2391,16 @@ async def library_browse_results(
             TrackFile.bitrate_kbps.isnot(None),
             TrackFile.bitrate_kbps < min_br,
         )
+    elif f == "dupes":
+        dupe_rids_sub = (
+            select(Track.musicbrainz_recording_id)
+            .join(Track.file)
+            .where(Track.musicbrainz_recording_id.is_not(None))
+            .group_by(Track.musicbrainz_recording_id)
+            .having(func.count(Track.id) > 1)
+            .scalar_subquery()
+        )
+        stmt = stmt.where(Track.musicbrainz_recording_id.in_(dupe_rids_sub))
 
     all_rows = (await session.execute(stmt)).unique().scalars().all()
     has_more = len(all_rows) > _BROWSE_PAGE

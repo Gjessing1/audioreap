@@ -188,7 +188,7 @@ async def _process_file(
     if tagged.mb_recording_id:
         tombstone = (await session.execute(
             select(DeletedTrack).where(DeletedTrack.mb_recording_id == tagged.mb_recording_id)
-        )).scalar_one_or_none()
+        )).scalars().first()
         if tombstone is not None and tombstone.prevent_reimport:
             logger.debug("Skipping prevent_reimport recording %s (%s)", tagged.mb_recording_id, path)
             return "skipped"

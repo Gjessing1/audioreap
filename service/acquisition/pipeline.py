@@ -670,12 +670,12 @@ async def place_approved_track(
             # scanner, not conscious user re-acquisition).
             if mb_recording_id:
                 from service.db.schema import DeletedTrack as _DeletedTrack
-                tombstone = (await session.execute(
+                tombstones = (await session.execute(
                     select(_DeletedTrack).where(
                         _DeletedTrack.mb_recording_id == mb_recording_id
                     )
-                )).scalar_one_or_none()
-                if tombstone is not None:
+                )).scalars().all()
+                for tombstone in tombstones:
                     await session.delete(tombstone)
                     await session.flush()
             await index_file(session, dest)
