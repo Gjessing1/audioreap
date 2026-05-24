@@ -170,7 +170,7 @@
                 onclick="playTrack('{{ track.id }}', '{{ track.title|e }}')">▶</button>
         {% endif %}
         <button class="track-name"
-                hx-get="/library/tracks/{{ track.id }}/edit-card"
+                hx-get="/library/tracks/{{ track.id }}/edit-card?album_id={{ album.id }}"
                 hx-target="#altrack-{{ safe_id }}"
                 hx-swap="outerHTML"
                 style="background:none;border:none;padding:0;text-align:left;cursor:pointer;color:var(--t1);font-size:inherit;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ track.title }}</button>

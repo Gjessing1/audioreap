@@ -9,7 +9,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete as sa_delete, func, select
@@ -1673,7 +1673,7 @@ async def album_mb_compare(
         if status == "missing" and mt.recording_id:
             acquire_btn = (
                 f'<form style="display:inline"'
-                f' hx-post="/discography/x/{album.mb_release_group_id or ""}/acquire-track"'
+                f' hx-post="/discography/{album.artist.musicbrainz_artist_id if album.artist and album.artist.musicbrainz_artist_id else "unknown"}/{album.mb_release_group_id or album.musicbrainz_release_id or album.id}/acquire-track"'
                 f' hx-target="closest div" hx-swap="outerHTML">'
                 f'<input type="hidden" name="recording_id" value="{mt.recording_id}">'
                 f'<input type="hidden" name="title" value="{mt.title}">'
@@ -2473,6 +2473,7 @@ async def track_browse_row(
 async def track_edit_card(
     request: Request,
     internal_id: str,
+    album_id: str = Query(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy import distinct as _distinct
@@ -2508,6 +2509,7 @@ async def track_edit_card(
             "provider_ref": row.file.provider_ref if row.file else None,
             "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
             "min_bitrate_kbps": settings.min_bitrate_kbps,
+            "source_album_id": album_id,
         },
     )
 
@@ -2523,6 +2525,7 @@ async def save_track_tags(
     track_number: str = Form(""),
     mb_recording_id: str = Form(""),
     genre: str = Form(""),
+    source_album_id: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.library.tagger import write_tags as _write_tags, has_cover_art as _has_cover_art
@@ -2600,7 +2603,33 @@ async def save_track_tags(
     except Exception:
         pass
 
-    # Reload fresh row
+    # When called from album detail view, reload the whole album card so the
+    # track list reflects the updated metadata immediately.
+    if source_album_id:
+        from sqlalchemy.orm import joinedload as _jl2
+        album_row = (await session.execute(
+            select(Album)
+            .options(_jl2(Album.artist), _jl2(Album.tracks).joinedload(Track.file))
+            .where(Album.id == source_album_id)
+        )).unique().scalar_one_or_none()
+        if album_row:
+            safe_aid = source_album_id.replace(":", "_")
+            sorted_tracks = sorted(
+                album_row.tracks, key=lambda t: (t.track_number is None, t.track_number or 0)
+            )
+            cover_track = next(
+                (t for t in album_row.tracks if t.file and Path(t.file.path).exists()), None
+            )
+            resp = templates.TemplateResponse(
+                request, "partials/album_detail.html",
+                {"album": album_row, "sorted_tracks": sorted_tracks,
+                 "cover_track": cover_track, "saved": True},
+            )
+            resp.headers["HX-Retarget"] = f"#album-{safe_aid}"
+            resp.headers["HX-Reswap"] = "outerHTML"
+            return resp
+
+    # Reload fresh row for library browse context
     stmt2 = (
         select(Track)
         .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))

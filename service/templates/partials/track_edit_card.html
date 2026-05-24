@@ -97,6 +97,9 @@
         hx-post="/library/tracks/{{ track.id }}/save-tags"
         hx-target="#browse-{{ safe_id }}"
         hx-swap="outerHTML">
+    {% if source_album_id %}
+    <input type="hidden" name="source_album_id" value="{{ source_album_id }}">
+    {% endif %}
 
     <div class="rv-grid">
       <div class="rv-field rv-field--full">
@@ -186,12 +189,21 @@
               style="color:var(--t4)">
         Delete
       </button>
+      {% if source_album_id %}
+      <button type="button" class="btn btn-sm rv-reject"
+              hx-get="/library/albums/{{ source_album_id }}/detail"
+              hx-target="#album-{{ source_album_id | replace(':', '_') }}"
+              hx-swap="outerHTML">
+        Cancel
+      </button>
+      {% else %}
       <button type="button" class="btn btn-sm rv-reject"
               hx-get="/library/tracks/{{ track.id }}/browse-row"
               hx-target="#browse-{{ safe_id }}"
               hx-swap="outerHTML">
         Cancel
       </button>
+      {% endif %}
     </div>
     <div id="replace-status-{{ safe_id }}"></div>
   </form>
