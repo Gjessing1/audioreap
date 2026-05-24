@@ -97,6 +97,12 @@
     </div>
     <div class="stat-label">Low bitrate</div>
   </a>
+  {% if quality.dupes %}
+  <a href="/library/health#dupes" class="stat stat-link">
+    <div class="stat-val" style="color:var(--warn)">{{ quality.dupes }}</div>
+    <div class="stat-label">Duplicates</div>
+  </a>
+  {% endif %}
 </div>
 {% endif %}
 

@@ -670,6 +670,19 @@ async def place_approved_track(
     hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
     try:
         async with session.begin_nested():
+            # Clear any tombstone for this recording so the user's explicit approval
+            # re-admits the track to the library (tombstones block the background
+            # scanner, not conscious user re-acquisition).
+            if mb_recording_id:
+                from service.db.schema import DeletedTrack as _DeletedTrack
+                tombstone = (await session.execute(
+                    select(_DeletedTrack).where(
+                        _DeletedTrack.mb_recording_id == mb_recording_id
+                    )
+                )).scalar_one_or_none()
+                if tombstone is not None:
+                    await session.delete(tombstone)
+                    await session.flush()
             await index_file(session, dest)
             hca = await asyncio.to_thread(has_cover_art, dest)
             track_row = await session.get(_Track, hash_track_id)

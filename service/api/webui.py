@@ -1227,8 +1227,10 @@ async def library_page(
 ) -> HTMLResponse:
     from service.metadata.quality import LOW_QUALITY_THRESHOLD
 
-    # Count only tracks that have actual files on disk (TrackFile rows)
-    track_count = (await session.execute(select(func.count(TrackFile.id)))).scalar_one()
+    # Count only tracks visible in browse (must have a file + artist row)
+    track_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.artist).join(Track.file)
+    )).scalar_one()
     album_count = (await session.execute(select(func.count(Album.id)))).scalar_one()
     artist_count = (await session.execute(select(func.count(Artist.id)))).scalar_one()
 
@@ -1319,6 +1321,17 @@ async def library_page(
         )
     ).scalar_one()
 
+    dupe_count = (await session.execute(
+        select(func.count()).select_from(
+            select(Track.musicbrainz_recording_id)
+            .join(Track.file)
+            .where(Track.musicbrainz_recording_id.is_not(None))
+            .group_by(Track.musicbrainz_recording_id)
+            .having(func.count(Track.id) > 1)
+            .subquery()
+        )
+    )).scalar_one()
+
     return templates.TemplateResponse(
         request, "library.html",
         {
@@ -1329,6 +1342,7 @@ async def library_page(
                 "no_art": no_art_count,
                 "low_quality": low_quality_count,
                 "low_bitrate": low_bitrate_count,
+                "dupes": dupe_count,
             },
             "recent": [_track_to_ref(r) for r in recent_rows],
             "settings_music_dir": str(settings.music_dir),

@@ -20,7 +20,8 @@
     </button>
   </div>
   {% for t in g.tracks %}
-  <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">
+  {% set safe_tid = t.id | replace(':', '_') %}
+  <div id="dupe-track-{{ safe_tid }}" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">
     <div style="flex:1;min-width:0">
       <div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.path }}</div>
       <div style="font-size:12px;margin-top:2px">
@@ -31,6 +32,7 @@
       </div>
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0">
+      <a href="/library/browse?q={{ g.title | urlencode }}" class="btn btn-sm btn-ghost" style="font-size:11px;text-decoration:none">Find</a>
       <button class="btn btn-sm"
               hx-delete="/library/tracks/{{ t.id }}"
               hx-target="#dupe-{{ g.recording_id[:8] }}"
