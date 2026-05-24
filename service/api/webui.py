@@ -1261,6 +1261,57 @@ async def cloud_search_page(
     )
 
 
+@router.post("/search/acquire-url", response_class=HTMLResponse)
+async def acquire_from_url(
+    request: Request,
+    url: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue an acquisition from a manually entered URL."""
+    from service.acquisition.jobs import create_job
+    from service.core.models import TrackCandidate
+
+    url = url.strip()
+    candidate = TrackCandidate(
+        provider="ytdlp",
+        provider_ref=url,
+        title=url,
+        artist="Unknown",
+    )
+    job_id = await create_job(
+        session,
+        provider_name="ytdlp",
+        provider_ref=url,
+        candidate=candidate,
+        query=url,
+    )
+    await session.commit()
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name="ytdlp",
+            provider_ref=url,
+            candidate_json=candidate.model_dump_json(),
+            music_dir=str(settings.music_dir),
+            tmp_acquire_dir=str(settings.tmp_acquire_dir),
+            _job_id=f"acquire:{job_id}",
+        )
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+
+    return HTMLResponse(
+        '<div id="cloud-url-row" style="padding:8px 0">'
+        f'<span class="badge badge-done">Queued → <a href="/jobs">Jobs ↗</a></span>'
+        '</div>'
+    )
+
+
 @router.get("/library", response_class=HTMLResponse)
 async def library_page(
     request: Request,

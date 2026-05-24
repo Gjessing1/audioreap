@@ -194,18 +194,13 @@ document.addEventListener("keydown", function(e) {
 /* ── HTMX global error handler ───────────────────────────────────────────── */
 document.addEventListener("htmx:responseError", function(e) {
   const status = e.detail.xhr.status;
-  const url = e.detail.pathInfo && e.detail.pathInfo.requestPath || "";
-  console.error("HTMX request failed:", status, url);
-  // Surface 5xx errors to the user with a dismissible banner
-  if (status >= 500) {
-    let banner = document.getElementById("_error-banner");
-    if (!banner) {
-      banner = document.createElement("div");
-      banner.id = "_error-banner";
-      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--danger-bg,#450a0a);color:var(--danger,#f87171);padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:12px;";
-      document.body.prepend(banner);
-    }
-    banner.innerHTML = `<span>Server error (${status}) — check <a href="/health" style="color:inherit;text-decoration:underline">health</a> or try again.</span><button onclick="this.parentElement.remove()" style="margin-left:auto;background:none;border:none;color:inherit;cursor:pointer;font-size:16px">✕</button>`;
+  console.error("HTMX request failed:", status);
+  if (status >= 400) {
+    const toast = document.createElement("div");
+    toast.style.cssText = "position:fixed;bottom:20px;right:16px;z-index:9999;max-width:340px;background:var(--s1);border:1px solid var(--danger,#f87171);color:var(--danger,#f87171);padding:10px 14px;font-size:13px;border-radius:8px;display:flex;align-items:flex-start;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)";
+    toast.innerHTML = `<span style="flex:1">Error ${status}${status >= 500 ? ' — check <a href="/health" style="color:inherit;text-decoration:underline">health</a>' : ''}</span><button onclick="this.parentElement.remove()" style="background:none;border:none;color:inherit;cursor:pointer;font-size:16px;line-height:1;flex-shrink:0">✕</button>`;
+    document.body.appendChild(toast);
+    setTimeout(function() { if (toast.parentElement) toast.remove(); }, 6000);
   }
 });
 

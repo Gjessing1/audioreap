@@ -14,6 +14,7 @@
   </div>
   <div class="card-actions">
     <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
+    <a href="{{ c.provider_ref|e }}" target="_blank" class="btn btn-sm btn-ghost" title="Open on YouTube" style="font-size:11px">↗</a>
     <form hx-post="/api/acquire"
           hx-target="#cloud-{{ (offset|default(0)) + loop.index }}"
           hx-swap="outerHTML"
@@ -43,3 +44,21 @@
 {% elif q %}
 <p class="empty" style="text-align:left;padding:24px 0">No YouTube results for "{{ q }}".</p>
 {% endif %}
+
+<div id="cloud-url-row" style="margin-top:10px;border-top:1px solid var(--b1);padding-top:10px">
+  <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);margin-bottom:6px">
+    Or enter a URL directly
+  </div>
+  <form hx-post="/search/acquire-url"
+        hx-target="#cloud-url-row"
+        hx-swap="outerHTML"
+        hx-indicator="#cloud-url-spin"
+        style="display:flex;gap:6px">
+    <input class="rv-input" name="url" type="url"
+           placeholder="YouTube or YouTube Music URL…"
+           style="flex:1;font-size:12px" autocomplete="off" required>
+    <button type="submit" class="btn btn-sm">
+      Get <span id="cloud-url-spin" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </form>
+</div>
