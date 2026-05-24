@@ -280,6 +280,21 @@ async def run_acquisition(
                             "Job %s %r: AcoustID mismatch (expected %s, got %s)",
                             job_id, title, candidate.mb_recording_id, acoustid_mbid,
                         )
+                        # The candidate's recording_id was set explicitly (e.g. from the
+                        # MB tracklist) and takes precedence over AcoustID's guess.
+                        # Discard this result and fall through to look up the correct one.
+                        mb = None
+                        mb_from_acoustid = False
+
+            # If the candidate has a locked recording_id (and AcoustID either
+            # didn't run, failed, or was discarded above), look it up directly
+            # so we get the correct title/artist without relying on text search.
+            if mb is None and candidate.mb_recording_id:
+                mb = await asyncio.to_thread(
+                    get_recording_by_id, candidate.mb_recording_id, settings.cache_dir
+                )
+                if mb is not None:
+                    mb_match_source = "locked_recording"
 
             if mb is None:
                 mb = await asyncio.to_thread(
