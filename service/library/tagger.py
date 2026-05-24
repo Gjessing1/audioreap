@@ -437,11 +437,11 @@ def write_tags(
         if title is not None:
             tags["title"] = [title]  # type: ignore[index]
         if artist is not None:
-            artists_list = parse_artists(artist)
-            tags["artist"] = [artist]  # type: ignore[index]  # primary (full string)
-            if len(artists_list) > 1:
-                tags["artists"] = artists_list  # type: ignore[index]  # multi-value
-            elif "artists" in tags:
+            tags["artist"] = [artist]  # type: ignore[index]
+            # Never write a multi-value `artists` tag — Navidrome splits each
+            # value into a separate artist entry, creating ghost entries like
+            # "Thomax" from "RSP & Thomax".
+            if "artists" in tags:
                 del tags["artists"]  # type: ignore[operator]
         if albumartist is not None:
             tags["albumartist"] = [albumartist]  # type: ignore[index]
