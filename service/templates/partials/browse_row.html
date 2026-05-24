@@ -25,6 +25,7 @@
     </div>
     <div class="browse-meta browse-meta-2">
       {% if t.file %}<span class="browse-codec">{{ t.file.codec }}{% if t.file.bitrate_kbps %} {{ t.file.bitrate_kbps }}k{% endif %}</span>{% endif %}
+      {% if t.genre %}<span class="badge badge-queued" style="font-size:10px;padding:2px 5px">{{ t.genre }}</span>{% endif %}
       {% if t.tag_quality_score is not none %}
       <span class="browse-quality {% if t.tag_quality_score >= 0.7 %}quality-good{% elif t.tag_quality_score >= 0.4 %}quality-mid{% else %}quality-low{% endif %}"
             title="Metadata quality: {{ "%.0f"|format(t.tag_quality_score * 100) }}%">

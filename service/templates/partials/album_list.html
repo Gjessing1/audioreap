@@ -1,5 +1,19 @@
-{% if albums %}
+{% if albums or singles_count %}
 <div class="album-list">
+  {% if singles_count %}
+  <a href="/library/browse?f=singles" style="text-decoration:none;color:inherit;display:block">
+  <div class="album-row" style="cursor:pointer">
+    <div class="album-art" style="background:var(--b1);display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--t4)">♪</div>
+    <div class="album-info">
+      <div class="album-title">Singles</div>
+      <div class="album-meta">{{ singles_count }} track{% if singles_count != 1 %}s{% endif %} · no album</div>
+    </div>
+    <div class="album-actions">
+      <span class="btn btn-sm btn-ghost">Browse →</span>
+    </div>
+  </div>
+  </a>
+  {% endif %}
   {% for album in albums %}
   {% set ntracks = album.tracks|length %}
   {% set cover_track = namespace(value=None) %}
@@ -57,3 +71,4 @@
   {% if q %}No albums matching "{{ q }}".{% else %}No albums in library.{% endif %}
 </p>
 {% endif %}
+

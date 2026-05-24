@@ -1,20 +1,22 @@
 {% if artists %}
 <div class="section-title">Artists matching "{{ q }}"</div>
 {% for a in artists %}
-<a href="/discography/{{ a.artist_id }}" style="text-decoration:none;color:inherit;display:block">
-  <div class="card" style="margin-bottom:6px;cursor:pointer">
-    <div class="card-info">
-      <div class="card-title">{{ a.name }}</div>
-      {% if a.disambiguation %}
-      <div class="card-sub">{{ a.disambiguation }}</div>
-      {% endif %}
-    </div>
-    <div class="card-actions">
-      <span class="badge badge-queued">{{ "%.0f"|format(a.score * 100) }}%</span>
-      <span class="btn btn-sm btn-ghost" style="color:var(--text)">View →</span>
-    </div>
+<div class="card" style="margin-bottom:6px;cursor:pointer"
+     hx-get="/discography/{{ a.artist_id }}"
+     hx-target="#disco-detail"
+     hx-swap="innerHTML"
+     hx-indicator="#disco-detail">
+  <div class="card-info">
+    <div class="card-title">{{ a.name }}</div>
+    {% if a.disambiguation %}
+    <div class="card-sub">{{ a.disambiguation }}</div>
+    {% endif %}
   </div>
-</a>
+  <div class="card-actions">
+    <span class="badge badge-queued">{{ "%.0f"|format(a.score * 100) }}%</span>
+    <span class="btn btn-sm btn-ghost" style="color:var(--text)">View →</span>
+  </div>
+</div>
 {% endfor %}
 {% elif q %}
 <p class="empty">No artists found on MusicBrainz for "{{ q }}".</p>

@@ -1274,6 +1274,9 @@ async def library_page(
     )).scalar_one()
     album_count = (await session.execute(select(func.count(Album.id)))).scalar_one()
     artist_count = (await session.execute(select(func.count(Artist.id)))).scalar_one()
+    genre_count = (await session.execute(
+        select(func.count(func.distinct(Track.genre))).where(Track.genre.isnot(None))
+    )).scalar_one()
 
     # Quality stats — only count tracks that have an actual file on disk
     no_mbid_count = (
@@ -1377,7 +1380,7 @@ async def library_page(
         request, "library.html",
         {
             "active": "library",
-            "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count},
+            "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count, "genres": genre_count},
             "quality": {
                 "no_mbid": no_mbid_count,
                 "no_art": no_art_count,
@@ -1575,9 +1578,14 @@ async def library_albums_list(
     for alb in albums:
         scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
         album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
+    singles_count = 0
+    if not q.strip():
+        singles_count = (await session.execute(
+            select(func.count(Track.id)).join(Track.file).where(Track.album_id.is_(None))
+        )).scalar_one()
     return templates.TemplateResponse(
         request, "partials/album_list.html",
-        {"albums": albums, "q": q, "album_quality": album_quality},
+        {"albums": albums, "q": q, "album_quality": album_quality, "singles_count": singles_count},
     )
 
 
@@ -2362,6 +2370,29 @@ async def library_artists_page(
     return templates.TemplateResponse(request, "library_artists.html", ctx)
 
 
+@router.get("/library/genres", response_class=HTMLResponse)
+async def library_genres_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from sqlalchemy import case as sa_case
+    rows = (await session.execute(
+        select(Track.genre, func.count(Track.id).label("track_count"))
+        .join(Track.file)
+        .where(Track.genre.isnot(None))
+        .group_by(Track.genre)
+        .order_by(func.count(Track.id).desc(), Track.genre)
+    )).all()
+    untagged_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.file).where(Track.genre.is_(None))
+    )).scalar_one()
+    genres = [{"name": r.genre, "count": r.track_count} for r in rows]
+    return templates.TemplateResponse(
+        request, "library_genres.html",
+        {"active": "library", "genres": genres, "untagged_count": untagged_count},
+    )
+
+
 @router.get("/library/browse", response_class=HTMLResponse)
 async def library_browse(
     request: Request,
@@ -2442,6 +2473,8 @@ async def library_browse_results(
             .scalar_subquery()
         )
         stmt = stmt.where(Track.musicbrainz_recording_id.in_(dupe_rids_sub))
+    elif f == "singles":
+        stmt = stmt.where(Track.album_id.is_(None))
 
     all_rows = (await session.execute(stmt)).unique().scalars().all()
     has_more = len(all_rows) > _BROWSE_PAGE
@@ -4341,18 +4374,19 @@ async def discography_view(
     owned_count = sum(1 for r in release_entries if r["owned"])
     all_types = sorted({rg.release_type for rg in release_groups})
 
+    ctx = {
+        "artist_name": artist_name,
+        "artist_mbid": artist_mbid,
+        "releases": release_entries,
+        "owned_count": owned_count,
+        "total_count": len(release_entries),
+        "all_types": all_types,
+        "selected_types": selected_types,
+    }
+    if request.headers.get("hx-request"):
+        return templates.TemplateResponse(request, "partials/discography_content.html", ctx)
     return templates.TemplateResponse(
-        request, "discography.html",
-        {
-            "active": "discography",
-            "artist_name": artist_name,
-            "artist_mbid": artist_mbid,
-            "releases": release_entries,
-            "owned_count": owned_count,
-            "total_count": len(release_entries),
-            "all_types": all_types,
-            "selected_types": selected_types,
-        },
+        request, "discography.html", {"active": "discography", **ctx}
     )
 
 

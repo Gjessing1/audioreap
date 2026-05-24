@@ -53,7 +53,7 @@
 </details>
 
 {# ── Discover ─────────────────────────────────────────────────────────────── #}
-<details {% if active_section == 'discover' %}open{% endif %}>
+<details open>
 <summary class="acquire-section-header">Discover</summary>
 <div class="acquire-section-body">
   <p class="empty" style="font-size:13px;padding:0 0 10px">Browse an artist's full MusicBrainz discography and acquire missing albums.</p>
@@ -66,6 +66,7 @@
          hx-target="#artist-candidates"
          hx-include="[name='q']">
   <div id="artist-candidates"></div>
+  <div id="disco-detail" style="margin-top:8px"></div>
 </div>
 </details>
 
