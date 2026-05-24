@@ -975,3 +975,16 @@ input::placeholder { color: var(--t4); }
   display: flex; align-items: center; justify-content: center;
   color: var(--t4); font-size: 14px;
 }
+
+/* ── Acquire page section headers ────────────────────────────────────────── */
+details.acquire-section, details:has(.acquire-section-header) { border: none; }
+.acquire-section-header {
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  padding: 12px 0 10px; display: flex; align-items: center; gap: 6px;
+  border-bottom: 1px solid var(--border); list-style: none; user-select: none;
+}
+.acquire-section-header::before { content: '▸'; font-size: 11px; color: var(--t3); transition: transform .15s; }
+details[open] > .acquire-section-header::before { transform: rotate(90deg); }
+.acquire-section-header::-webkit-details-marker { display: none; }
+.acquire-section-body { padding: 14px 0 4px; }
+details + details { margin-top: 2px; }

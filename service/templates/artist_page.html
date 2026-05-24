@@ -82,23 +82,24 @@
   {% else %}
   <div style="font-weight:600;color:var(--t3)">Singles</div>
   {% endif %}
-  <table style="width:100%;font-size:13px;border-collapse:collapse">
-    {% for t in entry.tracks %}
-    <tr style="border-bottom:1px solid var(--b1)">
-      <td style="padding:3px 6px 3px 0;width:24px;color:var(--t3)">{{ t.track_number or '' }}</td>
-      <td style="padding:3px 0">{{ t.title }}</td>
-      <td style="padding:3px 0 3px 8px;color:var(--t3);font-size:12px;text-align:right">
-        {% if t.file %}{{ t.file.codec }}{% if t.file.bitrate_kbps %} {{ t.file.bitrate_kbps }}k{% endif %}{% endif %}
-      </td>
-      <td style="padding:3px 0 3px 8px;width:32px">
-        {% if t.file %}
-        <button class="play-btn" data-id="{{ t.id }}"
-                onclick="playTrack('{{ t.id }}','{{ t.title|e }}')" title="Play">▶</button>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
+  {% for t in entry.tracks %}
+  {% set safe_tid = t.id | replace(':', '_') %}
+  <div id="browse-{{ safe_tid }}"
+       style="border-top:1px solid var(--b1);display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px">
+    <span style="width:22px;text-align:right;color:var(--t3);flex-shrink:0;font-size:12px">{{ t.track_number or '' }}</span>
+    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.title }}</span>
+    {% if t.file %}
+    <span style="color:var(--t3);font-size:11px;white-space:nowrap">{{ t.file.codec }}{% if t.file.bitrate_kbps %} {{ t.file.bitrate_kbps }}k{% endif %}</span>
+    <button class="play-btn" data-id="{{ t.id }}"
+            onclick="playTrack('{{ t.id }}','{{ t.title|e }}')" title="Play">▶</button>
+    {% endif %}
+    <button class="btn btn-sm btn-ghost"
+            hx-get="/library/tracks/{{ t.id }}/edit-card"
+            hx-target="#browse-{{ safe_tid }}"
+            hx-swap="outerHTML"
+            style="font-size:11px;padding:2px 6px;flex-shrink:0">Edit</button>
+  </div>
+  {% endfor %}
 </div>
 {% endfor %}
 {% endif %}

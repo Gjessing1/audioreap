@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Acquire — audioreap{% endblock %}
+
+{% block content %}
+
+{# ── Search ──────────────────────────────────────────────────────────────── #}
+<details open>
+<summary class="acquire-section-header">Search</summary>
+<div class="acquire-section-body">
+  <form id="search-form" class="search-bar"
+        hx-get="/search/results"
+        hx-trigger="input changed delay:350ms from:#q, submit"
+        hx-target="#local-results"
+        hx-include="#q">
+    <input id="q" name="q" type="search"
+           placeholder="Search tracks, artists…"
+           value="{{ q|default('') }}"
+           inputmode="search" enterkeyhint="search" autocomplete="off">
+    <button type="submit"
+            hx-get="/search/cloud"
+            hx-include="#q"
+            hx-target="#cloud-results"
+            hx-swap="innerHTML"
+            hx-indicator="#search-spin">
+      Search
+      <span id="search-spin" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </form>
+
+  <div class="search-columns">
+    <div class="search-col">
+      <div class="section-title">Library</div>
+      <div id="local-results">
+        {% if q %}
+          {% include "partials/local_results.html" %}
+        {% else %}
+          <p class="empty" style="text-align:left;padding:12px 0">Your library matches appear here.</p>
+        {% endif %}
+      </div>
+    </div>
+    <div class="search-col">
+      <div class="section-title">YouTube</div>
+      <div id="cloud-results">
+        {% if q %}
+          {% include "partials/cloud_results.html" %}
+        {% else %}
+          <p class="empty" style="text-align:left;padding:12px 0">Hit <strong>Search</strong> to find music on YouTube.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+</details>
+
+{# ── Discover ─────────────────────────────────────────────────────────────── #}
+<details {% if active_section == 'discover' %}open{% endif %}>
+<summary class="acquire-section-header">Discover</summary>
+<div class="acquire-section-body">
+  <p class="empty" style="font-size:13px;padding:0 0 10px">Browse an artist's full MusicBrainz discography and acquire missing albums.</p>
+  <input id="disco-q" name="q" type="search"
+         placeholder="Search artist (e.g. Radiohead, Daft Punk)…"
+         inputmode="search" enterkeyhint="search" autocomplete="off"
+         style="width:100%;margin-bottom:10px"
+         hx-get="/discography/search"
+         hx-trigger="input changed delay:400ms, keyup[key=='Enter']"
+         hx-target="#artist-candidates"
+         hx-include="[name='q']">
+  <div id="artist-candidates"></div>
+</div>
+</details>
+
+{# ── Playlists ────────────────────────────────────────────────────────────── #}
+<details {% if active_section == 'playlists' %}open{% endif %}>
+<summary class="acquire-section-header">Playlists</summary>
+<div class="acquire-section-body">
+  <form id="playlist-form"
+        hx-post="/playlists/resolve"
+        hx-target="#playlist-preview"
+        hx-swap="innerHTML"
+        hx-indicator="#resolve-spinner">
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input name="url" type="url"
+             placeholder="YouTube, YouTube Music, or Spotify playlist URL…"
+             inputmode="url" autocomplete="off"
+             style="flex:1;min-width:0"
+             required>
+      <button type="submit" class="btn">
+        Preview
+        <span id="resolve-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </div>
+    {% if not spotify_enabled %}
+    <p class="empty" style="margin-top:4px;font-size:12px">
+      Public Spotify playlists require AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET.
+    </p>
+    {% endif %}
+  </form>
+
+  <div id="playlist-preview" style="margin-top:12px"></div>
+
+  {% if imports %}
+  <div style="margin-top:20px">
+    <div class="section-title">Recent imports</div>
+    {% for imp in imports %}
+    <div class="card" style="margin-bottom:8px">
+      <div class="card-info">
+        <div class="card-title">{{ imp.title or imp.url }}</div>
+        <div class="card-sub">
+          {{ imp.source }} · {{ imp.enqueued_count }} enqueued · {{ imp.owned_count }} already owned
+          · {{ imp.created_at.strftime('%Y-%m-%d %H:%M') }}
+        </div>
+      </div>
+      <div class="card-actions">
+        {% set computed_state = import_states.get(imp.id, 'done') %}
+        <span class="badge {% if computed_state == 'active' %}badge-busy{% else %}badge-done{% endif %}">
+          {{ computed_state }}
+        </span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+</details>
+
+{% endblock %}

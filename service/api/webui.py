@@ -120,14 +120,55 @@ def _track_to_ref(row: Track) -> TrackRef:
 
 @router.get("/", response_class=RedirectResponse)
 async def root() -> RedirectResponse:
-    return RedirectResponse("/search")
+    return RedirectResponse("/acquire")
+
+
+async def _acquire_ctx(request: Request, q: str, active_section: str, session: AsyncSession) -> dict:
+    """Build context dict shared by the /acquire page."""
+    from sqlalchemy import func as sa_func
+    rows = (
+        await session.execute(
+            select(PlaylistImport).order_by(PlaylistImport.created_at.desc()).limit(10)
+        )
+    ).scalars().all()
+    _ACTIVE = ("queued", "downloading", "processing", "enriching", "tagging", "importing")
+    import_states: dict[str, str] = {}
+    if rows:
+        active_counts = (await session.execute(
+            select(AcquisitionJobRow.playlist_import_id, sa_func.count())
+            .where(
+                AcquisitionJobRow.playlist_import_id.in_([r.id for r in rows]),
+                AcquisitionJobRow.state.in_(list(_ACTIVE)),
+            )
+            .group_by(AcquisitionJobRow.playlist_import_id)
+        )).all()
+        active_by_id = {pid: cnt for pid, cnt in active_counts}
+        for r in rows:
+            import_states[r.id] = "active" if active_by_id.get(r.id, 0) > 0 else "done"
+    return {
+        "active": "acquire",
+        "q": q,
+        "active_section": active_section,
+        "imports": rows,
+        "import_states": import_states,
+        "spotify_enabled": bool(settings.spotify_client_id),
+    }
+
+
+@router.get("/acquire", response_class=HTMLResponse)
+async def acquire_page(
+    request: Request, q: str = "", session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    ctx = await _acquire_ctx(request, q, "search", session)
+    return templates.TemplateResponse(request, "acquire.html", ctx)
 
 
 @router.get("/search", response_class=HTMLResponse)
-async def search_page(request: Request, q: str = "") -> HTMLResponse:
-    return templates.TemplateResponse(
-        request, "search.html", {"active": "search", "q": q, "tracks": []}
-    )
+async def search_page(
+    request: Request, q: str = "", session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    ctx = await _acquire_ctx(request, q, "search", session)
+    return templates.TemplateResponse(request, "acquire.html", ctx)
 
 
 @router.get("/search/results", response_class=HTMLResponse)
@@ -2522,17 +2563,27 @@ async def track_edit_card(
             tagged = await asyncio.to_thread(_read_tags, fp)
             if tagged:
                 genre = tagged.genre
-    # Fetch all known genres for autocomplete datalist
+    # Fetch all known genres, artist names, and albums for autocomplete datalists
     genre_rows = (await session.execute(
         select(_distinct(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
     )).scalars().all()
     genres = [g for g in genre_rows if g]
+    artist_names = (await session.execute(
+        select(Artist.name).order_by(Artist.name)
+    )).scalars().all()
+    album_names = (await session.execute(
+        select(Album.title)
+        .where(Album.artist_id == row.artist_id)
+        .order_by(Album.title)
+    )).scalars().all()
     return templates.TemplateResponse(
         request, "partials/track_edit_card.html",
         {
             "track": row,
             "genre": genre,
-            "genres": genres,
+            "genres": list(genres),
+            "artist_names": list(artist_names),
+            "album_names": list(album_names),
             "provider_ref": row.file.provider_ref if row.file else None,
             "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
             "min_bitrate_kbps": settings.min_bitrate_kbps,
@@ -3491,39 +3542,8 @@ async def playlists_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from sqlalchemy import func as sa_func
-    rows = (
-        await session.execute(
-            select(PlaylistImport).order_by(PlaylistImport.created_at.desc()).limit(20)
-        )
-    ).scalars().all()
-
-    # Compute real state per playlist from its jobs instead of trusting the
-    # stored state (which was never updated after creation).
-    _ACTIVE_JOB_STATES = ("queued", "downloading", "processing", "enriching", "tagging", "importing")
-    import_states: dict[str, str] = {}
-    if rows:
-        active_counts = (await session.execute(
-            select(AcquisitionJobRow.playlist_import_id, sa_func.count())
-            .where(
-                AcquisitionJobRow.playlist_import_id.in_([r.id for r in rows]),
-                AcquisitionJobRow.state.in_(list(_ACTIVE_JOB_STATES)),
-            )
-            .group_by(AcquisitionJobRow.playlist_import_id)
-        )).all()
-        active_by_id = {pid: cnt for pid, cnt in active_counts}
-        for r in rows:
-            import_states[r.id] = "active" if active_by_id.get(r.id, 0) > 0 else "done"
-
-    return templates.TemplateResponse(
-        request, "playlists.html",
-        {
-            "active": "playlists",
-            "imports": rows,
-            "import_states": import_states,
-            "spotify_enabled": bool(settings.spotify_client_id),
-        },
-    )
+    ctx = await _acquire_ctx(request, "", "playlists", session)
+    return templates.TemplateResponse(request, "acquire.html", ctx)
 
 
 @router.post("/playlists/resolve", response_class=HTMLResponse)
@@ -3929,10 +3949,11 @@ def _yt_search_best(
 # ── Discography ───────────────────────────────────────────────────────────
 
 @router.get("/discography", response_class=HTMLResponse)
-async def discography_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request, "discography.html", {"active": "discography"}
-    )
+async def discography_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    ctx = await _acquire_ctx(request, "", "discover", session)
+    return templates.TemplateResponse(request, "acquire.html", ctx)
 
 
 @router.get("/discography/search", response_class=HTMLResponse)

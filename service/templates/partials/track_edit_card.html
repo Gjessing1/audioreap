@@ -108,13 +108,21 @@
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">Artist</label>
-        <input class="rv-input" name="artist" value="{{ track.artist.name }}" autocomplete="off">
+        <input class="rv-input" name="artist" value="{{ track.artist.name }}"
+               list="artist-list-{{ safe_id }}" autocomplete="off">
+        <datalist id="artist-list-{{ safe_id }}">
+          {% for a in artist_names|default([]) %}<option value="{{ a }}">{% endfor %}
+        </datalist>
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">Album</label>
         <input class="rv-input" name="album"
                value="{{ track.album.title if track.album else '' }}"
+               list="album-list-{{ safe_id }}"
                placeholder="Leave blank for Singles" autocomplete="off">
+        <datalist id="album-list-{{ safe_id }}">
+          {% for a in album_names|default([]) %}<option value="{{ a }}">{% endfor %}
+        </datalist>
       </div>
       <div class="rv-field">
         <label class="rv-label">Year</label>
