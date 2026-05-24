@@ -13,12 +13,13 @@
         hx-get="/library/browse/results"
         hx-trigger="input delay:300ms from:#bq, submit"
         hx-target="#browse-results"
-        hx-include="#bq, #bf, #bs">
+        hx-include="#bq, #bf, #bs, #bg">
     <input id="bq" name="q" type="search"
            placeholder="Search title or artist…"
            value="{{ q }}" autocomplete="off" autofocus class="browse-search-input">
     <input type="hidden" id="bf" name="f" value="{{ f }}">
     <input type="hidden" id="bs" name="sort" value="{{ sort or 'artist' }}">
+    <input type="hidden" id="bg" name="genre" value="{{ genre }}">
   </form>
 
   {# Sort selector #}
@@ -85,6 +86,8 @@
 <script>
 function setFilter(evt, val) {
   document.getElementById('bf').value = val;
+  // Clear genre when switching away from genre filter
+  if (val !== 'genre') document.getElementById('bg').value = '';
   document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('filter-tab--active'));
   evt.target.classList.add('filter-tab--active');
   htmx.trigger(document.getElementById('browse-form'), 'submit');

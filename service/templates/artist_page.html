@@ -31,10 +31,21 @@
       {{ total_tracks }} track{% if total_tracks != 1 %}s{% endif %} owned
       · <a href="/library/browse?q={{ artist.name|urlencode }}" style="color:var(--accent)">Browse tracks</a>
     </div>
-    <button class="btn btn-sm btn-ghost" style="font-size:11px"
-            onclick="document.getElementById('artist-img-panel').classList.toggle('hidden')">
-      Change artist image
-    </button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-ghost" style="font-size:11px"
+              onclick="document.getElementById('artist-img-panel').classList.toggle('hidden')">
+        Change artist image
+      </button>
+      {% if total_tracks == 0 %}
+      <form hx-post="/library/artists/{{ artist.id }}/delete"
+            hx-confirm="Delete empty artist '{{ artist.name }}'?"
+            style="display:contents">
+        <button type="submit" class="btn btn-sm" style="font-size:11px;background:var(--danger,#f87171);color:#fff;border-color:var(--danger,#f87171)">
+          Delete artist
+        </button>
+      </form>
+      {% endif %}
+    </div>
   </div>
 </div>
 

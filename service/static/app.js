@@ -204,6 +204,24 @@ document.addEventListener("htmx:responseError", function(e) {
   }
 });
 
+/* ── Discography type filter (called from inline onclick in swapped content) */
+window.toggleDiscoType = function(artistMbid, type, currentTypes) {
+  var types = currentTypes ? currentTypes.split(',').filter(function(t){ return t; }) : [];
+  var idx = types.indexOf(type);
+  if (idx >= 0) { types.splice(idx, 1); } else { types.push(type); }
+  var params = types.map(function(t){ return 'types=' + encodeURIComponent(t); }).join('&');
+  htmx.ajax('GET', '/discography/' + artistMbid + (params ? '?' + params : ''), {target: '#disco-detail', swap: 'innerHTML'});
+};
+
+/* ── Discography text search (client-side filter within loaded releases) ─── */
+window.filterDiscoReleases = function(q) {
+  var lower = q.toLowerCase();
+  document.querySelectorAll('#disco-detail [data-disco-title]').forEach(function(el) {
+    var title = (el.getAttribute('data-disco-title') || '').toLowerCase();
+    el.style.display = (!lower || title.indexOf(lower) !== -1) ? '' : 'none';
+  });
+};
+
 /* ── Service worker registration ─────────────────────────────────────────── */
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/static/sw.js").catch(() => {});

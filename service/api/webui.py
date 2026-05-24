@@ -1703,13 +1703,20 @@ async def album_update_meta(
     album.year = year_val
     album.updated_at = datetime.now(UTC).replace(tzinfo=None)
 
-    # Write to all track files
+    # Write album/albumartist/year to all track files so Navidrome groups them
+    # into a single album entry.
+    albumartist_val = album.artist.name if album.artist else "Unknown"
     for track in album.tracks:
         if track.file:
             fp = Path(track.file.path)
             if fp.exists():
                 try:
-                    await asyncio.to_thread(_write_tags, fp, album=title_val, year=year_val)
+                    await asyncio.to_thread(
+                        _write_tags, fp,
+                        album=title_val,
+                        albumartist=albumartist_val,
+                        year=year_val,
+                    )
                 except Exception as exc:
                     logger.warning("album update-meta tag write failed: %s", exc)
 
@@ -2251,6 +2258,38 @@ async def artist_page(
     )
 
 
+@router.post("/library/artists/{artist_id}/delete", response_class=HTMLResponse)
+async def delete_artist(
+    request: Request,
+    artist_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Delete an artist that has no tracks.  Removes empty albums first."""
+    from sqlalchemy import delete as _sa_del
+
+    track_count = (await session.execute(
+        select(func.count(Track.id)).where(Track.artist_id == artist_id)
+    )).scalar_one()
+    if track_count > 0:
+        raise HTTPException(400, "Artist still has tracks")
+
+    # Delete empty albums for this artist
+    old_albums = (await session.execute(
+        select(Album).where(Album.artist_id == artist_id)
+    )).scalars().all()
+    for alb in old_albums:
+        alb_tracks = (await session.execute(
+            select(func.count(Track.id)).where(Track.album_id == alb.id)
+        )).scalar_one()
+        if alb_tracks == 0:
+            await session.execute(_sa_del(Album).where(Album.id == alb.id))
+
+    await session.execute(_sa_del(Artist).where(Artist.id == artist_id))
+    await session.commit()
+
+    return HTMLResponse("", status_code=200, headers={"HX-Redirect": "/library/artists"})
+
+
 @router.get("/library/artists/{artist_id}/image", response_class=HTMLResponse)
 async def artist_image(
     artist_id: str,
@@ -2765,10 +2804,15 @@ async def save_track_tags(
         new_artist_id = await _upsert_artist(session, artist_val)
         row.artist_id = new_artist_id
 
-    if album_val and (not row.album or album_val != row.album.title):
-        artist_id_for_album = row.artist_id
-        new_album_id = await _upsert_album(session, artist_id_for_album, album_val, year_val, artist_val)
-        row.album_id = new_album_id
+    if album_val:
+        # Re-upsert album whenever artist OR album title changed so the album
+        # stays associated with the correct artist.
+        artist_changed = old_artist_id is not None
+        album_changed = not row.album or album_val != row.album.title
+        if artist_changed or album_changed:
+            artist_id_for_album = row.artist_id
+            new_album_id = await _upsert_album(session, artist_id_for_album, album_val, year_val, artist_val)
+            row.album_id = new_album_id
     elif not album_val:
         row.album_id = None
 
@@ -2781,16 +2825,29 @@ async def save_track_tags(
     )
     await session.commit()
 
-    # Prune the old artist if it now has no tracks.
+    # Prune old artist: delete its empty albums first, then delete artist if it
+    # now has 0 tracks.  Empty albums must be removed first or the FK prevents
+    # the artist delete.
     if old_artist_id:
         remaining = (await session.execute(
             select(func.count(Track.id)).where(Track.artist_id == old_artist_id)
         )).scalar_one()
         if remaining == 0:
+            from sqlalchemy import delete as _sa_del_artist
+            # Remove albums that now have no tracks
+            old_albums = (await session.execute(
+                select(Album).where(Album.artist_id == old_artist_id)
+            )).scalars().all()
+            for alb in old_albums:
+                alb_tracks = (await session.execute(
+                    select(func.count(Track.id)).where(Track.album_id == alb.id)
+                )).scalar_one()
+                if alb_tracks == 0:
+                    await session.execute(_sa_del_artist(Album).where(Album.id == alb.id))
             old_artist = await session.get(Artist, old_artist_id)
             if old_artist:
                 await session.delete(old_artist)
-                await session.commit()
+            await session.commit()
 
     try:
         await trigger_scan()
@@ -5129,7 +5186,8 @@ async def merge_album(
         except Exception:
             pass
 
-    # Normalize MUSICBRAINZ_ALBUMID on merged tracks so Navidrome keeps one album.
+    # Normalize album/albumartist/year/MUSICBRAINZ_ALBUMID on all merged (source)
+    # tracks so Navidrome groups them into a single album.
     # File paths in track.file.path are already updated to canonical_dir above.
     canonical_release_id: str | None = canonical.musicbrainz_release_id
     if not canonical_release_id:
@@ -5140,24 +5198,28 @@ async def merge_album(
                     canonical_release_id = _read_mb_release_id(fp)
                     if canonical_release_id:
                         break
-    if canonical_release_id:
-        from service.library.tagger import write_tags as _write_tags_merge
-        for track in source.tracks:
-            if track.file:
-                fpath = Path(track.file.path)
-                if fpath.exists():
-                    existing = _read_mb_release_id(fpath)
-                    if existing and existing != canonical_release_id:
-                        try:
-                            await asyncio.to_thread(
-                                _write_tags_merge, fpath, mb_release_id=canonical_release_id
-                            )
-                            logger.info("Merge: fixed MUSICBRAINZ_ALBUMID on %s", fpath.name)
-                        except Exception as exc:
-                            logger.warning("Merge: tag fix failed for %s: %s", fpath.name, exc)
-        # Persist the release ID on the canonical album row if not already set
-        if not canonical.musicbrainz_release_id:
-            canonical.musicbrainz_release_id = canonical_release_id
+
+    from service.library.tagger import write_tags as _write_tags_merge
+    canonical_artist_name = canonical.artist.name if canonical.artist else "Unknown"
+    for track in source.tracks:
+        if track.file:
+            fpath = Path(track.file.path)
+            if fpath.exists():
+                try:
+                    await asyncio.to_thread(
+                        _write_tags_merge, fpath,
+                        album=canonical.title,
+                        albumartist=canonical_artist_name,
+                        year=canonical.year,
+                        mb_release_id=canonical_release_id,
+                    )
+                    logger.info("Merge: normalized tags on %s", fpath.name)
+                except Exception as exc:
+                    logger.warning("Merge: tag update failed for %s: %s", fpath.name, exc)
+
+    # Persist the release ID on the canonical album row if not already set
+    if canonical_release_id and not canonical.musicbrainz_release_id:
+        canonical.musicbrainz_release_id = canonical_release_id
 
     # Delete the source Album row — all its tracks have been reassigned.
     # We flush first to commit the album_id updates, then expunge source from the

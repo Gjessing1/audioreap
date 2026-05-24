@@ -9,6 +9,11 @@
   </button>
 </div>
 
+<input id="disco-search" type="search" placeholder="Filter releases…"
+       oninput="filterDiscoReleases(this.value)"
+       autocomplete="off"
+       style="width:100%;margin-bottom:10px;box-sizing:border-box">
+
 {% if all_types %}
 <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
   {% for t in all_types %}
@@ -26,7 +31,7 @@
 
 {% if releases %}
 {% for r in releases %}
-<div class="card" style="margin-bottom:6px">
+<div class="card" style="margin-bottom:6px" data-disco-title="{{ r.title|e }}">
   <div class="card-info">
     <div class="card-title">{{ r.title }}</div>
     <div class="card-sub">
@@ -54,26 +59,17 @@
   </div>
 </div>
 {% if r.owned %}
-<div id="rg-tracks-{{ r.release_group_id }}" style="padding:0 8px 8px"
+<div id="rg-tracks-{{ r.release_group_id }}" style="padding:0 8px 8px" data-disco-title="{{ r.title|e }}"
      hx-get="/discography/{{ artist_mbid }}/{{ r.release_group_id }}/tracks?artist={{ artist_name|urlencode }}"
      hx-trigger="load"
      hx-swap="innerHTML">
   <span class="muted" style="font-size:12px"><span class="spinner" style="width:10px;height:10px"></span> Loading…</span>
 </div>
 {% else %}
-<div id="rg-tracks-{{ r.release_group_id }}" style="padding:0 8px 8px"></div>
+<div id="rg-tracks-{{ r.release_group_id }}" style="padding:0 8px 8px" data-disco-title="{{ r.title|e }}"></div>
 {% endif %}
 {% endfor %}
 {% else %}
 <p class="empty">No releases found for the selected types.</p>
 {% endif %}
 
-<script>
-function toggleDiscoType(artistMbid, type, currentTypes) {
-  var types = currentTypes ? currentTypes.split(',').filter(function(t){ return t; }) : [];
-  var idx = types.indexOf(type);
-  if (idx >= 0) { types.splice(idx, 1); } else { types.push(type); }
-  var params = types.map(function(t){ return 'types=' + encodeURIComponent(t); }).join('&');
-  htmx.ajax('GET', '/discography/' + artistMbid + (params ? '?' + params : ''), {target: '#disco-detail', swap: 'innerHTML'});
-}
-</script>

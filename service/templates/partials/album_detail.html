@@ -117,6 +117,13 @@
     <div class="rv-actions">
       <button type="submit" class="btn rv-approve" style="height:36px;font-size:13px">Save album</button>
       <button type="button" class="btn btn-sm btn-ghost"
+              hx-post="/library/albums/{{ album.id }}/update-meta"
+              hx-include="[name='title'], [name='year']"
+              hx-target="#album-{{ aid }}"
+              hx-swap="outerHTML"
+              title="Rewrite album, albumartist and year tags on all track files (fixes Navidrome album splits)"
+              style="font-size:11px">Fix file tags</button>
+      <button type="button" class="btn btn-sm btn-ghost"
               hx-delete="/library/albums/{{ album.id }}"
               hx-target="#album-{{ aid }}"
               hx-swap="outerHTML swap:0.3s"
