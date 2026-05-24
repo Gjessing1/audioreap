@@ -1347,6 +1347,7 @@ async def library_page(
             )
         )
     ).scalar_one()
+    _not_suppressed = (Track.quality_suppressed.is_(None)) | (Track.quality_suppressed == 0)
     low_quality_count = (
         await session.execute(
             select(func.count(Track.id))
@@ -1354,11 +1355,12 @@ async def library_page(
             .where(
                 (Track.tag_quality_score.isnot(None))
                 & (Track.tag_quality_score < LOW_QUALITY_THRESHOLD)
+                & _not_suppressed
             )
         )
     ).scalar_one()
 
-    # Low-quality tracks to surface (with file, worst first)
+    # Low-quality tracks to surface (with file, worst first, suppressed excluded)
     low_quality_rows = (
         await session.execute(
             select(Track)
@@ -1369,6 +1371,7 @@ async def library_page(
             .where(
                 Track.tag_quality_score.isnot(None),
                 Track.tag_quality_score < LOW_QUALITY_THRESHOLD,
+                _not_suppressed,
             )
             .order_by(Track.tag_quality_score.asc())
             .limit(30)
@@ -2290,6 +2293,66 @@ async def delete_artist(
     return HTMLResponse("", status_code=200, headers={"HX-Redirect": "/library/artists"})
 
 
+@router.post("/library/artists/{artist_id}/update", response_class=HTMLResponse)
+async def update_artist(
+    request: Request,
+    artist_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Update artist name, sort name, and/or MB artist ID.  Writes tags to all track files."""
+    from sqlalchemy.orm import joinedload as _jl
+    from service.library.tagger import write_tags as _write_tags
+    from service.navidrome.client import trigger_scan
+
+    form = await request.form()
+    name_val = (form.get("name") or "").strip()
+    sort_name_val = (form.get("sort_name") or "").strip() or None
+    mb_artist_id_val = (form.get("musicbrainz_artist_id") or "").strip() or None
+
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+    if not name_val:
+        raise HTTPException(400, "Artist name required")
+
+    name_changed = name_val != artist.name
+    sort_changed = sort_name_val != artist.sort_name
+
+    artist.name = name_val
+    artist.sort_name = sort_name_val
+    artist.musicbrainz_artist_id = mb_artist_id_val
+    artist.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.commit()
+
+    # Write tags to all track files if name or sort_name changed
+    if name_changed or sort_changed:
+        tracks = (await session.execute(
+            select(Track).options(_jl(Track.file)).where(Track.artist_id == artist_id)
+        )).unique().scalars().all()
+        for t in tracks:
+            if t.file:
+                fp = Path(t.file.path)
+                if fp.exists():
+                    kwargs: dict = {}
+                    if name_changed:
+                        kwargs["artist"] = name_val
+                        kwargs["albumartist"] = name_val
+                    if sort_changed:
+                        kwargs["artist_sort"] = sort_name_val or ""
+                    try:
+                        await asyncio.to_thread(_write_tags, fp, **kwargs)
+                    except Exception as exc:
+                        logger.warning("update_artist tag write failed for %s: %s", fp, exc)
+
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    # Re-render the artist page header section
+    return HTMLResponse("", status_code=200, headers={"HX-Redirect": f"/library/artists/{artist_id}"})
+
+
 @router.get("/library/artists/{artist_id}/image", response_class=HTMLResponse)
 async def artist_image(
     artist_id: str,
@@ -2495,6 +2558,108 @@ async def library_genres_page(
     )
 
 
+@router.post("/library/genres/rename", response_class=HTMLResponse)
+async def genre_rename(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Rename a genre across all tracks (DB + file tags)."""
+    from service.library.tagger import write_tags as _write_tags
+    from service.navidrome.client import trigger_scan
+
+    form = await request.form()
+    old_genre = (form.get("old_genre") or "").strip()
+    new_genre = (form.get("new_genre") or "").strip()
+    if not old_genre:
+        return HTMLResponse('<span class="badge badge-warn">Missing genre name</span>')
+
+    target_genre = new_genre if new_genre else None  # empty new = remove genre
+
+    rows = (await session.execute(
+        select(Track).options(joinedload(Track.file)).where(Track.genre == old_genre)
+    )).unique().scalars().all()
+    for row in rows:
+        row.genre = target_genre
+        if row.file:
+            fp = Path(row.file.path)
+            if fp.exists():
+                try:
+                    await asyncio.to_thread(_write_tags, fp, genre=target_genre or "")
+                except Exception as exc:
+                    logger.warning("genre_rename tag write failed for %s: %s", fp, exc)
+    await session.commit()
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    rows2 = (await session.execute(
+        select(Track.genre, func.count(Track.id).label("track_count"))
+        .join(Track.file)
+        .where(Track.genre.isnot(None))
+        .group_by(Track.genre)
+        .order_by(func.count(Track.id).desc(), Track.genre)
+    )).all()
+    untagged_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.file).where(Track.genre.is_(None))
+    )).scalar_one()
+    genres = [{"name": r.genre, "count": r.track_count} for r in rows2]
+    return templates.TemplateResponse(
+        request, "partials/genre_list.html",
+        {"genres": genres, "untagged_count": untagged_count},
+    )
+
+
+@router.post("/library/genres/remove", response_class=HTMLResponse)
+async def genre_remove(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Remove a genre from all tracks that have it."""
+    form = await request.form()
+    genre = (form.get("genre") or "").strip()
+    if not genre:
+        return HTMLResponse('<span class="badge badge-warn">Missing genre name</span>')
+    # Delegate to rename with empty new_genre
+    # Reconstruct form-like data and call rename logic inline
+    from service.library.tagger import write_tags as _write_tags
+    from service.navidrome.client import trigger_scan
+
+    rows = (await session.execute(
+        select(Track).options(joinedload(Track.file)).where(Track.genre == genre)
+    )).unique().scalars().all()
+    for row in rows:
+        row.genre = None
+        if row.file:
+            fp = Path(row.file.path)
+            if fp.exists():
+                try:
+                    await asyncio.to_thread(_write_tags, fp, genre="")
+                except Exception as exc:
+                    logger.warning("genre_remove tag write failed for %s: %s", fp, exc)
+    await session.commit()
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    rows2 = (await session.execute(
+        select(Track.genre, func.count(Track.id).label("track_count"))
+        .join(Track.file)
+        .where(Track.genre.isnot(None))
+        .group_by(Track.genre)
+        .order_by(func.count(Track.id).desc(), Track.genre)
+    )).all()
+    untagged_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.file).where(Track.genre.is_(None))
+    )).scalar_one()
+    genres = [{"name": r.genre, "count": r.track_count} for r in rows2]
+    return templates.TemplateResponse(
+        request, "partials/genre_list.html",
+        {"genres": genres, "untagged_count": untagged_count},
+    )
+
+
 @router.get("/library/browse", response_class=HTMLResponse)
 async def library_browse(
     request: Request,
@@ -2560,6 +2725,7 @@ async def library_browse_results(
         stmt = stmt.where(
             Track.tag_quality_score.isnot(None),
             Track.tag_quality_score < LOW_QUALITY_THRESHOLD,
+            (Track.quality_suppressed.is_(None)) | (Track.quality_suppressed == 0),
         )
     elif f == "low_bitrate":
         min_br = settings.min_bitrate_kbps
@@ -2656,6 +2822,27 @@ async def library_bulk_edit(
     if failed:
         msg += f", {failed} failed"
     return HTMLResponse(f'<span class="badge-ok">{msg} ✓</span>')
+
+
+@router.post("/library/tracks/{internal_id}/suppress-quality", response_class=HTMLResponse)
+async def track_suppress_quality(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Mark a track's quality warning as suppressed so it no longer appears in the low-quality filter."""
+    row = (await session.execute(
+        select(Track).options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    row.quality_suppressed = True
+    await session.commit()
+    return templates.TemplateResponse(
+        request, "partials/browse_row.html",
+        {"t": row},
+    )
 
 
 @router.get("/library/tracks/{internal_id}/browse-row", response_class=HTMLResponse)

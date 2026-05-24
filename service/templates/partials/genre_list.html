@@ -1,0 +1,50 @@
+{% if genres %}
+<div id="genre-list" style="display:flex;flex-direction:column;gap:4px">
+  {% for g in genres %}
+  <div class="card" style="padding:10px 14px;align-items:flex-start;flex-direction:column;gap:6px" id="genre-card-{{ g.name|replace(' ','_')|e }}">
+    <div style="display:flex;align-items:center;gap:10px;width:100%">
+      <a href="/library/browse?f=genre&genre={{ g.name|urlencode }}" style="flex:1;min-width:0;text-decoration:none;color:inherit">
+        <span style="font-size:14px;font-weight:500">{{ g.name }}</span>
+      </a>
+      <span style="font-size:13px;color:var(--t3);white-space:nowrap">{{ g.count }} track{% if g.count != 1 %}s{% endif %}</span>
+      <button class="btn btn-sm btn-ghost" style="font-size:11px"
+              onclick="(function(el){var p=el.closest('.card').querySelector('.genre-rename-panel');p.classList.toggle('hidden')})(this)">
+        Rename
+      </button>
+      <form hx-post="/library/genres/remove"
+            hx-target="#genre-list"
+            hx-swap="outerHTML"
+            hx-confirm="Remove genre '{{ g.name }}' from all {{ g.count }} track{% if g.count != 1 %}s{% endif %}?"
+            style="display:contents">
+        <input type="hidden" name="genre" value="{{ g.name|e }}">
+        <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px;color:var(--danger)">Remove</button>
+      </form>
+    </div>
+    <div class="genre-rename-panel hidden" style="display:flex;gap:6px;align-items:center;width:100%;padding-top:4px;border-top:1px solid var(--b1)">
+      <form hx-post="/library/genres/rename"
+            hx-target="#genre-list"
+            hx-swap="outerHTML"
+            style="display:flex;gap:6px;flex:1;align-items:center">
+        <input type="hidden" name="old_genre" value="{{ g.name|e }}">
+        <input type="text" name="new_genre" placeholder="New name…"
+               style="flex:1;font-size:12px"
+               autocomplete="off" required>
+        <button type="submit" class="btn btn-sm">Rename</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+  {% if untagged_count %}
+  <a href="/library/browse?f=no_genre" style="text-decoration:none;color:inherit">
+  <div class="card" style="padding:10px 14px;align-items:center;gap:12px">
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;color:var(--t3)">No genre tag</div>
+    </div>
+    <div style="font-size:13px;color:var(--t3);white-space:nowrap">{{ untagged_count }} track{% if untagged_count != 1 %}s{% endif %}</div>
+  </div>
+  </a>
+  {% endif %}
+</div>
+{% else %}
+<p class="empty" style="padding:24px 0">No genres tagged yet.</p>
+{% endif %}

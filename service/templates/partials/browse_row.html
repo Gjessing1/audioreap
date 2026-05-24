@@ -43,6 +43,15 @@
             onclick="playTrack('{{ t.id }}','{{ t.title|e }}')"
             title="Play">▶</button>
     {% endif %}
+    {% if t.tag_quality_score is not none and t.tag_quality_score < (4/7) and not t.quality_suppressed %}
+    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--t3)"
+            hx-post="/library/tracks/{{ t.id }}/suppress-quality"
+            hx-target="#browse-{{ safe_id }}"
+            hx-swap="outerHTML"
+            title="Hide this track from the Low Quality filter — quality is acceptable as-is">
+      OK
+    </button>
+    {% endif %}
     <button class="btn btn-sm btn-ghost"
             hx-get="/library/tracks/{{ t.id }}/edit-card"
             hx-target="#browse-{{ safe_id }}"

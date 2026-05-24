@@ -7,34 +7,6 @@
   <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
 </div>
 
-{% if genres %}
-<div style="display:flex;flex-direction:column;gap:4px">
-  {% for g in genres %}
-  <a href="/library/browse?f=genre&genre={{ g.name|urlencode }}" style="text-decoration:none;color:inherit">
-  <div class="card" style="padding:10px 14px;align-items:center;gap:12px">
-    <div style="flex:1;min-width:0">
-      <div style="font-size:14px;font-weight:500">{{ g.name }}</div>
-    </div>
-    <div style="font-size:13px;color:var(--t3);white-space:nowrap">
-      {{ g.count }} track{% if g.count != 1 %}s{% endif %}
-    </div>
-    <span class="badge badge-queued" style="font-size:11px">Browse →</span>
-  </div>
-  </a>
-  {% endfor %}
-  {% if untagged_count %}
-  <a href="/library/browse?f=no_genre" style="text-decoration:none;color:inherit">
-  <div class="card" style="padding:10px 14px;align-items:center;gap:12px">
-    <div style="flex:1;min-width:0">
-      <div style="font-size:14px;color:var(--t3)">No genre tag</div>
-    </div>
-    <div style="font-size:13px;color:var(--t3);white-space:nowrap">{{ untagged_count }} track{% if untagged_count != 1 %}s{% endif %}</div>
-  </div>
-  </a>
-  {% endif %}
-</div>
-{% else %}
-<p class="empty" style="padding:24px 0">No genres tagged yet. Use the track editor to add genres.</p>
-{% endif %}
+{% include "partials/genre_list.html" %}
 
 {% endblock %}
