@@ -36,7 +36,7 @@
 </div>
 
 {# Filter chips #}
-<div class="filter-tabs" style="margin-bottom:14px">
+<div class="filter-tabs" style="margin-bottom:{% if genre %}6px{% else %}14px{% endif %}">
   <button class="filter-tab {% if not f %}filter-tab--active{% endif %}"
           onclick="setFilter(event,'')">All</button>
   <button class="filter-tab {% if f=='no_mb' %}filter-tab--active{% endif %}"
@@ -48,6 +48,13 @@
   <button class="filter-tab {% if f=='low_bitrate' %}filter-tab--active{% endif %}"
           onclick="setFilter(event,'low_bitrate')">Low Bitrate</button>
 </div>
+{% if genre %}
+<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;font-size:12px">
+  <span style="color:var(--t3)">Genre:</span>
+  <span class="badge badge-queued" style="font-size:12px;padding:3px 8px">{{ genre }}</span>
+  <a href="/library/browse{% if f %}?f={{ f|urlencode }}{% endif %}" style="color:var(--t3);text-decoration:none;font-size:11px" title="Clear genre filter">✕ clear</a>
+</div>
+{% endif %}
 
 {# Bulk edit toolbar — hidden until tracks are checked #}
 <div id="bulk-toolbar" style="display:none;margin-bottom:12px">
@@ -86,8 +93,6 @@
 <script>
 function setFilter(evt, val) {
   document.getElementById('bf').value = val;
-  // Clear genre when switching away from genre filter
-  if (val !== 'genre') document.getElementById('bg').value = '';
   document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('filter-tab--active'));
   evt.target.classList.add('filter-tab--active');
   htmx.trigger(document.getElementById('browse-form'), 'submit');

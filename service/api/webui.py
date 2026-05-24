@@ -1828,6 +1828,40 @@ async def album_update_meta(
     # Write album/albumartist/year to all track files so Navidrome groups them
     # into a single album entry.
     albumartist_val = album.artist.name if album.artist else "Unknown"
+
+    # Determine canonical MUSICBRAINZ_ALBUMID: prefer DB value, else majority from files.
+    # Inconsistent MB album IDs cause Navidrome to split the album.
+    canonical_mb_release_id: str | None = album.musicbrainz_release_id
+    if not canonical_mb_release_id:
+        from collections import Counter
+        from service.library.tagger import read_tags as _read_tags
+        mb_ids: list[str] = []
+        for track in album.tracks:
+            if track.file:
+                fp = Path(track.file.path)
+                if fp.exists():
+                    try:
+                        tagged = await asyncio.to_thread(_read_tags, fp)
+                        # read_tags doesn't return mb_release_id directly; read raw tag
+                        import mutagen
+                        raw = mutagen.File(fp)
+                        if raw and raw.tags:
+                            _tags = raw.tags
+                            for key in ("musicbrainz_albumid", "TXXX:MusicBrainz Album Id",
+                                        "----:com.apple.iTunes:MusicBrainz Album Id"):
+                                v = _tags.get(key)
+                                if v:
+                                    val_str = v[0] if isinstance(v, list) else str(v)
+                                    if hasattr(val_str, 'text'):
+                                        val_str = str(val_str.text[0]) if val_str.text else ""
+                                    if val_str:
+                                        mb_ids.append(str(val_str).strip())
+                                    break
+                    except Exception:
+                        pass
+        if mb_ids:
+            canonical_mb_release_id = Counter(mb_ids).most_common(1)[0][0]
+
     for track in album.tracks:
         if track.file:
             fp = Path(track.file.path)
@@ -1838,6 +1872,7 @@ async def album_update_meta(
                         album=title_val,
                         albumartist=albumartist_val,
                         year=year_val,
+                        mb_release_id=canonical_mb_release_id,
                     )
                 except Exception as exc:
                     logger.warning("album update-meta tag write failed: %s", exc)
@@ -2419,6 +2454,17 @@ async def delete_artist(
     """Delete an artist that has no tracks.  Removes empty albums first."""
     from sqlalchemy import delete as _sa_del
 
+    # Purge orphaned Track rows (no TrackFile) — these ghost rows can block
+    # deletion even though the artist page shows 0 tracks (it inner-joins files).
+    orphan_ids = (await session.execute(
+        select(Track.id)
+        .outerjoin(TrackFile, TrackFile.track_id == Track.id)
+        .where(Track.artist_id == artist_id)
+        .where(TrackFile.id.is_(None))
+    )).scalars().all()
+    if orphan_ids:
+        await session.execute(_sa_del(Track).where(Track.id.in_(orphan_ids)))
+
     track_count = (await session.execute(
         select(func.count(Track.id)).where(Track.artist_id == artist_id)
     )).scalar_one()
@@ -2880,9 +2926,10 @@ async def library_browse_results(
         stmt = stmt.where(Track.album_id.is_(None))
     elif f == "no_genre":
         stmt = stmt.where(Track.genre.is_(None))
-    elif f == "genre":
-        if genre:
-            stmt = stmt.where(Track.genre == genre)
+
+    # Genre is an orthogonal filter — stack it on top of any f tab.
+    if genre:
+        stmt = stmt.where(Track.genre == genre)
 
     all_rows = (await session.execute(stmt)).unique().scalars().all()
     has_more = len(all_rows) > _BROWSE_PAGE
