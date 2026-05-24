@@ -181,13 +181,16 @@ async def _process_file(
     if tagged is None:
         return "error"
 
-    # Skip files whose MB recording ID matches a user-deleted tombstone
+    # Skip files whose MB recording ID matches a tombstone with prevent_reimport=True.
+    # A plain (prevent_reimport=False) tombstone only blocks explicit re-acquisition;
+    # if the file reappears in /music (e.g. restored from backup, or a previous
+    # approval placed it but DB indexing failed), the scanner should pick it up.
     if tagged.mb_recording_id:
         tombstone = (await session.execute(
             select(DeletedTrack).where(DeletedTrack.mb_recording_id == tagged.mb_recording_id)
         )).scalar_one_or_none()
-        if tombstone is not None:
-            logger.debug("Skipping tombstoned recording %s (%s)", tagged.mb_recording_id, path)
+        if tombstone is not None and tombstone.prevent_reimport:
+            logger.debug("Skipping prevent_reimport recording %s (%s)", tagged.mb_recording_id, path)
             return "skipped"
 
     artist_name = tagged.albumartist or tagged.artist or "Unknown Artist"

@@ -620,19 +620,14 @@ async def place_approved_track(
             albumartist=albumartist,
         )
 
-        # Idempotency: file already in place
+        # Idempotency: file already in place — still fall through to indexing so
+        # that a previous approval that hit the tombstone bug (file placed but no
+        # DB row created) gets recovered on the next approve attempt.
         if dest.exists():
-            logger.info("Approve: track already at %s — marking done", dest)
-            hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
-            row.state = "done"
-            row.track_id = hash_track_id
-            row.staging_path = None
-            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-            await session.flush()
-            return dest
-
-        # Atomic place: staging → music
-        await asyncio.to_thread(atomic_place, staging_path, dest)
+            logger.info("Approve: track already at %s — ensuring DB record", dest)
+        else:
+            # Atomic place: staging → music
+            await asyncio.to_thread(atomic_place, staging_path, dest)
 
         # ReplayGain (best-effort; adds ~5s but runs only once per track)
         try:
