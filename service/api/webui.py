@@ -3060,6 +3060,7 @@ async def track_edit_card(
     request: Request,
     internal_id: str,
     album_id: str = Query(""),
+    open_art: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy import distinct as _distinct
@@ -3106,6 +3107,7 @@ async def track_edit_card(
             "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
             "min_bitrate_kbps": settings.min_bitrate_kbps,
             "source_album_id": album_id,
+            "open_art": open_art,
         },
     )
 

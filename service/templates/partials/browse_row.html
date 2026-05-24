@@ -1,7 +1,8 @@
 {% set safe_id = t.id | replace(':', '_') %}
 <div class="browse-row" id="browse-{{ safe_id }}">
   {# Cover art — only request if we know the track has embedded art #}
-  <div class="browse-art"
+  <div class="browse-art" style="cursor:pointer"
+       title="Click to edit track"
        hx-get="/library/tracks/{{ t.id }}/edit-card"
        hx-target="#browse-{{ safe_id }}"
        hx-swap="outerHTML">
@@ -50,6 +51,15 @@
             hx-swap="outerHTML"
             title="Hide this track from the Low Quality filter — quality is acceptable as-is">
       OK
+    </button>
+    {% endif %}
+    {% if not (t.file and t.file.has_cover_art) %}
+    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--t3)"
+            hx-get="/library/tracks/{{ t.id }}/edit-card?open_art=true"
+            hx-target="#browse-{{ safe_id }}"
+            hx-swap="outerHTML"
+            title="Set cover art">
+      Art
     </button>
     {% endif %}
     <button class="btn btn-sm btn-ghost"

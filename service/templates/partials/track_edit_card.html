@@ -41,7 +41,7 @@
   </div>
 
   {# ── Cover art panel ─────────────────────────────────────────────────────── #}
-  <div id="art-panel-{{ safe_id }}" class="hidden" style="padding:10px 4px;border-bottom:1px solid var(--b1)">
+  <div id="art-panel-{{ safe_id }}" class="{% if open_art %}{% else %}hidden{% endif %}" style="padding:10px 4px;border-bottom:1px solid var(--b1)">
     {# Quick actions row #}
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
       {% if track.musicbrainz_recording_id %}
