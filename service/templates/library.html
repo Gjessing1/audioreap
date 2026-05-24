@@ -13,7 +13,8 @@
     <button class="btn btn-ghost btn-sm" id="rescan-btn"
             hx-post="/library/rescan"
             hx-target="#rescan-result"
-            hx-on::before-request="this.disabled=true;this.textContent='Scanning…'">
+            hx-on::before-request="this.disabled=true;this.textContent='Scanning…'"
+            hx-on::after-request="this.disabled=false;this.textContent='Rescan'">
       Rescan
     </button>
     <a href="/library/health" class="btn btn-ghost btn-sm">Health</a>
@@ -46,67 +47,9 @@
 </div>
 {% endif %}
 
-{% if stats.tracks == 0 %}
-<div class="card" style="flex-direction:column;align-items:flex-start;gap:8px;padding:20px">
-  <div class="card-title">No tracks indexed</div>
-  <div class="card-sub">Click <strong>Rescan</strong> to index your music.</div>
+<div id="library-stats">
+{% include "partials/library_stats.html" %}
 </div>
-{% else %}
-
-{# ── Clickable stat tiles ── #}
-<div class="stats">
-  <a href="/library/browse" class="stat stat-link">
-    <div class="stat-val">{{ stats.tracks }}</div>
-    <div class="stat-label">Tracks</div>
-  </a>
-  <a href="/library/albums" class="stat stat-link">
-    <div class="stat-val">{{ stats.albums }}</div>
-    <div class="stat-label">Albums</div>
-  </a>
-  <a href="/library/artists" class="stat stat-link">
-    <div class="stat-val">{{ stats.artists }}</div>
-    <div class="stat-label">Artists</div>
-  </a>
-  <a href="/library/genres" class="stat stat-link">
-    <div class="stat-val">{{ stats.genres }}</div>
-    <div class="stat-label">Genres</div>
-  </a>
-</div>
-
-{# ── Quality stat tiles — each links to relevant filter ── #}
-{% if quality %}
-<div class="section-title" style="margin-top:20px">Metadata quality</div>
-<div class="stats">
-  <a href="/library/browse?f=low_quality" class="stat stat-link">
-    <div class="stat-val" style="color:{% if quality.low_quality == 0 %}var(--success){% elif quality.low_quality > stats.tracks // 3 %}var(--danger){% else %}var(--warn){% endif %}">
-      {{ quality.low_quality }}
-    </div>
-    <div class="stat-label">Low quality</div>
-  </a>
-  <a href="/library/browse?f=no_mb" class="stat stat-link">
-    <div class="stat-val" style="color:{% if quality.no_mbid == 0 %}var(--success){% else %}var(--t2){% endif %}">
-      {{ quality.no_mbid }}
-    </div>
-    <div class="stat-label">No MB match</div>
-  </a>
-  <a href="/library/browse?f=no_art" class="stat stat-link">
-    <div class="stat-val" style="color:{% if quality.no_art == 0 %}var(--success){% else %}var(--t2){% endif %}">
-      {{ quality.no_art }}
-    </div>
-    <div class="stat-label">No cover art</div>
-  </a>
-  <a href="/library/browse?f=low_bitrate" class="stat stat-link">
-    <div class="stat-val" style="color:{% if quality.low_bitrate == 0 %}var(--success){% else %}var(--t2){% endif %}">
-      {{ quality.low_bitrate }}
-    </div>
-    <div class="stat-label">Low bitrate</div>
-  </a>
-  <a href="/library/browse?f=dupes" class="stat stat-link">
-    <div class="stat-val" style="color:{% if quality.dupes %}var(--warn){% else %}var(--success){% endif %}">{{ quality.dupes }}</div>
-    <div class="stat-label">Duplicates</div>
-  </a>
-</div>
-{% endif %}
 
 {# ── Recent additions ── #}
 {% if recent %}
@@ -134,7 +77,5 @@
   </div>
 </div>
 {% endfor %}
-{% endif %}
-
 {% endif %}
 {% endblock %}

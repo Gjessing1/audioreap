@@ -73,8 +73,20 @@
     </div>
     <div>
       <label style="font-size:11px;color:var(--t3);display:block;margin-bottom:3px">MusicBrainz Artist ID</label>
-      <input class="rv-input" name="musicbrainz_artist_id" value="{{ artist.musicbrainz_artist_id or '' }}"
-             placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" style="width:100%;font-size:12px">
+      <div style="display:flex;gap:6px;align-items:center">
+        <input class="rv-input" name="musicbrainz_artist_id" id="artist-mb-id-{{ artist.id|replace(':','_') }}"
+               value="{{ artist.musicbrainz_artist_id or '' }}"
+               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" style="flex:1;font-size:12px">
+        <button type="button" class="btn btn-sm btn-ghost"
+                hx-get="/library/artists/{{ artist.id }}/mb-search"
+                hx-vals="js:{q: document.querySelector('[name=name]').value}"
+                hx-target="#artist-mb-results-{{ artist.id|replace(':','_') }}"
+                hx-swap="innerHTML"
+                title="Search MusicBrainz for this artist">
+          Lookup
+        </button>
+      </div>
+      <div id="artist-mb-results-{{ artist.id|replace(':','_') }}" style="margin-top:6px"></div>
     </div>
     <div style="display:flex;gap:8px">
       <button type="submit" class="btn btn-sm">Save</button>

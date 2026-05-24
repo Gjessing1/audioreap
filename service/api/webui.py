@@ -1413,14 +1413,10 @@ async def acquire_from_url(
     )
 
 
-@router.get("/library", response_class=HTMLResponse)
-async def library_page(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+async def _library_stats_context(session: AsyncSession) -> dict:
+    """Compute stats and quality counts for the library overview."""
     from service.metadata.quality import LOW_QUALITY_THRESHOLD
 
-    # Count only tracks visible in browse (must have a file + artist row)
     track_count = (await session.execute(
         select(func.count(Track.id)).join(Track.artist).join(Track.file)
     )).scalar_one()
@@ -1429,74 +1425,64 @@ async def library_page(
     genre_count = (await session.execute(
         select(func.count(func.distinct(Track.genre))).where(Track.genre.isnot(None))
     )).scalar_one()
-
-    # Quality stats — only count tracks that have an actual file on disk
-    no_mbid_count = (
-        await session.execute(
-            select(func.count(Track.id))
-            .join(Track.file)
-            .where(Track.musicbrainz_recording_id.is_(None))
+    no_mbid_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.file).where(Track.musicbrainz_recording_id.is_(None))
+    )).scalar_one()
+    no_art_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.artist).join(Track.file).where(
+            (TrackFile.has_cover_art.is_(None)) | (TrackFile.has_cover_art == 0)
         )
-    ).scalar_one()
-    no_art_count = (
-        await session.execute(
-            select(func.count(Track.id))
-            .join(Track.artist)
-            .join(Track.file)
-            .where(
-                (TrackFile.has_cover_art.is_(None)) | (TrackFile.has_cover_art == 0)
-            )
-        )
-    ).scalar_one()
+    )).scalar_one()
     _not_suppressed = (Track.quality_suppressed.is_(None)) | (Track.quality_suppressed == 0)
-    low_quality_count = (
-        await session.execute(
-            select(func.count(Track.id))
-            .join(Track.file)
-            .where(
-                (Track.tag_quality_score.isnot(None))
-                & (Track.tag_quality_score < LOW_QUALITY_THRESHOLD)
-                & _not_suppressed
-            )
+    low_quality_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.file).where(
+            (Track.tag_quality_score.isnot(None))
+            & (Track.tag_quality_score < LOW_QUALITY_THRESHOLD)
+            & _not_suppressed
         )
-    ).scalar_one()
-
-    # Low-quality tracks to surface (with file, worst first, suppressed excluded)
-    low_quality_rows = (
-        await session.execute(
-            select(Track)
-            .join(Track.artist)
-            .outerjoin(Track.album)
-            .join(Track.file)
-            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-            .where(
-                Track.tag_quality_score.isnot(None),
-                Track.tag_quality_score < LOW_QUALITY_THRESHOLD,
-                _not_suppressed,
-            )
-            .order_by(Track.tag_quality_score.asc())
-            .limit(30)
+    )).scalar_one()
+    low_bitrate_count = (await session.execute(
+        select(func.count(Track.id)).join(Track.file).join(Track.artist).where(
+            TrackFile.bitrate_kbps.isnot(None),
+            TrackFile.bitrate_kbps < settings.min_bitrate_kbps,
         )
-    ).unique().scalars().all()
+    )).scalar_one()
+    dupe_count = (await session.execute(
+        select(func.count()).select_from(
+            select(Track.musicbrainz_recording_id)
+            .join(Track.file)
+            .where(Track.musicbrainz_recording_id.is_not(None))
+            .group_by(Track.musicbrainz_recording_id)
+            .having(func.count(Track.id) > 1)
+            .subquery()
+        )
+    )).scalar_one()
+    return {
+        "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count, "genres": genre_count},
+        "quality": {
+            "no_mbid": no_mbid_count, "no_art": no_art_count,
+            "low_quality": low_quality_count, "low_bitrate": low_bitrate_count, "dupes": dupe_count,
+        },
+        "min_bitrate_kbps": settings.min_bitrate_kbps,
+    }
 
-    low_quality = []
-    for row in low_quality_rows:
-        low_quality.append({
-            "internal_id": row.id,
-            "title": row.title,
-            "artist": row.artist.name,
-            "album": row.album.title if row.album else None,
-            "quality_score": row.tag_quality_score,
-            "has_mbid": bool(row.musicbrainz_recording_id),
-            "has_art": bool(row.file and row.file.has_cover_art),
-        })
+
+@router.get("/library", response_class=HTMLResponse)
+async def library_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from service.metadata.quality import LOW_QUALITY_THRESHOLD
+
+    stats_ctx = await _library_stats_context(session)
+    _not_suppressed = (Track.quality_suppressed.is_(None)) | (Track.quality_suppressed == 0)
 
     recent_rows = (
         await session.execute(
             select(Track)
             .join(Track.artist)
             .outerjoin(Track.album)
-            .join(Track.file)  # inner join — only tracks with actual files
+            .join(Track.file)
             .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
             .order_by(TrackFile.created_at.desc())
             .limit(20)
@@ -1510,41 +1496,11 @@ async def library_page(
         )
     ).scalar_one()
 
-    low_bitrate_count = (
-        await session.execute(
-            select(func.count(Track.id))
-            .join(Track.file)
-            .join(Track.artist)
-            .where(
-                TrackFile.bitrate_kbps.isnot(None),
-                TrackFile.bitrate_kbps < settings.min_bitrate_kbps,
-            )
-        )
-    ).scalar_one()
-
-    dupe_count = (await session.execute(
-        select(func.count()).select_from(
-            select(Track.musicbrainz_recording_id)
-            .join(Track.file)
-            .where(Track.musicbrainz_recording_id.is_not(None))
-            .group_by(Track.musicbrainz_recording_id)
-            .having(func.count(Track.id) > 1)
-            .subquery()
-        )
-    )).scalar_one()
-
     return templates.TemplateResponse(
         request, "library.html",
         {
             "active": "library",
-            "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count, "genres": genre_count},
-            "quality": {
-                "no_mbid": no_mbid_count,
-                "no_art": no_art_count,
-                "low_quality": low_quality_count,
-                "low_bitrate": low_bitrate_count,
-                "dupes": dupe_count,
-            },
+            **stats_ctx,
             "recent": [_track_to_ref(r) for r in recent_rows],
             "settings_music_dir": str(settings.music_dir),
             "needs_review_count": needs_review_count,
@@ -2246,6 +2202,17 @@ async def move_track_to_album(
     return HTMLResponse(f'<span style="color:var(--success);font-size:12px">✓ Moved to {target_album.title}</span>')
 
 
+@router.get("/library/stats-fragment", response_class=HTMLResponse)
+async def library_stats_fragment(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return the stats tiles fragment for OOB update after rescan."""
+    stats_ctx = await _library_stats_context(session)
+    inner = templates.get_template("partials/library_stats.html").render(stats_ctx)
+    return HTMLResponse(f'<div id="library-stats" hx-swap-oob="true">{inner}</div>')
+
+
 @router.post("/library/rescan", response_class=HTMLResponse)
 async def library_rescan(
     request: Request,
@@ -2263,11 +2230,16 @@ async def library_rescan(
 
     await _do_scans()
 
-    return HTMLResponse(
+    # OOB-update the stats tiles so the user sees fresh counts without a page reload
+    stats_ctx = await _library_stats_context(session)
+    inner = templates.get_template("partials/library_stats.html").render(stats_ctx)
+    badge = (
         f'<span class="badge badge-done">'
         f'Rescan done — {result.added} added, {result.removed} removed, {result.updated} updated'
         f'</span>'
     )
+    oob = f'<div id="library-stats" hx-swap-oob="true">{inner}</div>'
+    return HTMLResponse(badge + oob)
 
 
 @router.get("/library/tracks/{internal_id}/cover-art")
@@ -2558,6 +2530,47 @@ async def artist_image(
     if img_path.exists():
         return FileResponse(str(img_path), media_type="image/jpeg")
     raise HTTPException(404)
+
+
+@router.get("/library/artists/{artist_id}/mb-search", response_class=HTMLResponse)
+async def artist_mb_search(
+    request: Request,
+    artist_id: str,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Search MusicBrainz for artists by name; returns clickable candidates."""
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+    search_name = q.strip() or artist.name
+    safe_id = artist_id.replace(":", "_")
+    try:
+        import musicbrainzngs as _mb
+        _mb.set_useragent("audioreap", "1.0")
+        result = await asyncio.to_thread(
+            lambda: _mb.search_artists(artist=search_name, limit=6)
+        )
+        candidates = []
+        for a in result.get("artist-list", []):
+            candidates.append({
+                "mbid": a.get("id", ""),
+                "name": a.get("name", ""),
+                "sort_name": a.get("sort-name", ""),
+                "type": a.get("type", ""),
+                "score": a.get("ext:score", ""),
+                "disambiguation": a.get("disambiguation", ""),
+            })
+    except Exception as exc:
+        return HTMLResponse(f'<p class="muted" style="font-size:12px">MB search failed: {exc}</p>')
+
+    if not candidates:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No results.</p>')
+
+    return templates.TemplateResponse(
+        request, "partials/artist_mb_candidates.html",
+        {"candidates": candidates, "input_id": f"artist-mb-id-{safe_id}"},
+    )
 
 
 @router.get("/library/artists/{artist_id}/image-search", response_class=HTMLResponse)

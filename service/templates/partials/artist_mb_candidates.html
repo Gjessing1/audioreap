@@ -1,0 +1,13 @@
+{% for c in candidates %}
+<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--b1)">
+  <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px;white-space:nowrap"
+          onclick="document.getElementById('{{ input_id }}').value='{{ c.mbid }}';this.closest('[id^=artist-mb-results]').innerHTML='<span class=&quot;badge badge-done&quot;>Set ✓</span>'">
+    Use
+  </button>
+  <div style="flex:1;min-width:0">
+    <div style="font-size:13px">{{ c.name }}{% if c.disambiguation %} <span style="color:var(--t3)">({{ c.disambiguation }})</span>{% endif %}</div>
+    <div style="font-size:11px;color:var(--t3)">{{ c.sort_name }} · {{ c.type or "?" }} · {{ c.score }}%</div>
+    <div style="font-size:10px;color:var(--t4);font-family:monospace">{{ c.mbid }}</div>
+  </div>
+</div>
+{% endfor %}
