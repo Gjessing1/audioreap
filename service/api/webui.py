@@ -2759,7 +2759,9 @@ async def save_track_tags(
     row.musicbrainz_recording_id = mbid_val
     row.genre = genre_val
 
+    old_artist_id: str | None = None
     if artist_val != row.artist.name:
+        old_artist_id = row.artist_id
         new_artist_id = await _upsert_artist(session, artist_val)
         row.artist_id = new_artist_id
 
@@ -2778,6 +2780,17 @@ async def save_track_tags(
         track_number=track_num_val, musicbrainz_recording_id=mbid_val, has_cover_art=hca,
     )
     await session.commit()
+
+    # Prune the old artist if it now has no tracks.
+    if old_artist_id:
+        remaining = (await session.execute(
+            select(func.count(Track.id)).where(Track.artist_id == old_artist_id)
+        )).scalar_one()
+        if remaining == 0:
+            old_artist = await session.get(Artist, old_artist_id)
+            if old_artist:
+                await session.delete(old_artist)
+                await session.commit()
 
     try:
         await trigger_scan()
@@ -3469,7 +3482,11 @@ async def apply_art_to_track(
         return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
 
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
-    write_cover_jpg(file_path.parent, art)
+    # Only write sidecar cover.jpg for album tracks — singles share their parent
+    # directory with other singles from the same artist, so a sidecar would
+    # overwrite every sibling's cover.
+    if row.album_id is not None:
+        write_cover_jpg(file_path.parent, art)
     hca = await asyncio.to_thread(_has_cover_art, file_path)
     row.file.has_cover_art = hca
     await session.commit()
@@ -4447,13 +4464,15 @@ async def discography_view(
     from service.metadata.musicbrainz import get_artist_release_groups
     from service.search.matcher import title_similarity
 
-    selected_types = set(types) or {"Album", "EP", "Single"}
+    selected_types = set(types)
 
     artist_name, release_groups = await asyncio.to_thread(
         get_artist_release_groups, artist_mbid, settings.cache_dir
     )
 
-    filtered = [rg for rg in release_groups if rg.release_type in selected_types]
+    # Empty selection means "show all types" — matches typical filter-chip UX where
+    # having nothing active is the same as having everything active.
+    filtered = release_groups if not selected_types else [rg for rg in release_groups if rg.release_type in selected_types]
 
     # Find artist in local DB by fuzzy name match; load albums with track counts
     local_albums_list: list[Album] = []

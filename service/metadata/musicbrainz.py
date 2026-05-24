@@ -405,38 +405,54 @@ def get_artist_release_groups(
 ) -> tuple[str, list[MBReleaseGroup]]:
     """Get artist name and all release groups from MusicBrainz.
 
-    Returns (artist_name, release_groups).
+    Returns (artist_name, release_groups). Fetches all pages so prolific
+    artists (>25 release groups) are fully represented.
     """
-    key = f"artist_rg:{artist_mbid}"
+    key = f"artist_rg_v2:{artist_mbid}"
 
-    raw: dict[str, object] | None = None
+    cached: dict[str, object] | None = None
     if cache_dir is not None:
-        raw = _load_cache(cache_dir, key)
+        cached = _load_cache(cache_dir, key)
 
-    if raw is None:
+    if cached is not None:
+        artist_name = str(cached.get("artist_name") or "Unknown Artist")
+        raw_rgs: list[dict] = cached.get("release_groups") or []  # type: ignore[assignment]
+    else:
+        # Fetch artist name (fast call, no includes).
         try:
-            result = musicbrainzngs.get_artist_by_id(
-                artist_mbid,
-                includes=["release-groups"],
-            )
-            raw = dict(result)
-            if cache_dir is not None:
-                _save_cache(cache_dir, key, raw)
+            artist_result = musicbrainzngs.get_artist_by_id(artist_mbid)
+            artist_name = str(artist_result.get("artist", {}).get("name") or "Unknown Artist")
         except Exception as exc:
-            logger.warning("MB release group fetch failed for %s: %s", artist_mbid, exc)
+            logger.warning("MB artist fetch failed for %s: %s", artist_mbid, exc)
             return "Unknown Artist", []
 
-    artist_data = raw.get("artist") or {}
-    if not isinstance(artist_data, dict):
-        return "Unknown Artist", []
+        # Paginate browse_release_groups (limit 100) to get every release group.
+        raw_rgs = []
+        limit = 100
+        offset = 0
+        while True:
+            try:
+                page = musicbrainzngs.browse_release_groups(
+                    artist=artist_mbid, limit=limit, offset=offset
+                )
+            except Exception as exc:
+                logger.warning("MB browse_release_groups failed for %s offset %d: %s", artist_mbid, offset, exc)
+                break
+            page_list: list[dict] = page.get("release-group-list") or []
+            raw_rgs.extend(page_list)
+            total = int(page.get("release-group-count") or 0)
+            offset += len(page_list)
+            if offset >= total or not page_list:
+                break
 
-    artist_name = str(artist_data.get("name") or "Unknown Artist")
+        if cache_dir is not None:
+            _save_cache(cache_dir, key, {"artist_name": artist_name, "release_groups": raw_rgs})
 
     groups: list[MBReleaseGroup] = []
-    for rg in artist_data.get("release-group-list") or []:
+    for rg in raw_rgs:
         if not isinstance(rg, dict):
             continue
-        rg_type = str(rg.get("type") or rg.get("primary-type") or "Album")
+        rg_type = str(rg.get("type") or rg.get("primary-type") or "Other")
         date = str(rg.get("first-release-date") or "")
         year: int | None = None
         if date and len(date) >= 4:

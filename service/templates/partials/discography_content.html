@@ -12,9 +12,10 @@
 {% if all_types %}
 <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
   {% for t in all_types %}
+  {% set is_active = t in selected_types %}
   <button onclick="toggleDiscoType('{{ artist_mbid }}', '{{ t }}', '{{ selected_types|join(',') }}')"
-          style="border:1px solid {% if t in selected_types %}var(--primary){% else %}var(--b2){% endif %};
-                 background:{% if t in selected_types %}var(--primary){% else %}transparent{% endif %};
+          style="border:1px solid {% if is_active %}var(--primary){% else %}var(--b2){% endif %};
+                 background:{% if is_active %}var(--primary){% else %}transparent{% endif %};
                  color:var(--text);
                  border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">
     {{ t }}
@@ -46,7 +47,7 @@
             hx-target="#rg-tracks-{{ r.release_group_id }}"
             hx-swap="innerHTML"
             hx-indicator="#rg-spinner-{{ r.release_group_id }}">
-      Acquire
+      Show tracks
       <span id="rg-spinner-{{ r.release_group_id }}" class="htmx-indicator"><span class="spinner"></span></span>
     </button>
     {% endif %}
