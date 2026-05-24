@@ -15,6 +15,7 @@
   </div>
   <div class="card-actions">
     <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
+    <a href="{{ c.provider_ref|e }}" target="_blank" class="btn btn-sm btn-ghost" title="Open on YouTube" style="font-size:11px">↗</a>
     <form hx-post="/library/tracks/{{ track.id }}/queue-replacement"
           hx-target="#replace-status-{{ safe_id }}"
           hx-swap="innerHTML"
@@ -29,3 +30,18 @@
 {% elif q %}
 <p class="muted" style="font-size:13px;padding:8px 0">No results for "{{ q }}".</p>
 {% endif %}
+
+<div style="margin-top:12px;border-top:1px solid var(--b1);padding-top:10px">
+  <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);margin-bottom:6px">
+    Or enter a URL directly
+  </div>
+  <form hx-post="/library/tracks/{{ track.id }}/queue-url-replacement"
+        hx-target="#replace-status-{{ safe_id }}"
+        hx-swap="innerHTML"
+        style="display:flex;gap:6px">
+    <input class="rv-input" name="url" type="url"
+           placeholder="YouTube or YouTube Music URL…"
+           style="flex:1;font-size:12px" autocomplete="off" required>
+    <button type="submit" class="btn btn-sm">Queue</button>
+  </form>
+</div>

@@ -74,7 +74,7 @@
 </div>
 
 <div id="browse-results"
-     hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}&sort={{ sort or 'artist' }}"
+     hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}&sort={{ sort or 'artist' }}{% if genre %}&genre={{ genre|urlencode }}{% endif %}"
      hx-trigger="load"
      hx-swap="innerHTML">
   <div style="color:var(--t3);font-size:13px;padding:20px 0;display:flex;gap:8px;align-items:center">

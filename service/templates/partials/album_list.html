@@ -3,7 +3,16 @@
   {% if singles_count %}
   <a href="/library/browse?f=singles" style="text-decoration:none;color:inherit;display:block">
   <div class="album-row" style="cursor:pointer">
-    <div class="album-art" style="background:var(--b1);display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--t4)">♪</div>
+    <div class="album-art">
+      {% if singles_cover_id %}
+      <img src="/library/tracks/{{ singles_cover_id }}/cover-art"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+           class="album-art-img" loading="lazy" alt="">
+      <div class="album-art-ph" style="display:none">♪</div>
+      {% else %}
+      <div class="album-art-ph">♪</div>
+      {% endif %}
+    </div>
     <div class="album-info">
       <div class="album-title">Singles</div>
       <div class="album-meta">{{ singles_count }} track{% if singles_count != 1 %}s{% endif %} · no album</div>

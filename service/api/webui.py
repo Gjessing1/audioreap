@@ -1357,7 +1357,9 @@ async def library_page(
 
     low_bitrate_count = (
         await session.execute(
-            select(func.count(TrackFile.id))
+            select(func.count(Track.id))
+            .join(Track.file)
+            .join(Track.artist)
             .where(
                 TrackFile.bitrate_kbps.isnot(None),
                 TrackFile.bitrate_kbps < settings.min_bitrate_kbps,
@@ -1579,13 +1581,23 @@ async def library_albums_list(
         scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
         album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
     singles_count = 0
+    singles_cover_id: str | None = None
     if not q.strip():
         singles_count = (await session.execute(
             select(func.count(Track.id)).join(Track.file).where(Track.album_id.is_(None))
         )).scalar_one()
+        if singles_count:
+            cover_row = (await session.execute(
+                select(Track.id)
+                .join(Track.file)
+                .where(Track.album_id.is_(None), TrackFile.has_cover_art == 1)
+                .limit(1)
+            )).scalar_one_or_none()
+            singles_cover_id = cover_row
     return templates.TemplateResponse(
         request, "partials/album_list.html",
-        {"albums": albums, "q": q, "album_quality": album_quality, "singles_count": singles_count},
+        {"albums": albums, "q": q, "album_quality": album_quality,
+         "singles_count": singles_count, "singles_cover_id": singles_cover_id},
     )
 
 
@@ -2399,12 +2411,13 @@ async def library_browse(
     q: str = "",
     f: str = "",
     sort: str = "artist",
+    genre: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Unified library browser: search + quality review + metadata edit."""
     return templates.TemplateResponse(
         request, "library_browse.html",
-        {"active": "library", "q": q, "f": f, "sort": sort},
+        {"active": "library", "q": q, "f": f, "sort": sort, "genre": genre},
     )
 
 
@@ -2415,6 +2428,7 @@ async def library_browse_results(
     f: str = "",
     sort: str = "artist",
     offset: int = 0,
+    genre: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.metadata.quality import LOW_QUALITY_THRESHOLD
@@ -2475,6 +2489,11 @@ async def library_browse_results(
         stmt = stmt.where(Track.musicbrainz_recording_id.in_(dupe_rids_sub))
     elif f == "singles":
         stmt = stmt.where(Track.album_id.is_(None))
+    elif f == "no_genre":
+        stmt = stmt.where(Track.genre.is_(None))
+    elif f == "genre":
+        if genre:
+            stmt = stmt.where(Track.genre == genre)
 
     all_rows = (await session.execute(stmt)).unique().scalars().all()
     has_more = len(all_rows) > _BROWSE_PAGE
@@ -3099,6 +3118,72 @@ async def queue_replacement_track(
             provider_name=locked.provider,
             provider_ref=provider_ref,
             candidate_json=locked.model_dump_json(),
+            music_dir=str(settings.music_dir),
+            tmp_acquire_dir=str(settings.tmp_acquire_dir),
+            _job_id=f"acquire:{job_id}",
+        )
+        await redis.aclose()
+    except Exception as exc:
+        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+
+    safe_id = internal_id.replace(":", "_")
+    return HTMLResponse(
+        f'<span class="badge badge-done" id="replace-status-{safe_id}">'
+        f'Queued → <a href="/jobs">Jobs ↗</a></span>'
+    )
+
+
+@router.post("/library/tracks/{internal_id}/queue-url-replacement", response_class=HTMLResponse)
+async def queue_url_replacement(
+    request: Request,
+    internal_id: str,
+    url: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue a replacement download from a user-supplied URL."""
+    from service.acquisition.jobs import create_job
+    from service.core.models import TrackCandidate
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+
+    candidate = TrackCandidate(
+        provider="ytdlp",
+        provider_ref=url.strip(),
+        title=row.title,
+        artist=row.artist.name,
+        album=row.album.title if row.album else None,
+        year=row.album.year if row.album else None,
+        track_number=row.track_number,
+        mb_recording_id=row.musicbrainz_recording_id,
+        mb_release_id=row.album.musicbrainz_release_id if row.album else None,
+    )
+
+    job_id = await create_job(
+        session,
+        provider_name=candidate.provider,
+        provider_ref=candidate.provider_ref,
+        candidate=candidate,
+        query=f"{candidate.artist} - {candidate.title} [url-replacement]",
+    )
+    await session.commit()
+
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job(
+            "acquire_track",
+            job_id=job_id,
+            provider_name=candidate.provider,
+            provider_ref=candidate.provider_ref,
+            candidate_json=candidate.model_dump_json(),
             music_dir=str(settings.music_dir),
             tmp_acquire_dir=str(settings.tmp_acquire_dir),
             _job_id=f"acquire:{job_id}",
