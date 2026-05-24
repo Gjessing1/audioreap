@@ -454,6 +454,8 @@ async def run_acquisition(
             "disc_number": disc_number,
             "duration_seconds": duration,
             "ext": ext,
+            "source_codec": fetch_result.codec,
+            "source_bitrate_kbps": fetch_result.bitrate_kbps,
             "mb_recording_id": mb_recording_id,
             "mb_release_id": mb_release_id,
             "mb_release_group_id": mb_release_group_id,

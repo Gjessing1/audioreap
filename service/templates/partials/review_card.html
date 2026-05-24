@@ -284,7 +284,17 @@
   {# ── Source replacement panel — shown with no file too (ghost track case) #}
   {% if not is_enrichment %}
   <div id="src-panel-{{ job_id }}" class="mb-panel {% if not show_src_panel %}hidden{% endif %}">
-    <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find a different YouTube version</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <div style="font-size:11px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.06em">Find a different YouTube version</div>
+      {% if meta.source_codec or meta.source_bitrate_kbps %}
+      <span style="font-size:11px;color:var(--t3)">Current:
+        {% if meta.source_codec %}<strong>{{ meta.source_codec }}</strong>{% endif %}
+        {% if meta.source_bitrate_kbps %}
+        <strong style="color:{% if meta.source_bitrate_kbps >= 200 %}var(--success){% elif meta.source_bitrate_kbps >= 128 %}var(--t2){% else %}var(--danger){% endif %}">{{ meta.source_bitrate_kbps }}k</strong>
+        {% endif %}
+      </span>
+      {% endif %}
+    </div>
     <form class="mb-search-row"
           hx-get="/jobs/{{ job_id }}/search-source"
           hx-target="#src-results-{{ job_id }}"

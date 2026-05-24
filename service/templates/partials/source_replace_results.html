@@ -1,3 +1,16 @@
+{% if source_codec or source_bitrate_kbps %}
+<div style="font-size:11px;color:var(--t3);margin-bottom:8px;padding:5px 8px;background:var(--b1);border-radius:4px">
+  Current source:
+  {% if source_codec %}<strong>{{ source_codec }}</strong>{% endif %}
+  {% if source_bitrate_kbps %}
+  <strong style="color:{% if source_bitrate_kbps >= 200 %}var(--success){% elif source_bitrate_kbps >= 128 %}var(--t2){% else %}var(--danger){% endif %}">
+    {{ source_bitrate_kbps }}k
+  </strong>
+  {% endif %}
+  {% if source_bitrate_kbps and source_bitrate_kbps < 128 %}<span style="color:var(--danger)">— low bitrate</span>{% endif %}
+</div>
+{% endif %}
+
 {% if candidates %}
 <div style="display:flex;flex-direction:column;gap:6px">
   {% for c in candidates %}
@@ -11,6 +24,11 @@
       <div class="card-title" style="font-size:13px">{{ c.title }}</div>
       <div class="card-sub">
         {{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}{% endif %}
+        {% if c.abr %}
+        <span style="color:{% if c.abr >= 200 %}var(--success){% elif c.abr >= 128 %}var(--t3){% else %}var(--danger){% endif %};margin-left:4px">
+          {{ c.acodec or '' }} {{ c.abr }}k
+        </span>
+        {% endif %}
       </div>
     </div>
     <div class="card-actions">

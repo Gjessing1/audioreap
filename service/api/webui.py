@@ -1513,6 +1513,7 @@ async def job_search_source(
     request: Request,
     job_id: str,
     q: str = "",
+    session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Search YouTube for an alternative source to replace the staged file."""
     candidates: list[dict[str, object]] = []
@@ -1523,18 +1524,36 @@ async def job_search_source(
             import service.providers.ytdlp  # noqa
             provider = get_provider("ytdlp")()
             async for c in provider.search(SearchQuery(q=q.strip(), limit=8)):
+                abr = c.raw_metadata.get("abr") or c.raw_metadata.get("tbr")
+                acodec = c.raw_metadata.get("acodec") or c.raw_metadata.get("ext")
                 candidates.append({
                     "title": c.title, "artist": c.artist,
                     "duration_seconds": c.duration_seconds,
                     "provider_ref": c.provider_ref,
                     "thumbnail_url": c.thumbnail_url,
                     "candidate_json": c.model_dump_json(),
+                    "abr": int(abr) if abr else None,
+                    "acodec": str(acodec) if acodec else None,
                 })
         except Exception as exc:
             logger.warning("Source search failed: %s", exc)
+
+    # Pass current source quality so the template can show what we have now
+    source_codec: str | None = None
+    source_bitrate_kbps: int | None = None
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row and row.resolved_metadata_json:
+        try:
+            _meta = json.loads(row.resolved_metadata_json)
+            source_codec = _meta.get("source_codec")
+            source_bitrate_kbps = _meta.get("source_bitrate_kbps")
+        except Exception:
+            pass
+
     return templates.TemplateResponse(
         request, "partials/source_replace_results.html",
-        {"candidates": candidates, "q": q, "job_id": job_id},
+        {"candidates": candidates, "q": q, "job_id": job_id,
+         "source_codec": source_codec, "source_bitrate_kbps": source_bitrate_kbps},
     )
 
 
