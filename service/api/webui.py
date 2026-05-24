@@ -1115,6 +1115,39 @@ async def dismiss_job(
     return HTMLResponse("")
 
 
+@router.get("/jobs/{job_id}/suggest-track-number", response_class=HTMLResponse)
+async def suggest_track_number(
+    request: Request,
+    job_id: str,
+    album: str = "",
+    title: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Find the best-matching track in an existing album and return the track number as an HTML snippet."""
+    from service.search.matcher import title_similarity
+
+    if not album or not title:
+        return HTMLResponse("")
+
+    tracks = (await session.execute(
+        select(Track.title, Track.track_number)
+        .join(Track.album)
+        .where(Album.title.ilike(f"%{album.strip()}%"), Track.track_number.isnot(None))
+    )).all()
+
+    if not tracks:
+        return HTMLResponse("")
+
+    best = max(tracks, key=lambda r: title_similarity(r.title, title))
+    if title_similarity(best.title, title) < 0.6:
+        return HTMLResponse("")
+
+    return HTMLResponse(
+        f'<span style="font-size:11px;color:var(--t3);margin-left:4px">'
+        f'→ track {best.track_number} in library</span>'
+    )
+
+
 @router.post("/jobs/retry-all-failed", response_class=HTMLResponse)
 async def retry_all_failed(
     request: Request,
@@ -1213,6 +1246,11 @@ async def delete_track(
     session.add(tombstone)
     await session.delete(row)
     await session.commit()
+    try:
+        from service.navidrome.client import trigger_scan as _ts
+        await _ts()
+    except Exception:
+        pass
     return HTMLResponse("")
 
 
@@ -1738,6 +1776,51 @@ async def album_update_meta(
     return templates.TemplateResponse(
         request, "partials/album_detail.html",
         {"album": album_reloaded, "cover_track": cover_track, "saved": True},
+    )
+
+
+@router.post("/library/albums/{album_id}/set-genre", response_class=HTMLResponse)
+async def album_set_genre(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Set (or clear) genre on all tracks in an album — DB + file tags."""
+    from sqlalchemy.orm import joinedload as _jl
+    from service.library.tagger import write_tags as _write_tags
+    from service.navidrome.client import trigger_scan
+
+    form = await request.form()
+    genre_val = (form.get("genre") or "").strip() or None
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    updated = 0
+    for track in album.tracks:
+        track.genre = genre_val
+        if track.file:
+            fp = Path(track.file.path)
+            if fp.exists():
+                try:
+                    await asyncio.to_thread(_write_tags, fp, genre=genre_val or "")
+                    updated += 1
+                except Exception as exc:
+                    logger.warning("album set-genre tag write failed for %s: %s", fp, exc)
+    await session.commit()
+    try:
+        await trigger_scan()
+    except Exception:
+        pass
+
+    label = f'"{genre_val}"' if genre_val else "removed"
+    return HTMLResponse(
+        f'<span class="badge badge-done">Genre {label} set on {updated} track(s) ✓</span>'
     )
 
 
@@ -3561,6 +3644,11 @@ async def fetch_track_art(
         has_cover_art=hca,
     )
     await session.commit()
+    try:
+        from service.navidrome.client import trigger_scan as _ts
+        await _ts()
+    except Exception:
+        pass
 
     return HTMLResponse('<span class="badge badge-done">Art embedded ✓</span>')
 
@@ -3734,6 +3822,11 @@ async def apply_art_to_track(
     hca = await asyncio.to_thread(_has_cover_art, file_path)
     row.file.has_cover_art = hca
     await session.commit()
+    try:
+        from service.navidrome.client import trigger_scan as _ts
+        await _ts()
+    except Exception:
+        pass
 
     # Refresh the cover art preview in the card header via OOB swap.
     # The card uses id="edit-cover-{safe_id}" where safe_id = track.id.replace(':', '_').
@@ -3798,6 +3891,11 @@ async def apply_art_to_album(
         write_cover_jpg(album_dir, art)
 
     await session.commit()
+    try:
+        from service.navidrome.client import trigger_scan as _ts
+        await _ts()
+    except Exception:
+        pass
     return HTMLResponse(f'<span class="badge badge-done">Art applied to {embedded} track(s) ✓</span>')
 
 
@@ -3896,6 +3994,11 @@ async def upload_album_cover(
         write_cover_jpg(album_dir, art)
 
     await session.commit()
+    try:
+        from service.navidrome.client import trigger_scan as _ts
+        await _ts()
+    except Exception:
+        pass
     return HTMLResponse(f'<span class="badge badge-done">Cover saved to {embedded} track(s) ✓</span>')
 
 

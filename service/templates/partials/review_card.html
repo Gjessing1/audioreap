@@ -123,6 +123,11 @@
         <input class="rv-input" name="album" value="{{ meta.album or '' }}"
                list="album-list-rv-{{ job_id }}"
                placeholder="Leave blank for Singles" autocomplete="off"
+               hx-get="/jobs/{{ job_id }}/suggest-track-number"
+               hx-trigger="change"
+               hx-vals="js:{album: this.value, title: this.closest('form').querySelector('[name=title]').value}"
+               hx-target="#tn-suggest-{{ job_id }}"
+               hx-swap="innerHTML"
                {% if not staging_exists %}disabled{% endif %}>
         <datalist id="album-list-rv-{{ job_id }}">
           {% for a in album_names|default([]) %}<option value="{{ a }}">{% endfor %}
@@ -150,6 +155,7 @@
         {% elif candidate_track_number %}
         <div style="font-size:11px;color:var(--t4);margin-top:2px">tracklist: <strong>{{ candidate_track_number }}</strong></div>
         {% endif %}
+        <span id="tn-suggest-{{ job_id }}" style="font-size:11px;color:var(--accent)"></span>
       </div>
       <div class="rv-field rv-field--full">
         <label class="rv-label">Genre <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--t4)">(one genre preferred)</span></label>

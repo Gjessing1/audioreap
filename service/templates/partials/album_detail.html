@@ -114,6 +114,19 @@
         <input class="rv-input" name="year" type="number" value="{{ album.year or '' }}" autocomplete="off">
       </div>
     </div>
+    {# Genre for all tracks #}
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <form hx-post="/library/albums/{{ album.id }}/set-genre"
+            hx-target="#album-genre-result-{{ aid }}"
+            hx-swap="innerHTML"
+            style="display:flex;gap:6px;align-items:center;flex:1;min-width:0">
+        <label class="rv-label" style="white-space:nowrap;margin-bottom:0">Genre (all tracks)</label>
+        <input class="rv-input" name="genre" autocomplete="off" style="flex:1;min-width:80px"
+               placeholder="e.g. Rock" value="{{ album.tracks[0].genre if album.tracks and album.tracks[0].genre else '' }}">
+        <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px;white-space:nowrap">Set all</button>
+      </form>
+      <span id="album-genre-result-{{ aid }}" style="font-size:12px"></span>
+    </div>
     <div class="rv-actions">
       <button type="submit" class="btn rv-approve" style="height:36px;font-size:13px">Save album</button>
       <button type="button" class="btn btn-sm btn-ghost"
