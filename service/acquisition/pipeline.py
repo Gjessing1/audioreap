@@ -586,6 +586,20 @@ async def run_acquisition(
             mb_match_source or "none", quality_score * 100, job_id, staging_dest,
         )
 
+        # ── Source replacement: auto-approve when no flags raised ──────────────
+        # The user already previewed and explicitly chose the replacement source;
+        # the rest of the track's metadata stays unchanged. Skip the review queue
+        # unless something looks wrong (force_staging_reason set).
+        if candidate.skip_dedup and not force_staging_reason:
+            logger.info("Auto-approving replacement job %s — user already vetted source", job_id)
+            try:
+                await place_approved_track(job_id, {}, session, scan_trigger)
+            except Exception as exc:
+                logger.warning(
+                    "Auto-approve for replacement %s failed — left in needs_review: %s",
+                    job_id, exc,
+                )
+
 
 async def place_approved_track(
     job_id: str,
