@@ -244,7 +244,9 @@ async def run_acquisition(
         mb_artist_id: str | None = None
         mb_artist_sort: str | None = None
         mb_original_year: int | None = None
-        mb_release_group_id: str | None = None
+        # Seed from candidate so discography/album jobs always carry the RG ID
+        # even when the MB lookup returns a result without release_group_id.
+        mb_release_group_id: str | None = candidate.mb_release_group_id
         isrc: str | None = None
         acoustid_confidence: float | None = None
         mb_match_source: str | None = None
@@ -329,7 +331,9 @@ async def run_acquisition(
                 mb_artist_id = mb.artist_id  # type: ignore[union-attr]
                 mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
                 mb_original_year = mb.original_year  # type: ignore[union-attr]
-                mb_release_group_id = mb.release_group_id  # type: ignore[union-attr]
+                # Keep candidate's release_group_id as fallback so album-locked jobs
+                # never lose the RG ID when MB returns an incomplete result.
+                mb_release_group_id = mb.release_group_id or mb_release_group_id  # type: ignore[union-attr]
                 isrc = mb.isrc  # type: ignore[union-attr]
                 prov_recording = mb_match_source or "mb"
                 # Only accept title/artist from MB if the MB result actually corresponds
