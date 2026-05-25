@@ -15,22 +15,20 @@
 </head>
 <body>
 <nav id="main-nav">
-  <div class="nav-inner">
-    <a href="/acquire" class="brand">audioreap</a>
-    <button class="nav-toggle" id="nav-toggle" aria-label="Menu" aria-expanded="false">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
-        <line x1="1" y1="4" x2="15" y2="4"/>
-        <line x1="1" y1="8" x2="15" y2="8"/>
-        <line x1="1" y1="12" x2="15" y2="12"/>
-      </svg>
-    </button>
-    <div class="nav-links" id="nav-links">
-      <a href="/acquire"   {% if active == 'acquire'  %}class="active"{% endif %}>Acquire</a>
-      <a href="/jobs"      {% if active == 'jobs'      %}class="active"{% endif %}>
-        Jobs <span hx-get="/nav/review-count" hx-trigger="load, every 30s" hx-swap="outerHTML"></span>
-      </a>
-      <a href="/library"   {% if active == 'library'   %}class="active"{% endif %}>Library</a>
-    </div>
+  <a href="/acquire" class="brand">audioreap</a>
+  <button class="nav-toggle" id="nav-toggle" aria-label="Menu" aria-expanded="false">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
+      <line x1="1" y1="4" x2="15" y2="4"/>
+      <line x1="1" y1="8" x2="15" y2="8"/>
+      <line x1="1" y1="12" x2="15" y2="12"/>
+    </svg>
+  </button>
+  <div class="nav-links" id="nav-links">
+    <a href="/acquire"   {% if active == 'acquire'  %}class="active"{% endif %}>Acquire</a>
+    <a href="/jobs"      {% if active == 'jobs'      %}class="active"{% endif %}>
+      Jobs <span hx-get="/nav/review-count" hx-trigger="load, every 30s" hx-swap="outerHTML"></span>
+    </a>
+    <a href="/library"   {% if active == 'library'   %}class="active"{% endif %}>Library</a>
   </div>
 </nav>
 
