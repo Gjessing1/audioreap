@@ -59,8 +59,12 @@
     </div>
     {# Actions #}
     <div class="album-actions">
-      {% if album.musicbrainz_release_id or album.mb_release_group_id %}
-      <span class="badge badge-done" title="MusicBrainz matched — expand to compare tracklist">MB</span>
+      {% if album.mb_release_group_id %}
+      <a href="https://musicbrainz.org/release-group/{{ album.mb_release_group_id }}" target="_blank" rel="noopener"
+         class="badge badge-done" title="MusicBrainz release group: {{ album.mb_release_group_id }}" style="text-decoration:none">MB ↗</a>
+      {% elif album.musicbrainz_release_id %}
+      <a href="https://musicbrainz.org/release/{{ album.musicbrainz_release_id }}" target="_blank" rel="noopener"
+         class="badge badge-done" title="MusicBrainz release: {{ album.musicbrainz_release_id }}" style="text-decoration:none">MB ↗</a>
       {% endif %}
       {% set aq = album_quality[album.id] if album_quality is defined and album.id in album_quality else none %}
       {% if aq is not none %}

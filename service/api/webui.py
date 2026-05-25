@@ -1480,11 +1480,18 @@ async def _library_stats_context(session: AsyncSession) -> dict:
             .subquery()
         )
     )).scalar_one()
+    quality_suppressed_count = (await session.execute(
+        select(func.count(Track.id)).where(Track.quality_suppressed == 1)
+    )).scalar_one()
+    bitrate_suppressed_count = (await session.execute(
+        select(func.count(Track.id)).where(Track.bitrate_suppressed == 1)
+    )).scalar_one()
     return {
         "stats": {"tracks": track_count, "albums": album_count, "artists": artist_count, "genres": genre_count},
         "quality": {
             "no_mbid": no_mbid_count, "no_art": no_art_count,
             "low_quality": low_quality_count, "low_bitrate": low_bitrate_count, "dupes": dupe_count,
+            "quality_suppressed": quality_suppressed_count, "bitrate_suppressed": bitrate_suppressed_count,
         },
         "min_bitrate_kbps": settings.min_bitrate_kbps,
     }
@@ -2622,11 +2629,15 @@ async def artist_mb_search(
     )
 
 
+_ARTIST_IMG_PAGE_SIZE = 10
+
+
 @router.get("/library/artists/{artist_id}/image-search", response_class=HTMLResponse)
 async def artist_image_search(
     request: Request,
     artist_id: str,
     q: str = "",
+    offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Search Deezer for artist images (no API key required)."""
@@ -2639,7 +2650,7 @@ async def artist_image_search(
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 "https://api.deezer.com/search/artist",
-                params={"q": search_name, "limit": 6},
+                params={"q": search_name, "limit": _ARTIST_IMG_PAGE_SIZE, "index": offset},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -2647,13 +2658,20 @@ async def artist_image_search(
         return HTMLResponse(f'<p class="muted" style="font-size:12px">Image search failed: {exc}</p>')
 
     results = [
-        {"name": item["name"], "image_url": item.get("picture_medium", ""), "deezer_id": item["id"]}
+        {"name": item["name"], "image_url": item.get("picture_xl") or item.get("picture_medium", ""), "deezer_id": item["id"]}
         for item in data.get("data", [])
         if item.get("picture_medium") and "default_artist" not in item.get("picture_medium", "")
     ]
+    has_more = len(results) >= _ARTIST_IMG_PAGE_SIZE
     return templates.TemplateResponse(
         request, "partials/artist_image_candidates.html",
-        {"artist_id": artist_id, "results": results, "q": search_name},
+        {
+            "artist_id": artist_id,
+            "results": results,
+            "q": search_name,
+            "offset": offset,
+            "next_offset": offset + _ARTIST_IMG_PAGE_SIZE if has_more else None,
+        },
     )
 
 
