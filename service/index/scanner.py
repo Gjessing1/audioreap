@@ -133,6 +133,7 @@ async def _upsert_track_file(
         row.container = tagged.container
         row.bitrate_kbps = tagged.bitrate_kbps
         row.sample_rate_hz = tagged.sample_rate_hz
+        row.has_cover_art = tagged.has_cover_art
         row.file_mtime = file_mtime
         return True
 

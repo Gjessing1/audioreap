@@ -1164,16 +1164,7 @@ async def job_mb_apply(
     return templates.TemplateResponse(request, "partials/review_card.html", ctx)
 
 
-_EXPLICIT_RE = re.compile(r"\b(explicit|explicit version)\b", re.IGNORECASE)
-_CLEAN_RE = re.compile(r"\b(clean|clean version|radio edit|censored|edited)\b", re.IGNORECASE)
-
-
-def _explicit_score(title: str) -> int:
-    if _EXPLICIT_RE.search(title):
-        return 1
-    if _CLEAN_RE.search(title):
-        return -1
-    return 0
+from service.providers.ytdlp import explicit_score as _explicit_score, looks_like_live as _looks_like_live
 
 
 @router.delete("/jobs/dismiss/{job_id}", response_class=HTMLResponse)
@@ -2333,7 +2324,7 @@ async def track_cover_art(
     if not art:
         raise HTTPException(404)
     return Resp(content=art, media_type="image/jpeg",
-                headers={"Cache-Control": "public, max-age=3600"})
+                headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/jobs/{job_id}/cover-art")
@@ -4681,27 +4672,7 @@ def _yt_search_one(query: str) -> str:
 
 # Keywords that indicate a result is a live recording, cover, or tribute —
 # not the original studio track we're looking for.
-_LIVE_KEYWORDS = frozenset({
-    "live", "concert", "in concert", "at the", "at madison", "tour",
-    "tribute", "cover", "karaoke", "instrumental", "acoustic",
-    "session", "radio edit", "bbc", "unplugged", "bootleg",
-})
-
-
-def _looks_like_live(title: str) -> bool:
-    """Return True if a YouTube result title suggests a live/cover/tribute version."""
-    import re
-    lower = title.lower()
-    # Quick check for parenthesised/bracketed qualifiers like "(live)", "[concert]"
-    bracketed = re.findall(r'[\(\[\{]([^\)\]\}]+)[\)\]\}]', lower)
-    for chunk in bracketed:
-        words = set(chunk.split())
-        if words & _LIVE_KEYWORDS:
-            return True
-    # Also catch plain suffixes like "- Live at ..." or "- Live Version"
-    if re.search(r'\blive\b', lower) or re.search(r'\btribute\b', lower):
-        return True
-    return False
+from service.providers.ytdlp import yt_search_best as _yt_search_best_shared
 
 
 def _yt_search_best(
@@ -4711,87 +4682,10 @@ def _yt_search_best(
     n_candidates: int = 5,
     prefer_ytm: bool = True,
 ) -> tuple[str, float]:
-    """Search for the best-matching studio version on YouTube (Music).
-
-    Fetches up to *n_candidates* results, scores each by:
-    - Title similarity to expected title (65 %)
-    - Duration proximity (25 %)
-    - Live/cover penalty (−0.30 if flagged)
-
-    Returns (url, best_score). Score < 0.35 means no confident match was found.
-    Caller should abort the download rather than queuing a likely-wrong result.
-    """
-    import yt_dlp
-    from service.search.matcher import title_similarity as _tsim
-
-    query = f"{artist} {title}"
-    # YouTube Music tends to have cleaner studio-track results
-    prefix = f"ytmsearch{n_candidates}" if prefer_ytm else f"ytsearch{n_candidates}"
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
-
-    entries = []
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"{prefix}:{query}", download=False)
-        entries = (info or {}).get("entries") or []
-    except Exception:
-        pass
-
-    # Fall back to regular YouTube if YouTube Music returned nothing
-    if not entries and prefer_ytm:
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"ytsearch{n_candidates}:{query}", download=False)
-            entries = (info or {}).get("entries") or []
-        except Exception:
-            pass
-
-    if not entries:
-        return f"ytsearch1:{query}", 0.0
-
-    best_url = ""
-    best_score = -1.0
-
-    for entry in entries:
-        if not entry:
-            continue
-        vid_title = str(entry.get("track") or entry.get("title") or "")
-        vid_dur = entry.get("duration")
-        vid_id = entry.get("id") or ""
-        url = str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")
-
-        # Title similarity: use track-only field if available (YouTube Music sets it)
-        t_sim = _tsim(title, vid_title)
-
-        # Duration proximity score (0–1)
-        dur_score = 0.5  # neutral when unknown
-        if duration_seconds and vid_dur:
-            delta = abs(duration_seconds - int(vid_dur))
-            if delta <= 5:
-                dur_score = 1.0
-            elif delta <= 15:
-                dur_score = 0.8
-            elif delta <= 30:
-                dur_score = 0.6
-            elif delta > 90:
-                dur_score = 0.1
-
-        score = t_sim * 0.65 + dur_score * 0.25
-
-        # Prefer explicit / penalise clean versions when prefer_explicit is on
-        exp = _explicit_score(vid_title)
-        if exp != 0:
-            score += exp * 0.10 if settings.prefer_explicit else -exp * 0.05
-
-        # Penalise live / cover / tribute versions (unless the user is searching for one)
-        if _looks_like_live(vid_title) and not _looks_like_live(title):
-            score -= 0.30
-
-        if score > best_score:
-            best_score = score
-            best_url = url
-
-    return best_url or f"ytsearch1:{query}", max(best_score, 0.0)
+    return _yt_search_best_shared(
+        artist, title, duration_seconds, n_candidates, prefer_ytm,
+        prefer_explicit=settings.prefer_explicit,
+    )
 
 
 # ── Discography ───────────────────────────────────────────────────────────
@@ -5668,9 +5562,9 @@ async def fetch_album_cover(
     album_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Fetch cover art from Cover Art Archive and write as cover.jpg."""
+    """Fetch cover art from Cover Art Archive and embed in all tracks + write cover.jpg."""
     from sqlalchemy.orm import joinedload as _jl
-    from service.library.tagger import write_cover_jpg
+    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
     from service.metadata.artwork import fetch_from_caa
 
     album = (await session.execute(
@@ -5715,13 +5609,25 @@ async def fetch_album_cover(
     except Exception as exc:
         return HTMLResponse(f'<span class="badge-warn">Write failed: {exc}</span>')
 
-    # Update has_cover_art on all track files in this album
+    # Embed art in every track file and update DB
+    embedded = 0
     for track in album.tracks:
-        if track.file:
-            track.file.has_cover_art = True
-    await session.commit()
+        if not track.file:
+            continue
+        fp = Path(track.file.path)
+        if not fp.exists():
+            continue
+        try:
+            await asyncio.to_thread(_write_tags, fp, artwork_bytes=art)
+            track.file.has_cover_art = await asyncio.to_thread(_has_cover_art, fp)
+            embedded += 1
+        except Exception as exc:
+            logger.debug("fetch_album_cover: embed failed for %s: %s", fp, exc)
 
-    return HTMLResponse('<span class="badge-ok">Cover saved ✓</span>')
+    await session.commit()
+    await _do_scans()
+
+    return HTMLResponse(f'<span class="badge-ok">Cover saved to {embedded} track(s) ✓</span>')
 
 
 @router.post("/library/albums/{canonical_id}/merge/{source_id}", response_class=HTMLResponse)

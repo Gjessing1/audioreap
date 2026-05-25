@@ -318,10 +318,29 @@ async def acquire_album_from_mb(
         await session.flush()
         import_session_id = import_session.id
 
+        from service.providers.ytdlp import yt_search_best as _yt_search_best
+        prefer_explicit: bool = getattr(_settings, "prefer_explicit", True)
+
         for t in mb_tracks:
             if t.recording_id and t.recording_id in owned_recording_ids:
                 continue
-            search_ref = f"ytsearch1:{artist_name} {t.title}"
+
+            # Score top YouTube Music candidates instead of taking yt-dlp's #1 blindly
+            yt_url, yt_score = await _asyncio.to_thread(
+                _yt_search_best,
+                artist_name,
+                t.title,
+                t.duration_seconds,
+                5,
+                True,
+                prefer_explicit,
+            )
+            # Fall back to unscored search when no result scored high enough
+            if yt_score < 0.35:
+                search_ref = f"ytsearch1:{artist_name} {t.title}"
+            else:
+                search_ref = yt_url
+
             candidate = TrackCandidate(
                 provider="ytdlp",
                 provider_ref=search_ref,

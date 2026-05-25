@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -315,3 +316,124 @@ class YtdlpProvider(Provider):
                 message=str(exc),
                 checked_at=datetime.now(UTC),
             )
+
+
+# ── Shared YouTube source-selection helpers ──────────────────────────────────
+
+_EXPLICIT_RE = re.compile(r"\b(explicit|explicit version)\b", re.IGNORECASE)
+_CLEAN_RE = re.compile(r"\b(clean|clean version|radio edit|censored|edited)\b", re.IGNORECASE)
+
+_LIVE_KEYWORDS = frozenset({
+    "live", "concert", "in concert", "at the", "at madison", "tour",
+    "tribute", "cover", "karaoke", "instrumental", "acoustic",
+    "session", "radio edit", "bbc", "unplugged", "bootleg",
+})
+
+
+def explicit_score(title: str, age_limit: int | None = None) -> int:
+    """Return +1 for explicit, -1 for clean/radio-edit, 0 otherwise.
+
+    age_limit: yt-dlp's age_limit field (18 = explicit) takes precedence over title keywords.
+    """
+    if age_limit is not None and age_limit >= 18:
+        return 1
+    if _EXPLICIT_RE.search(title):
+        return 1
+    if _CLEAN_RE.search(title):
+        return -1
+    return 0
+
+
+def looks_like_live(title: str) -> bool:
+    """Return True if a YouTube title suggests a live/cover/tribute version."""
+    lower = title.lower()
+    bracketed = re.findall(r'[\(\[\{]([^\)\]\}]+)[\)\]\}]', lower)
+    for chunk in bracketed:
+        words = set(chunk.split())
+        if words & _LIVE_KEYWORDS:
+            return True
+    if re.search(r'\blive\b', lower) or re.search(r'\btribute\b', lower):
+        return True
+    return False
+
+
+def yt_search_best(
+    artist: str,
+    title: str,
+    duration_seconds: int | None = None,
+    n_candidates: int = 5,
+    prefer_ytm: bool = True,
+    prefer_explicit: bool = True,
+) -> tuple[str, float]:
+    """Search for the best-matching studio version on YouTube (Music).
+
+    Scores up to n_candidates results by title similarity, duration proximity,
+    and explicit/live signals. Returns (url, score). Score < 0.35 = no match.
+    """
+    import yt_dlp
+    from service.search.matcher import title_similarity as _tsim
+
+    query = f"{artist} {title}"
+    prefix = f"ytmsearch{n_candidates}" if prefer_ytm else f"ytsearch{n_candidates}"
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+
+    entries: list[object] = []
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"{prefix}:{query}", download=False)
+        entries = (info or {}).get("entries") or []  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+    if not entries and prefer_ytm:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"ytsearch{n_candidates}:{query}", download=False)
+            entries = (info or {}).get("entries") or []  # type: ignore[union-attr]
+        except Exception:
+            pass
+
+    if not entries:
+        return f"ytsearch1:{query}", 0.0
+
+    best_url = ""
+    best_score = -1.0
+
+    for entry in entries:
+        if not entry:
+            continue
+        entry = entry  # type: ignore[assignment]
+        vid_title = str(entry.get("track") or entry.get("title") or "")  # type: ignore[union-attr]
+        vid_dur = entry.get("duration")  # type: ignore[union-attr]
+        vid_id = entry.get("id") or ""  # type: ignore[union-attr]
+        url = str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")  # type: ignore[union-attr]
+
+        t_sim = _tsim(title, vid_title)
+
+        dur_score = 0.5
+        if duration_seconds and vid_dur:
+            delta = abs(duration_seconds - int(vid_dur))
+            if delta <= 5:
+                dur_score = 1.0
+            elif delta <= 15:
+                dur_score = 0.8
+            elif delta <= 30:
+                dur_score = 0.6
+            elif delta > 90:
+                dur_score = 0.1
+
+        score = t_sim * 0.65 + dur_score * 0.25
+
+        age_limit = int(entry.get("age_limit") or 0)  # type: ignore[union-attr]
+        exp = explicit_score(vid_title, age_limit if age_limit >= 18 else None)
+        if exp != 0:
+            score += exp * 0.10 if prefer_explicit else -exp * 0.05
+
+        if looks_like_live(vid_title) and not looks_like_live(title):
+            score -= 0.30
+
+        if score > best_score:
+            best_score = score
+            best_url = url
+
+    return best_url or f"ytsearch1:{query}", max(best_score, 0.0)
