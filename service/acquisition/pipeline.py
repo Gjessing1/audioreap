@@ -585,10 +585,11 @@ async def place_approved_track(
             album, albumartist, canonical_year, canonical_release_id = canonical
             if canonical_year is not None:
                 year = canonical_year
-            # Use the album's established release ID so all tracks share the same
-            # MUSICBRAINZ_ALBUMID tag — differing IDs cause Navidrome to split the album
-            if canonical_release_id:
-                mb_release_id = canonical_release_id
+            # Always use the album's established release ID (even if None) so all
+            # tracks share the same MUSICBRAINZ_ALBUMID tag. If existing tracks have no
+            # release ID, the new track must also have none — a mismatch causes Navidrome
+            # to split the album into two entries.
+            mb_release_id = canonical_release_id
 
     # Write final tags — raise on failure so the approval is aborted and the
     # job stays in needs_review rather than placing an untagged file in /music.
