@@ -339,12 +339,15 @@ async def _build_review_groups(
                 if m.get("force_staging_reason"):
                     is_flagged = True
                     flag_reason = m["force_staging_reason"]
-                if m.get("mb_match_source") == "acoustid":
+                source = m.get("mb_match_source")
+                if source == "acoustid":
                     is_acoustid_verified = True
+                elif source == "text_search" and (m.get("text_search_similarity") or 0) >= 0.90:
+                    is_acoustid_verified = True  # high-confidence text match is equally trustworthy
             except Exception:
                 pass
 
-        # Safe = AcoustID verified, no flags, staging file present
+        # Safe = confident match + no flags + staging file present.
         # Only standalone (non-album-batch) jobs go into the top-level "Approve N verified"
         # button. Album-batch jobs are handled per-batch by the "Approve N clean" button.
         if has_staging and is_acoustid_verified and not is_flagged and not r.album_job_id:

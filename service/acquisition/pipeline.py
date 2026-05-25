@@ -251,7 +251,15 @@ async def run_acquisition(
         acoustid_confidence: float | None = None
         mb_match_source: str | None = None
 
-        # ── 3b. AcoustID fingerprint + MB lookup ───────────────────────────────
+        # ── 3b. MB identification ──────────────────────────────────────────────
+        # Priority order:
+        #   1. Locked recording ID (album batch jobs — look up directly, then
+        #      run AcoustID to verify the locked choice is correct).
+        #   2. Text search — primary for standalone downloads.  Title+artist
+        #      metadata is reliable for ~95% of tracks; AcoustID is redundant
+        #      and can silently mis-identify (e.g. bad community submissions).
+        #   3. AcoustID fingerprint — fallback only when text search finds
+        #      nothing (garbled titles, missing metadata).
         try:
             from service.metadata.acoustid import acoustid_to_mbid
             from service.metadata.musicbrainz import get_recording_by_id, lookup_recording
@@ -259,47 +267,37 @@ async def run_acquisition(
             mb: object = None
             mb_from_acoustid = False
 
-            if settings.acoustid_api_key:
-                acoustid_result = await acoustid_to_mbid(audio_path, settings.acoustid_api_key)
-                if acoustid_result:
-                    acoustid_mbid, acoustid_confidence = acoustid_result
-                    mb = await asyncio.to_thread(
-                        get_recording_by_id, acoustid_mbid, settings.cache_dir
-                    )
-                    if mb is not None:
-                        mb_from_acoustid = True
-                        mb_match_source = "acoustid"
-                    # Fingerprint says different recording than album coordinator expected
-                    if candidate.mb_recording_id and acoustid_mbid != candidate.mb_recording_id:
-                        mismatch_note = (
-                            f"Fingerprint mismatch: expected {candidate.mb_recording_id[:8]}…, "
-                            f"got {acoustid_mbid[:8]}…"
-                        )
-                        force_staging_reason = (
-                            f"{force_staging_reason} | {mismatch_note}"
-                            if force_staging_reason else mismatch_note
-                        )
-                        logger.warning(
-                            "Job %s %r: AcoustID mismatch (expected %s, got %s)",
-                            job_id, title, candidate.mb_recording_id, acoustid_mbid,
-                        )
-                        # The candidate's recording_id was set explicitly (e.g. from the
-                        # MB tracklist) and takes precedence over AcoustID's guess.
-                        # Discard this result and fall through to look up the correct one.
-                        mb = None
-                        mb_from_acoustid = False
-
-            # If the candidate has a locked recording_id (and AcoustID either
-            # didn't run, failed, or was discarded above), look it up directly
-            # so we get the correct title/artist without relying on text search.
-            if mb is None and candidate.mb_recording_id:
+            if candidate.mb_recording_id:
+                # ── Case 1: locked recording from album coordinator ──────────
                 mb = await asyncio.to_thread(
                     get_recording_by_id, candidate.mb_recording_id, settings.cache_dir
                 )
                 if mb is not None:
                     mb_match_source = "locked_recording"
 
-            if mb is None:
+                # Run AcoustID to verify the locked choice is actually on this file.
+                if settings.acoustid_api_key:
+                    acoustid_result = await acoustid_to_mbid(audio_path, settings.acoustid_api_key)
+                    if acoustid_result:
+                        acoustid_mbid, acoustid_confidence = acoustid_result
+                        if acoustid_mbid != candidate.mb_recording_id:
+                            mismatch_note = (
+                                f"Fingerprint mismatch: expected {candidate.mb_recording_id[:8]}…, "
+                                f"got {acoustid_mbid[:8]}…"
+                            )
+                            force_staging_reason = (
+                                f"{force_staging_reason} | {mismatch_note}"
+                                if force_staging_reason else mismatch_note
+                            )
+                            logger.warning(
+                                "Job %s %r: AcoustID mismatch (expected %s, got %s)",
+                                job_id, title, candidate.mb_recording_id, acoustid_mbid,
+                            )
+                        else:
+                            mb_from_acoustid = True  # AcoustID confirmed the locked recording
+
+            else:
+                # ── Case 2: text search (primary) ────────────────────────────
                 mb = await asyncio.to_thread(
                     lookup_recording,
                     clean_for_search(title),
@@ -310,6 +308,26 @@ async def run_acquisition(
                 )
                 if mb is not None:
                     mb_match_source = "text_search"
+
+                # ── Case 3: AcoustID fallback when text search finds nothing ─
+                elif settings.acoustid_api_key:
+                    acoustid_result = await acoustid_to_mbid(audio_path, settings.acoustid_api_key)
+                    if acoustid_result:
+                        acoustid_mbid, acoustid_confidence = acoustid_result
+                        mb = await asyncio.to_thread(
+                            get_recording_by_id, acoustid_mbid, settings.cache_dir
+                        )
+                        if mb is not None:
+                            mb_from_acoustid = True
+                            mb_match_source = "acoustid"
+
+            # Capture text-search similarity for fast-approve eligibility UX.
+            # mb.score is updated to the local track_similarity by lookup_recording().
+            text_search_similarity: float | None = (
+                mb.score  # type: ignore[union-attr]
+                if mb is not None and mb_match_source == "text_search"
+                else None
+            )
 
             if mb is not None:
                 resolved_recording_id = mb.recording_id  # type: ignore[union-attr]
@@ -471,6 +489,7 @@ async def run_acquisition(
             "mb_artist_sort": mb_artist_sort,
             "isrc": isrc,
             "acoustid_confidence": acoustid_confidence,
+            "text_search_similarity": text_search_similarity,
             "mb_match_source": mb_match_source,
             "is_compilation": is_compilation,
             "force_staging_reason": force_staging_reason,

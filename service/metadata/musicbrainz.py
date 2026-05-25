@@ -246,6 +246,7 @@ def lookup_recording(
         return None
 
     logger.info("MB match: %r → %s (sim=%.2f)", title, best.recording_id, best_sim)
+    best.score = best_sim  # expose local similarity to callers
     return best
 
 
