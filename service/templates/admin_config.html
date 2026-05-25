@@ -5,7 +5,7 @@
 <div class="page-header">
   <div style="display:flex;align-items:center;justify-content:space-between">
     <h1>Runtime Config</h1>
-    <a href="/library/health" class="btn btn-ghost btn-sm">← Health</a>
+    <a href="/library" class="btn btn-ghost btn-sm">← Library</a>
   </div>
 </div>
 
@@ -66,6 +66,18 @@
            value="{{ current.worker_concurrency }}">
     <div style="font-size:11px;color:var(--t3);margin-top:4px">
       Max simultaneous acquisition jobs. Requires worker restart to take effect.
+    </div>
+  </div>
+
+  <div class="rv-field rv-field--full">
+    <label class="rv-label">Auto-rescan interval (minutes)
+      <span style="font-weight:400;color:var(--t4)">(0 = disabled)</span>
+    </label>
+    <input class="rv-input" name="rescan_interval_minutes" type="number"
+           step="5" min="0" max="1440"
+           value="{{ current.rescan_interval_minutes }}">
+    <div style="font-size:11px;color:var(--t3);margin-top:4px">
+      Automatically scan /music and sync to Navidrome at this interval. 0 disables auto-rescan (use the Rescan button manually). Takes effect immediately without restart.
     </div>
   </div>
 

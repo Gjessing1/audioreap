@@ -54,18 +54,18 @@
       <div class="album-title">{{ album.title }}</div>
       <div class="album-meta">
         {{ album.artist.name }}{% if album.year %} · {{ album.year }}{% endif %}
-        · {{ ntracks }} track{% if ntracks != 1 %}s{% endif %}
+        · {% if album.track_count %}{{ ntracks }}/{{ album.track_count }} tracks{% else %}{{ ntracks }} track{% if ntracks != 1 %}s{% endif %}{% endif %}
       </div>
     </div>
     {# Actions #}
     <div class="album-actions">
       {% if album.musicbrainz_release_id or album.mb_release_group_id %}
-      <span class="badge badge-done" title="MusicBrainz matched">MB</span>
+      <span class="badge badge-done" title="MusicBrainz matched — expand to compare tracklist">MB</span>
       {% endif %}
       {% set aq = album_quality[album.id] if album_quality is defined and album.id in album_quality else none %}
       {% if aq is not none %}
       <span class="browse-quality {% if aq >= 0.7 %}quality-good{% elif aq >= 0.4 %}quality-mid{% else %}quality-low{% endif %}"
-            title="Average metadata quality">{{ "%.0f"|format(aq * 100) }}%</span>
+            title="Metadata quality score: completeness of title, artist, album, year, track number, MB ID, and cover art across owned tracks (7 factors, avg {{ '%.0f'|format(aq * 100) }}%)">{{ "%.0f"|format(aq * 100) }}% meta</span>
       {% endif %}
       <button class="btn btn-sm btn-ghost"
               hx-get="/library/albums/{{ album.id }}/detail"

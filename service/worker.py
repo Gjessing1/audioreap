@@ -92,7 +92,11 @@ async def shutdown(ctx: dict[str, object]) -> None:
 
 
 async def worker_heartbeat(ctx: dict[str, object]) -> None:
-    """Write a heartbeat timestamp to Redis so /health can detect a dead worker."""
+    """Write a heartbeat timestamp to Redis so /health can detect a dead worker.
+
+    Also periodically recovers stuck jobs so they can be retried without requiring
+    a worker restart.
+    """
     import redis.asyncio as aioredis
 
     ts = datetime.utcnow().isoformat()
@@ -103,6 +107,61 @@ async def worker_heartbeat(ctx: dict[str, object]) -> None:
     except Exception as exc:
         logger.warning("heartbeat write failed: %s", exc)
 
+    # Recover stuck jobs every heartbeat (every minute) — catches hangs that
+    # don't raise, so the retry logic can re-queue them with backoff.
+    session_factory: async_sessionmaker = ctx.get("session_factory")  # type: ignore[assignment]
+    if session_factory:
+        try:
+            await _recover_stuck_jobs(session_factory)
+        except Exception as exc:
+            logger.warning("periodic stuck-job recovery failed: %s", exc)
+
+
+async def auto_rescan(ctx: dict[str, object]) -> None:
+    """Periodic job: trigger a library rescan at the configured interval.
+
+    Skipped when rescan_interval_minutes is 0 (disabled) or when the last rescan
+    was more recent than the configured interval.
+    """
+    import redis.asyncio as aioredis
+    from service.index.scanner import scan_library
+    from service.navidrome.client import trigger_scan
+
+    interval = settings.rescan_interval_minutes
+    if interval <= 0:
+        return
+
+    redis_key = "audioreap:last_auto_rescan"
+    try:
+        rc = aioredis.from_url(settings.redis_url)
+        last_ts = await rc.get(redis_key)
+        if last_ts:
+            elapsed = (datetime.utcnow() - datetime.fromisoformat(last_ts.decode())).total_seconds() / 60
+            if elapsed < interval:
+                await rc.aclose()
+                return
+        await rc.set(redis_key, datetime.utcnow().isoformat())
+        await rc.aclose()
+    except Exception as exc:
+        logger.warning("auto_rescan: redis check failed: %s", exc)
+        return
+
+    session_factory: async_sessionmaker = ctx.get("session_factory")  # type: ignore[assignment]
+    if session_factory is None:
+        return
+
+    try:
+        async with session_factory() as session:
+            await scan_library(session, settings.music_dir)
+        logger.info("auto_rescan: library scan complete")
+    except Exception as exc:
+        logger.warning("auto_rescan: scan_library failed: %s", exc)
+
+    try:
+        await trigger_scan(settings.navidrome_url, settings.navidrome_user, settings.navidrome_password)
+    except Exception as exc:
+        logger.warning("auto_rescan: Navidrome trigger failed: %s", exc)
+
 
 from arq.cron import cron  # noqa: E402
 
@@ -111,10 +170,11 @@ from service.acquisition.jobs import acquire_album, acquire_album_from_mb, acqui
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track, gc_staging, fetch_missing_covers, worker_heartbeat]
+    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track, gc_staging, fetch_missing_covers, worker_heartbeat, auto_rescan]
     cron_jobs = [
         cron(gc_staging, hour=3, minute=0),
         cron(worker_heartbeat, minute=None, second=0),  # every minute
+        cron(auto_rescan, minute=None, second=30),      # every minute (offset from heartbeat)
     ]
     max_jobs = settings.worker_concurrency
     on_startup = startup

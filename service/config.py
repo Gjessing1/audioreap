@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Acquisition preferences
     prefer_explicit: bool = True  # Rank explicit versions above clean when searching
 
+    # Auto-rescan interval (0 = disabled)
+    rescan_interval_minutes: int = 0
+
     # Algorithm versions — increment to trigger migrations
     id_algorithm_version: int = 1
     normalize_version: int = 1
@@ -67,6 +70,7 @@ CONFIG_EDITABLE_KEYS = (
     "min_bitrate_kbps",
     "prefer_explicit",
     "worker_concurrency",
+    "rescan_interval_minutes",
 )
 
 

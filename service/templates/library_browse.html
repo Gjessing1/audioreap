@@ -11,15 +11,22 @@
 <div class="browse-controls">
   <form id="browse-form"
         hx-get="/library/browse/results"
-        hx-trigger="input delay:300ms from:#bq, submit"
+        hx-trigger="input delay:300ms from:#bq, change from:#bgenre, submit"
         hx-target="#browse-results"
-        hx-include="#bq, #bf, #bs, #bg">
+        hx-include="#bq, #bf, #bs, #bgenre">
     <input id="bq" name="q" type="search"
            placeholder="Search title or artist…"
            value="{{ q }}" autocomplete="off" autofocus class="browse-search-input">
     <input type="hidden" id="bf" name="f" value="{{ f }}">
     <input type="hidden" id="bs" name="sort" value="{{ sort or 'artist' }}">
-    <input type="hidden" id="bg" name="genre" value="{{ genre }}">
+    {# Genre picker — replaces the hidden #bg input #}
+    <select id="bgenre" name="genre" class="rv-input" style="width:auto;font-size:12px;max-width:140px;flex-shrink:0"
+            title="Filter by genre">
+      <option value="">All genres</option>
+      {% for g in genre_list|default([]) %}
+      <option value="{{ g }}" {% if g == genre %}selected{% endif %}>{{ g }}</option>
+      {% endfor %}
+    </select>
   </form>
 
   {# Sort selector #}

@@ -1719,16 +1719,28 @@ async def library_albums_merge_candidates(
 async def library_albums_list(
     request: Request,
     q: str = "",
+    sort: str = "artist",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy.orm import joinedload as _jl
+
+    _album_sort_map = {
+        "artist":  (Artist.sort_name, Artist.name, Album.year, Album.title),
+        "title":   (Album.title, Artist.name),
+        "year":    (Album.year.desc().nulls_last(), Album.title, Artist.name),
+        "quality": None,  # handled in Python after fetch
+    }
+    sort_cols = _album_sort_map.get(sort) or _album_sort_map["artist"]
+
     stmt = (
         select(Album)
         .join(Album.artist)
         .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
-        .order_by(Artist.name, Album.year, Album.title)
-        .limit(300)
+        .limit(500)
     )
+    if sort_cols:
+        stmt = stmt.order_by(*sort_cols)
+
     if q.strip():
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Album.title.ilike(pattern) | Artist.name.ilike(pattern))
@@ -1738,6 +1750,10 @@ async def library_albums_list(
     for alb in albums:
         scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
         album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
+    # Sort by quality in Python when requested (no SQL column for this)
+    if sort == "quality":
+        albums = sorted(albums, key=lambda a: album_quality.get(a.id) or 0.0)
+
     singles_count = 0
     singles_cover_id: str | None = None
     if not q.strip():
@@ -1754,7 +1770,7 @@ async def library_albums_list(
             singles_cover_id = cover_row
     return templates.TemplateResponse(
         request, "partials/album_list.html",
-        {"albums": albums, "q": q, "album_quality": album_quality,
+        {"albums": albums, "q": q, "sort": sort, "album_quality": album_quality,
          "singles_count": singles_count, "singles_cover_id": singles_cover_id},
     )
 
@@ -2031,6 +2047,11 @@ async def album_mb_compare(
         summary = f'<div style="font-size:12px;color:var(--success);font-weight:600;margin-bottom:8px">✓ All {total} tracks owned</div>'
     else:
         summary = f'<div style="font-size:12px;color:var(--danger);font-weight:600;margin-bottom:8px">Missing {missing} of {total} tracks</div>'
+
+    # Persist the MB track count so the album list can show "N/total" without re-fetching
+    if album.track_count != total:
+        album.track_count = total
+        await session.commit()
 
     # --- Section 2: Local tracks in this album ---
     mb_rids_set = {t.recording_id for t in mb_tracks if t.recording_id}
@@ -2734,9 +2755,18 @@ async def artist_acquire_missing(
 async def library_artists_page(
     request: Request,
     q: str = "",
+    sort: str = "name",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy import func as _func
+
+    _artist_sort_map = {
+        "name":   (Artist.sort_name, Artist.name),
+        "tracks": (_func.count(Track.id.distinct()).desc(),),
+        "albums": (_func.count(Album.id.distinct()).desc(), Artist.sort_name),
+    }
+    sort_cols = _artist_sort_map.get(sort) or _artist_sort_map["name"]
+
     stmt = (
         select(
             Artist,
@@ -2746,7 +2776,7 @@ async def library_artists_page(
         .outerjoin(Artist.tracks)
         .outerjoin(Track.album)
         .group_by(Artist.id)
-        .order_by(Artist.sort_name, Artist.name)
+        .order_by(*sort_cols)
         .limit(500)
     )
     if q.strip():
@@ -2756,7 +2786,7 @@ async def library_artists_page(
         {"artist": r.Artist, "track_count": r.track_count, "album_count": r.album_count}
         for r in rows
     ]
-    ctx = {"active": "library", "artists": artists, "q": q}
+    ctx = {"active": "library", "artists": artists, "q": q, "sort": sort}
     # HTMX partial reload: return only the list block
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(request, "partials/artist_list.html", ctx)
@@ -2890,9 +2920,12 @@ async def library_browse(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Unified library browser: search + quality review + metadata edit."""
+    genre_list = (await session.execute(
+        select(Track.genre).where(Track.genre.isnot(None)).distinct().order_by(Track.genre)
+    )).scalars().all()
     return templates.TemplateResponse(
         request, "library_browse.html",
-        {"active": "library", "q": q, "f": f, "sort": sort, "genre": genre},
+        {"active": "library", "q": q, "f": f, "sort": sort, "genre": genre, "genre_list": genre_list},
     )
 
 
