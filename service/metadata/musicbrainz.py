@@ -250,6 +250,64 @@ def lookup_recording(
     return best
 
 
+def get_recording_candidates(
+    title: str,
+    artist: str,
+    duration_seconds: int | None = None,
+    cache_dir: Path | None = None,
+    preferred_release_group: str | None = None,
+    min_sim: float = 0.40,
+    limit: int = 10,
+) -> list[tuple["MBRecording", float]]:
+    """Return all plausible (recording, text_sim) pairs for multi-signal ranking.
+
+    Uses the same cache as lookup_recording. The low min_sim floor lets the
+    caller apply additional signals (user query intent, AcoustID boost) before
+    choosing the winner and applying the final confidence threshold.
+    """
+    key = _cache_key(title, artist)
+    raw: dict[str, object] | None = None
+    if cache_dir is not None:
+        raw = _load_cache(cache_dir, key)
+
+    if raw is None:
+        try:
+            result = musicbrainzngs.search_recordings(
+                recording=title,
+                artistname=artist,
+                limit=limit,
+            )
+            raw = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MusicBrainz candidates lookup failed for %r / %r: %s", title, artist, exc)
+            return []
+    else:
+        logger.debug("MB cache hit (candidates): %s", key)
+
+    recordings = raw.get("recording-list") or []
+    if not isinstance(recordings, list):
+        return []
+
+    out: list[tuple[MBRecording, float]] = []
+    for rec in recordings:
+        if not isinstance(rec, dict):
+            continue
+        parsed = _parse_recording(rec)
+        sim = track_similarity(
+            title, artist, duration_seconds,
+            parsed.title, parsed.artist, parsed.duration_seconds,
+        )
+        if preferred_release_group and parsed.release_group_id == preferred_release_group:
+            sim = min(sim + 0.05, 1.0)
+        if sim >= min_sim:
+            out.append((parsed, sim))
+
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out
+
+
 def search_recordings_free(
     query: str,
     limit: int = 10,
