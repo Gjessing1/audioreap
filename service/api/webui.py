@@ -3088,6 +3088,7 @@ async def library_bulk_edit(
 async def track_suppress_quality(
     request: Request,
     internal_id: str,
+    from_health: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Mark a track's quality warning as suppressed so it no longer appears in the low-quality filter."""
@@ -3099,6 +3100,8 @@ async def track_suppress_quality(
         raise HTTPException(404)
     row.quality_suppressed = True
     await session.commit()
+    if from_health:
+        return HTMLResponse("")
     return templates.TemplateResponse(
         request, "partials/browse_row.html",
         {"t": row},
@@ -5419,6 +5422,44 @@ async def library_health_low_bitrate(
     return templates.TemplateResponse(
         request, "partials/health_low_bitrate.html",
         {"tracks": tracks, "min_bitrate_kbps": min_br},
+    )
+
+
+@router.get("/library/health/low-quality", response_class=HTMLResponse)
+async def library_health_low_quality(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: tracks with low metadata quality score."""
+    from service.metadata.quality import LOW_QUALITY_THRESHOLD
+    from sqlalchemy.orm import joinedload as _jl
+
+    _not_suppressed = (Track.quality_suppressed.is_(None)) | (Track.quality_suppressed == 0)
+    rows = (await session.execute(
+        select(Track)
+        .options(_jl(Track.artist), _jl(Track.album))
+        .where(
+            Track.tag_quality_score.isnot(None),
+            Track.tag_quality_score < LOW_QUALITY_THRESHOLD,
+            _not_suppressed,
+        )
+        .order_by(Track.tag_quality_score.asc().nullslast())
+        .limit(100)
+    )).unique().scalars().all()
+
+    tracks = [
+        {
+            "id": t.id,
+            "title": t.title,
+            "artist": t.artist.name if t.artist else "",
+            "album": t.album.title if t.album else None,
+            "quality_score": t.tag_quality_score,
+        }
+        for t in rows
+    ]
+    return templates.TemplateResponse(
+        request, "partials/health_low_quality.html",
+        {"tracks": tracks},
     )
 
 

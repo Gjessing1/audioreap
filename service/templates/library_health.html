@@ -106,6 +106,21 @@
 </p>
 <div id="health-no-mbid"></div>
 
+<div class="section-title" style="margin-top:24px">Low metadata quality tracks
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/health/low-quality"
+          hx-target="#health-low-quality"
+          hx-swap="innerHTML"
+          hx-indicator="#low-quality-spinner">
+    Show <span id="low-quality-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+  <a href="/library/browse?f=quality_suppressed" class="btn btn-ghost btn-sm" style="margin-left:4px;font-size:11px;color:var(--t3)" title="Tracks you marked OK — quality warning suppressed">Suppressed ↗</a>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Tracks with a low metadata quality score (missing title, artist, album, year, track number, MB ID, or cover art). Press OK in the browse view to suppress the warning if the track is acceptable as-is.
+</p>
+<div id="health-low-quality"></div>
+
 <div class="section-title" style="margin-top:24px">Low bitrate tracks
   <button class="btn btn-ghost btn-sm" style="margin-left:8px"
           hx-get="/library/health/low-bitrate"

@@ -1,0 +1,30 @@
+{% if not tracks %}
+<p class="empty">No tracks below the low-quality threshold.</p>
+{% else %}
+<p style="font-size:13px;color:var(--t3);margin-bottom:10px">{{ tracks|length }} track{{ 's' if tracks|length != 1 }} shown. Use MB Enrich to improve metadata, or press OK to suppress the warning.</p>
+{% for t in tracks %}
+{% set safe_id = t.id | replace(':', '_') %}
+<div class="card" id="health-lq-{{ safe_id }}" style="padding:8px 14px;gap:8px">
+  <div class="card-info" style="flex:1;min-width:0">
+    <div class="card-title">{{ t.title }}</div>
+    <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}
+      · <span style="color:var(--warn);font-family:var(--font-mono);font-size:11px">
+          {{ "%.0f"|format(t.quality_score * 100) }}% meta
+        </span>
+    </div>
+  </div>
+  <div class="card-actions">
+    <a class="btn btn-sm btn-ghost"
+       href="/library/browse?f=low_quality&q={{ (t.artist ~ ' ' ~ t.title) | urlencode }}"
+       style="font-size:11px">Find →</a>
+    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--t3)"
+            hx-post="/library/tracks/{{ t.id }}/suppress-quality?from_health=1"
+            hx-target="#health-lq-{{ safe_id }}"
+            hx-swap="outerHTML"
+            title="Hide from low-quality list — metadata score is acceptable as-is">
+      OK
+    </button>
+  </div>
+</div>
+{% endfor %}
+{% endif %}

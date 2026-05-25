@@ -476,6 +476,8 @@ async def run_acquisition(
             "prov_album": prov_album,
             "prov_year": prov_year,
             "prov_recording": prov_recording,
+            # Propagate replacement flag so place_approved_track can trash the old file
+            "is_replacement": candidate.skip_dedup,
         }
 
         row = await session.get(AcquisitionJobRow, job_id)
@@ -622,6 +624,15 @@ async def place_approved_track(
             ext=ext,
             albumartist=albumartist,
         )
+
+        is_replacement: bool = bool(meta.get("is_replacement", False))
+        if dest.exists() and is_replacement:
+            # Trash the old file before placing the replacement so the new
+            # version actually lands instead of being skipped.
+            from service.library.writer import safe_trash as _safe_trash
+            trash_dir = settings.music_dir / ".trash"
+            await asyncio.to_thread(_safe_trash, dest, trash_dir)
+            logger.info("Approve replacement: trashed old file at %s", dest)
 
         # Idempotency: file already in place — still fall through to indexing so
         # that a previous approval that hit the tombstone bug (file placed but no
