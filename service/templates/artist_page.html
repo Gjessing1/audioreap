@@ -94,6 +94,24 @@
               onclick="document.getElementById('artist-edit-panel').classList.add('hidden')">Cancel</button>
     </div>
   </form>
+
+  {# Merge panel #}
+  <div style="margin-top:14px;border-top:1px solid var(--b2);padding-top:12px">
+    <button class="btn btn-sm btn-ghost"
+            onclick="document.getElementById('artist-merge-panel').classList.toggle('hidden')"
+            style="font-size:11px">Merge another artist into this one</button>
+    <div id="artist-merge-panel" class="hidden" style="margin-top:8px">
+      <form hx-get="/library/artists/merge-candidates?canonical={{ artist.id }}"
+            hx-trigger="input changed delay:400ms from:#artist-merge-q"
+            hx-target="#artist-merge-results"
+            hx-include="#artist-merge-q">
+        <input id="artist-merge-q" name="q" type="search" class="rv-input"
+               placeholder="Find artist to merge into this one…" style="margin-bottom:8px">
+      </form>
+      <div id="artist-merge-results" class="muted" style="font-size:12px">Type to search…</div>
+      <div id="merge-artist-result" style="margin-top:6px;font-size:12px"></div>
+    </div>
+  </div>
 </div>
 
 {# ── Artist image search panel ──────────────────────────────────────────── #}

@@ -2386,6 +2386,57 @@ async def job_apply_art(
     return HTMLResponse(f'<span class="badge badge-done">Art applied ✓</span>{oob_img}')
 
 
+@router.get("/library/artists/merge-candidates", response_class=HTMLResponse)
+async def artist_merge_candidates(
+    request: Request,
+    canonical: str = "",
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return artist rows as merge-into-canonical candidates with action buttons."""
+    if not q.strip():
+        return HTMLResponse('<p class="muted" style="font-size:12px">Type to search…</p>')
+    pattern = f"%{q.strip()}%"
+    stmt = (
+        select(Artist)
+        .where(Artist.name.ilike(pattern))
+        .where(Artist.id != canonical)
+        .order_by(Artist.name)
+        .limit(20)
+    )
+    artists = (await session.execute(stmt)).scalars().all()
+    if not artists:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No matching artists.</p>')
+
+    track_counts: dict[str, int] = {}
+    for a in artists:
+        cnt = (await session.execute(
+            select(func.count()).select_from(Track).where(Track.artist_id == a.id)
+        )).scalar_one()
+        track_counts[a.id] = cnt
+
+    lines = []
+    for a in artists:
+        cnt = track_counts[a.id]
+        lines.append(
+            f'<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--b1)">'
+            f'<div style="flex:1;min-width:0">'
+            f'<div style="font-size:13px;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{a.name}</div>'
+            f'<div style="font-size:11px;color:var(--t3)">{cnt} track{"s" if cnt != 1 else ""}'
+            + (f' · MB: {a.musicbrainz_artist_id[:8]}…' if a.musicbrainz_artist_id else '')
+            + '</div>'
+            f'</div>'
+            f'<button class="btn btn-sm btn-ghost" style="white-space:nowrap"'
+            f' hx-post="/library/artists/{canonical}/merge/{a.id}"'
+            f' hx-target="#merge-artist-result"'
+            f' hx-swap="innerHTML"'
+            f' hx-confirm="Merge \'{a.name}\' into this artist? All their tracks and albums will be reassigned. This cannot be undone.">'
+            f'Merge in ←</button>'
+            f'</div>'
+        )
+    return HTMLResponse('<div style="margin-top:4px">' + ''.join(lines) + '</div>')
+
+
 @router.get("/library/artists/{artist_id}", response_class=HTMLResponse)
 async def artist_page(
     request: Request,
@@ -2564,6 +2615,90 @@ async def update_artist(
 
     # Re-render the artist page header section
     return HTMLResponse("", status_code=200, headers={"HX-Redirect": f"/library/artists/{artist_id}"})
+
+
+@router.post("/library/artists/{canonical_id}/merge/{source_id}", response_class=HTMLResponse)
+async def merge_artist(
+    request: Request,
+    canonical_id: str,
+    source_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Merge source artist into canonical: reassign all albums+tracks, rewrite albumartist tags."""
+    from sqlalchemy.orm import joinedload as _jl
+    from service.library.tagger import write_tags as _write_tags
+    from sqlalchemy import delete as _sa_delete
+
+    canonical = (await session.execute(
+        select(Artist)
+        .options(_jl(Artist.albums), _jl(Artist.tracks).joinedload(Track.file))
+        .where(Artist.id == canonical_id)
+    )).unique().scalar_one_or_none()
+    source = (await session.execute(
+        select(Artist)
+        .options(_jl(Artist.albums), _jl(Artist.tracks).joinedload(Track.file))
+        .where(Artist.id == source_id)
+    )).unique().scalar_one_or_none()
+
+    if canonical is None or source is None:
+        raise HTTPException(404)
+
+    canonical_name = canonical.name
+
+    # Carry over MB artist ID if canonical lacks one
+    if not canonical.musicbrainz_artist_id and source.musicbrainz_artist_id:
+        canonical.musicbrainz_artist_id = source.musicbrainz_artist_id
+
+    # Carry over sort name if canonical lacks one
+    if not canonical.sort_name and source.sort_name:
+        canonical.sort_name = source.sort_name
+
+    # Reassign albums
+    for album in source.albums:
+        album.artist_id = canonical_id
+
+    # Reassign tracks and collect files to retag
+    files_to_retag: list[Path] = []
+    for track in source.tracks:
+        track.artist_id = canonical_id
+        if track.file:
+            fp = Path(track.file.path)
+            if fp.exists():
+                files_to_retag.append(fp)
+
+    # Flush reassignments before deleting source (otherwise FK violations)
+    await session.flush()
+    session.expunge(source)
+    await session.execute(_sa_delete(Artist).where(Artist.id == source_id))
+    await session.commit()
+
+    # Rewrite albumartist (and artist) tags so Navidrome groups under canonical name
+    retagged = 0
+    for fp in files_to_retag:
+        try:
+            await asyncio.to_thread(_write_tags, fp, artist=canonical_name, albumartist=canonical_name)
+            retagged += 1
+        except Exception as exc:
+            logger.warning("merge_artist: tag write failed for %s: %s", fp, exc)
+
+    # Move artist.jpg from source dir if canonical doesn't have one
+    src_img = settings.music_dir / source.name / "artist.jpg"
+    dst_img = settings.music_dir / canonical_name / "artist.jpg"
+    if src_img.exists() and not dst_img.exists():
+        try:
+            dst_img.parent.mkdir(parents=True, exist_ok=True)
+            import shutil as _shutil
+            _shutil.copy2(src_img, dst_img)
+        except Exception as exc:
+            logger.warning("merge_artist: could not copy artist.jpg: %s", exc)
+
+    await _do_scans()
+
+    return HTMLResponse(
+        "",
+        status_code=200,
+        headers={"HX-Redirect": f"/library/artists/{canonical_id}"},
+    )
 
 
 @router.get("/library/artists/{artist_id}/image", response_class=HTMLResponse)
