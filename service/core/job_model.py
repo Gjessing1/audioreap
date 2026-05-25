@@ -35,4 +35,5 @@ def job_row_to_model(row: AcquisitionJobRow) -> AcquisitionJob:
         error=row.error,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        is_replacement=bool(candidate and candidate.skip_dedup),
     )

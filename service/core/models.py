@@ -121,6 +121,7 @@ class AcquisitionJob(BaseModel):
     error: str | None = None
     created_at: datetime
     updated_at: datetime
+    is_replacement: bool = False
 
 
 class AlbumCandidate(BaseModel):

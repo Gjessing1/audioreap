@@ -37,7 +37,11 @@
   </div>
 
   <div class="card-actions">
+    {% if job.state == 'done' and job.is_replacement %}
+    <span class="badge badge-done" title="Source replaced — file swapped, metadata unchanged">replaced ✓</span>
+    {% else %}
     <span class="badge {{ state_badge }}">{{ job.state.replace('_',' ') }}</span>
+    {% endif %}
 
     {% if job.state == 'done' and job.track_ref.status == 'available' %}
     <button class="play-btn"
