@@ -129,14 +129,15 @@ async def run_acquisition(
     job row. Sets state to needs_review. Never raises — errors go to the job row.
     """
     # ── 0. Dedup check ────────────────────────────────────────────────────────
-    try:
-        local_match = await _find_local_match(session, candidate)
-        if local_match is not None:
-            logger.info("Dedup: skipping — local match exists: %s", local_match)
-            await _set_state(session, job_id, "done", track_id=local_match)
-            return
-    except Exception as exc:
-        logger.debug("Dedup check failed (continuing): %s", exc)
+    if not candidate.skip_dedup:
+        try:
+            local_match = await _find_local_match(session, candidate)
+            if local_match is not None:
+                logger.info("Dedup: skipping — local match exists: %s", local_match)
+                await _set_state(session, job_id, "done", track_id=local_match)
+                return
+        except Exception as exc:
+            logger.debug("Dedup check failed (continuing): %s", exc)
 
     tmp_acquire_dir.mkdir(parents=True, exist_ok=True)
 

@@ -18,6 +18,7 @@
       Rescan
     </button>
     <a href="/library/health" class="btn btn-ghost btn-sm">Health</a>
+    <a href="/admin/config" class="btn btn-ghost btn-sm" title="Settings / configuration">⚙ Settings</a>
   </div>
 </div>
 
@@ -27,8 +28,16 @@
         hx-target="#enrich-result"
         hx-swap="innerHTML"
         style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-    <input class="rv-input" name="artist" placeholder="Artist filter (optional)" autocomplete="off" style="flex:1;min-width:140px">
-    <input class="rv-input" name="album" placeholder="Album filter (optional)" autocomplete="off" style="flex:1;min-width:140px">
+    <input class="rv-input" name="artist" placeholder="Artist filter (optional)"
+           list="enrich-artist-list" autocomplete="off" style="flex:1;min-width:140px">
+    <datalist id="enrich-artist-list">
+      {% for a in artist_names|default([]) %}<option value="{{ a }}">{% endfor %}
+    </datalist>
+    <input class="rv-input" name="album" placeholder="Album filter (optional)"
+           list="enrich-album-list" autocomplete="off" style="flex:1;min-width:140px">
+    <datalist id="enrich-album-list">
+      {% for a in album_names|default([]) %}<option value="{{ a }}">{% endfor %}
+    </datalist>
     <button type="submit" class="btn btn-sm">
       Enrich <span class="htmx-indicator"><span class="spinner"></span></span>
     </button>

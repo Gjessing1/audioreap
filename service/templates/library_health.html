@@ -37,11 +37,11 @@
           hx-target="#health-dupes"
           hx-swap="innerHTML"
           hx-indicator="#dupes-spinner">
-    Load <span id="dupes-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    Show <span id="dupes-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
 </div>
 <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
-  Tracks with the same MusicBrainz recording ID in multiple files. Keep the best-quality copy.
+  Tracks with the same MusicBrainz recording ID in multiple files. Shows a list — you choose which copy to keep. Nothing is deleted automatically.
 </p>
 <div id="health-dupes"></div>
 
@@ -51,7 +51,7 @@
           hx-target="#health-splits"
           hx-swap="innerHTML"
           hx-indicator="#splits-spinner">
-    Load <span id="splits-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    Show <span id="splits-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
 </div>
 <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
@@ -87,8 +87,8 @@
   </button>
 </div>
 <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
-  Fetch cover art from MusicBrainz Cover Art Archive for all albums that have a MB release ID but no cover image.
-  Runs as a background job.
+  Fetch cover art from MusicBrainz Cover Art Archive for albums that have a MB release ID but no cover.jpg sidecar.
+  Saves as cover.jpg alongside the tracks — does not modify audio file tags. Runs in the background.
 </p>
 <div id="covers-result"></div>
 
@@ -98,7 +98,7 @@
           hx-target="#health-no-mbid"
           hx-swap="innerHTML"
           hx-indicator="#no-mbid-spinner">
-    Load <span id="no-mbid-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    Show <span id="no-mbid-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
 </div>
 <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
@@ -112,11 +112,12 @@
           hx-target="#health-low-bitrate"
           hx-swap="innerHTML"
           hx-indicator="#low-bitrate-spinner">
-    Load <span id="low-bitrate-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    Show <span id="low-bitrate-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
+  <a href="/library/browse?f=low_bitrate_suppressed" class="btn btn-ghost btn-sm" style="margin-left:4px;font-size:11px;color:var(--t3)" title="Tracks you marked OK — bitrate suppressed">Suppressed ↗</a>
 </div>
 <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
-  Tracks with bitrate below {{ min_bitrate_kbps }} kbps. Use "Find →" to open the library and replace the source with a higher-quality version.
+  Tracks with bitrate below {{ min_bitrate_kbps }} kbps. Use "Find →" to open the library and replace the source, or press OK to suppress the warning if the bitrate is acceptable.
 </p>
 <div id="health-low-bitrate"></div>
 
@@ -126,7 +127,7 @@
           hx-target="#health-trash"
           hx-swap="innerHTML"
           hx-indicator="#trash-spinner">
-    Load <span id="trash-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    Show <span id="trash-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
 </div>
 <p style="font-size:13px;color:var(--muted);margin-bottom:10px">

@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
+# Expose settings as Jinja globals so partials (browse_row, etc.) can use them without
+# requiring every calling endpoint to pass them in context explicitly.
+templates.env.globals["settings"] = settings
 
 _AUDIO_SUFFIXES = frozenset({".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav"})
 
@@ -227,21 +230,39 @@ async def search_results(
     q: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    from service.core.normalize import normalize as _norm
+
     tracks: list[TrackRef] = []
     if q:
-        pattern = f"%{q}%"
+        # Split query into meaningful tokens (skip single-char stopwords).
+        # Fetch candidates matching ANY token across title or artist, then rank
+        # by how many tokens match the combined "artist title" string.
+        tokens = [t for t in q.lower().split() if len(t) > 1]
+        if not tokens:
+            tokens = [q.lower()]
+
+        from sqlalchemy import or_
+        token_filters = or_(
+            *[Track.title.ilike(f"%{tok}%") | Artist.name.ilike(f"%{tok}%") for tok in tokens]
+        )
         stmt = (
             select(Track)
             .join(Track.artist)
             .outerjoin(Track.album)
             .outerjoin(Track.file)
             .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-            .where(Track.title.ilike(pattern) | Artist.name.ilike(pattern))
-            .order_by(Artist.name, Track.title)
-            .limit(30)
+            .where(token_filters)
+            .limit(200)
         )
         rows = (await session.execute(stmt)).unique().scalars().all()
-        tracks = [_track_to_ref(r) for r in rows]
+
+        # Score by how many tokens appear in the combined "artist title" string
+        def _score(row: Track) -> int:
+            haystack = _norm(f"{row.artist.name} {row.title}").lower()
+            return sum(1 for tok in tokens if tok in haystack)
+
+        rows_sorted = sorted(rows, key=_score, reverse=True)[:30]
+        tracks = [_track_to_ref(r) for r in rows_sorted]
 
     return templates.TemplateResponse(
         request, "partials/local_results.html", {"tracks": tracks, "q": q}
@@ -1441,10 +1462,12 @@ async def _library_stats_context(session: AsyncSession) -> dict:
             & _not_suppressed
         )
     )).scalar_one()
+    _bitrate_not_suppressed = (Track.bitrate_suppressed.is_(None)) | (Track.bitrate_suppressed == 0)
     low_bitrate_count = (await session.execute(
         select(func.count(Track.id)).join(Track.file).join(Track.artist).where(
             TrackFile.bitrate_kbps.isnot(None),
             TrackFile.bitrate_kbps < settings.min_bitrate_kbps,
+            _bitrate_not_suppressed,
         )
     )).scalar_one()
     dupe_count = (await session.execute(
@@ -1496,6 +1519,9 @@ async def library_page(
         )
     ).scalar_one()
 
+    artist_names = (await session.execute(select(Artist.name).order_by(Artist.name))).scalars().all()
+    album_names = (await session.execute(select(Album.title).order_by(Album.title))).scalars().all()
+
     return templates.TemplateResponse(
         request, "library.html",
         {
@@ -1504,6 +1530,8 @@ async def library_page(
             "recent": [_track_to_ref(r) for r in recent_rows],
             "settings_music_dir": str(settings.music_dir),
             "needs_review_count": needs_review_count,
+            "artist_names": artist_names,
+            "album_names": album_names,
         },
     )
 
@@ -2924,7 +2952,17 @@ async def library_browse_results(
         stmt = stmt.where(
             TrackFile.bitrate_kbps.isnot(None),
             TrackFile.bitrate_kbps < min_br,
+            (Track.bitrate_suppressed.is_(None)) | (Track.bitrate_suppressed == 0),
         )
+    elif f == "low_bitrate_suppressed":
+        min_br = settings.min_bitrate_kbps
+        stmt = stmt.where(
+            TrackFile.bitrate_kbps.isnot(None),
+            TrackFile.bitrate_kbps < min_br,
+            Track.bitrate_suppressed == 1,
+        )
+    elif f == "quality_suppressed":
+        stmt = stmt.where(Track.quality_suppressed == 1)
     elif f == "dupes":
         dupe_rids_sub = (
             select(Track.musicbrainz_recording_id)
@@ -3027,6 +3065,72 @@ async def track_suppress_quality(
     if row is None:
         raise HTTPException(404)
     row.quality_suppressed = True
+    await session.commit()
+    return templates.TemplateResponse(
+        request, "partials/browse_row.html",
+        {"t": row},
+    )
+
+
+@router.post("/library/tracks/{internal_id}/suppress-bitrate", response_class=HTMLResponse)
+async def track_suppress_bitrate(
+    request: Request,
+    internal_id: str,
+    from_health: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Mark a track's bitrate warning as suppressed so it no longer appears in the low-bitrate filter."""
+    row = (await session.execute(
+        select(Track).options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    row.bitrate_suppressed = True
+    await session.commit()
+    if from_health:
+        return HTMLResponse("")
+    return templates.TemplateResponse(
+        request, "partials/browse_row.html",
+        {"t": row},
+    )
+
+
+@router.post("/library/tracks/{internal_id}/unsuppress-bitrate", response_class=HTMLResponse)
+async def track_unsuppress_bitrate(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Remove bitrate suppression for a track."""
+    row = (await session.execute(
+        select(Track).options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    row.bitrate_suppressed = False
+    await session.commit()
+    return templates.TemplateResponse(
+        request, "partials/browse_row.html",
+        {"t": row},
+    )
+
+
+@router.post("/library/tracks/{internal_id}/unsuppress-quality", response_class=HTMLResponse)
+async def track_unsuppress_quality(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Remove quality suppression for a track."""
+    row = (await session.execute(
+        select(Track).options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    row.quality_suppressed = False
     await session.commit()
     return templates.TemplateResponse(
         request, "partials/browse_row.html",
@@ -3583,7 +3687,9 @@ async def queue_replacement_track(
     except Exception:
         raise HTTPException(400, "Invalid candidate JSON")
 
-    # Lock existing track's metadata so album grouping is preserved
+    # Lock existing track's metadata so album grouping is preserved.
+    # skip_dedup=True: the existing track IS the local match — we want to replace it,
+    # not have the dedup check mark the job done immediately.
     locked = base.model_copy(update={
         "title": row.title,
         "artist": row.artist.name,
@@ -3592,6 +3698,7 @@ async def queue_replacement_track(
         "track_number": row.track_number,
         "mb_recording_id": row.musicbrainz_recording_id,
         "mb_release_id": row.album.musicbrainz_release_id if row.album else None,
+        "skip_dedup": True,
     })
 
     job_id = await create_job(
@@ -3658,6 +3765,7 @@ async def queue_url_replacement(
         track_number=row.track_number,
         mb_recording_id=row.musicbrainz_recording_id,
         mb_release_id=row.album.musicbrainz_release_id if row.album else None,
+        skip_dedup=True,
     )
 
     job_id = await create_job(
@@ -5050,9 +5158,12 @@ async def library_health_page(
     )).scalar_one()
 
     low_bitrate_count = (await session.execute(
-        select(func.count(TrackFile.id)).where(
+        select(func.count(Track.id))
+        .join(Track.file)
+        .where(
             TrackFile.bitrate_kbps.isnot(None),
             TrackFile.bitrate_kbps < settings.min_bitrate_kbps,
+            (Track.bitrate_suppressed.is_(None)) | (Track.bitrate_suppressed == 0),
         )
     )).scalar_one()
 
@@ -5246,6 +5357,7 @@ async def library_health_low_bitrate(
     from sqlalchemy.orm import joinedload as _jl
 
     min_br = settings.min_bitrate_kbps
+    _not_suppressed = (Track.bitrate_suppressed.is_(None)) | (Track.bitrate_suppressed == 0)
     rows = (await session.execute(
         select(Track)
         .options(_jl(Track.artist), _jl(Track.album), _jl(Track.file))
@@ -5253,9 +5365,10 @@ async def library_health_low_bitrate(
         .where(
             TrackFile.bitrate_kbps.isnot(None),
             TrackFile.bitrate_kbps < min_br,
+            _not_suppressed,
         )
         .order_by(TrackFile.bitrate_kbps.asc())
-        .limit(50)
+        .limit(100)
     )).unique().scalars().all()
 
     tracks = [
@@ -5266,6 +5379,7 @@ async def library_health_low_bitrate(
             "album": t.album.title if t.album else None,
             "bitrate_kbps": t.file.bitrate_kbps if t.file else None,
             "codec": t.file.codec if t.file else None,
+            "bitrate_suppressed": bool(t.bitrate_suppressed),
         }
         for t in rows
     ]

@@ -85,6 +85,9 @@ class TrackCandidate(BaseModel):
     # Explicit lock: when True the pipeline never lets MB re-route this track to
     # a different album, regardless of whether track_number is populated.
     album_locked: bool = False
+    # When True, the dedup check in run_acquisition is skipped.  Used for
+    # "replace source" jobs where the existing track IS the local match.
+    skip_dedup: bool = False
 
 
 class FetchResult(BaseModel):
