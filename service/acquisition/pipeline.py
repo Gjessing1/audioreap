@@ -358,14 +358,17 @@ async def run_acquisition(
                 if mb.original_year:  # type: ignore[union-attr]
                     prov_year = "mb:original"
 
-                # Flag artist mismatch in strict album mode (AcoustID identified wrong artist)
-                if candidate_album_locked and mb_from_acoustid:
-                    identified_artist = normalize((mb.artist or "").lower())  # type: ignore[union-attr]
-                    expected_artist = normalize(candidate.artist.lower())
-                    if identified_artist and expected_artist and identified_artist != expected_artist:
+                # Flag artist mismatch when AcoustID fingerprint identifies a different artist.
+                # Applies to ALL downloads (not just album-locked), since AcoustID can return
+                # a plausible-looking wrong match (e.g. Foo Fighters for an Offspring song).
+                if mb_from_acoustid and candidate.artist and mb.artist:  # type: ignore[union-attr]
+                    from service.search.matcher import artist_similarity as _artist_sim
+                    a_sim = _artist_sim(candidate.artist, mb.artist)  # type: ignore[union-attr]
+                    if a_sim < 0.55:
                         mismatch = (
                             f"Artist mismatch: expected \"{candidate.artist}\","
-                            f" fingerprint identified \"{mb.artist}\"— may be wrong track"  # type: ignore[union-attr]
+                            f" fingerprint identified \"{mb.artist}\" (similarity {a_sim:.2f})"  # type: ignore[union-attr]
+                            f" — may be wrong track"
                         )
                         force_staging_reason = (
                             f"{force_staging_reason} | {mismatch}"
