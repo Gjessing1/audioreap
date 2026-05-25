@@ -54,6 +54,12 @@
           onclick="setFilter(event,'low_quality')">Low Quality</button>
   <button class="filter-tab {% if f=='low_bitrate' %}filter-tab--active{% endif %}"
           onclick="setFilter(event,'low_bitrate')">Low Bitrate</button>
+  <button class="filter-tab {% if f=='quality_suppressed' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'quality_suppressed')"
+          title="Tracks whose Low Quality warning has been suppressed">Quality OK'd</button>
+  <button class="filter-tab {% if f=='low_bitrate_suppressed' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'low_bitrate_suppressed')"
+          title="Tracks whose Low Bitrate warning has been suppressed">Bitrate OK'd</button>
 </div>
 {% if genre %}
 <div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;font-size:12px">

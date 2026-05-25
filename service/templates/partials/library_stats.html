@@ -60,16 +60,10 @@
     <div class="stat-label">Duplicates</div>
   </a>
 </div>
-{% if quality.quality_suppressed or quality.bitrate_suppressed %}
 <div style="font-size:11px;color:var(--t3);margin-top:6px;display:flex;gap:16px;flex-wrap:wrap">
-  {% if quality.quality_suppressed %}
-  <a href="/library/browse?f=quality_suppressed" style="color:var(--t3)">{{ quality.quality_suppressed }} quality suppressed ↗</a>
-  {% endif %}
-  {% if quality.bitrate_suppressed %}
-  <a href="/library/browse?f=low_bitrate_suppressed" style="color:var(--t3)">{{ quality.bitrate_suppressed }} bitrate suppressed ↗</a>
-  {% endif %}
+  <a href="/library/browse?f=quality_suppressed" style="color:var(--t3)" title="Tracks whose Low Quality warning has been suppressed — click to browse and re-enable">{{ quality.quality_suppressed }} quality suppressed ↗</a>
+  <a href="/library/browse?f=low_bitrate_suppressed" style="color:var(--t3)" title="Tracks whose Low Bitrate warning has been suppressed — click to browse and re-enable">{{ quality.bitrate_suppressed }} bitrate suppressed ↗</a>
 </div>
-{% endif %}
 {% endif %}
 
 {% endif %}

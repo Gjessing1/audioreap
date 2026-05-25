@@ -4778,6 +4778,11 @@ def _yt_search_best(
 
         score = t_sim * 0.65 + dur_score * 0.25
 
+        # Prefer explicit / penalise clean versions when prefer_explicit is on
+        exp = _explicit_score(vid_title)
+        if exp != 0:
+            score += exp * 0.10 if settings.prefer_explicit else -exp * 0.05
+
         # Penalise live / cover / tribute versions (unless the user is searching for one)
         if _looks_like_live(vid_title) and not _looks_like_live(title):
             score -= 0.30
