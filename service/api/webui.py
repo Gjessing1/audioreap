@@ -3931,6 +3931,35 @@ async def _search_itunes_art(q: str) -> list[dict]:
     return results
 
 
+async def _search_deezer_art(q: str, offset: int = 0) -> list[dict]:
+    """Search Deezer for album artwork. Returns list of {url, label, source} dicts."""
+    import urllib.parse
+    results: list[dict] = []
+    try:
+        encoded = urllib.parse.quote(q)
+        url = f"https://api.deezer.com/search/album?q={encoded}&limit=12&index={offset}"
+        async with __import__("httpx").AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return results
+            for item in resp.json().get("data", []):
+                full_url = item.get("cover_xl") or item.get("cover_big", "")
+                thumb_url = item.get("cover_medium") or item.get("cover_big", "")
+                if not full_url:
+                    continue
+                artist = (item.get("artist") or {}).get("name", "")
+                album = item.get("title", "")
+                results.append({
+                    "thumb": thumb_url,
+                    "full": full_url,
+                    "label": f"{artist} — {album}" if artist else album,
+                    "source": "Deezer",
+                })
+    except Exception as exc:
+        logger.debug("Deezer art search failed: %s", exc)
+    return results
+
+
 async def _fetch_caa_for_rg(client: "Any", rg_id: str) -> list[dict]:
     """List all releases in an MB release group and probe CAA for covers (inner helper)."""
     releases_url = f"https://musicbrainz.org/ws/2/release?release-group={rg_id}&fmt=json&limit=25"
@@ -3998,6 +4027,9 @@ async def _search_caa_by_rg(rg_id: str) -> list[dict]:
     return []
 
 
+_ART_PAGE_SIZE = 12
+
+
 @router.get("/art/search", response_class=HTMLResponse)
 async def art_search(
     request: Request,
@@ -4006,25 +4038,50 @@ async def art_search(
     release_group_id: str = "",
     apply_url: str = "",
     result_target: str = "",
+    offset: int = 0,
+    page_key: str = "",
 ) -> HTMLResponse:
-    """Return a thumbnail grid from iTunes + CAA editions for the given query."""
+    """Return a thumbnail grid from iTunes + Deezer + CAA editions for the given query."""
     results: list[dict] = []
+    first_page = offset == 0
     if q.strip():
-        itunes = await _search_itunes_art(q.strip())
+        import asyncio as _asyncio
+        itunes, deezer = await _asyncio.gather(
+            _search_itunes_art(q.strip()),
+            _search_deezer_art(q.strip(), offset),
+        )
         results.extend(itunes)
-    if release_id.strip():
-        caa = await _search_caa_editions(release_id.strip())
-        results.extend(caa)
-    elif release_group_id.strip():
-        caa = await _search_caa_by_rg(release_group_id.strip())
-        results.extend(caa)
+        results.extend(deezer)
+    # CAA results are release-specific — only fetch on first page
+    if first_page:
+        if release_id.strip():
+            caa = await _search_caa_editions(release_id.strip())
+            results.extend(caa)
+        elif release_group_id.strip():
+            caa = await _search_caa_by_rg(release_group_id.strip())
+            results.extend(caa)
 
-    if not results:
+    if not results and first_page:
         return HTMLResponse('<p class="empty" style="font-size:12px;padding:8px 0">No results found.</p>')
+    if not results:
+        return HTMLResponse("")
+
+    # Show load-more button if either iTunes or Deezer returned a full page
+    has_more = len([r for r in results if r["source"] in ("iTunes", "Deezer")]) >= _ART_PAGE_SIZE
+    next_offset = offset + _ART_PAGE_SIZE if has_more else None
 
     return templates.TemplateResponse(
         request, "partials/art_search_results.html",
-        {"results": results, "apply_url": apply_url, "result_target": result_target},
+        {
+            "results": results,
+            "apply_url": apply_url,
+            "result_target": result_target,
+            "next_offset": next_offset,
+            "q": q,
+            "release_id": release_id,
+            "release_group_id": release_group_id,
+            "page_key": page_key,
+        },
     )
 
 

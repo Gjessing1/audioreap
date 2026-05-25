@@ -328,6 +328,7 @@
       {% endif %}
       <input type="hidden" name="apply_url" value="/jobs/{{ job_id }}/apply-art">
       <input type="hidden" name="result_target" value="#art-apply-status-{{ job_id }}">
+      <input type="hidden" name="page_key" value="{{ job_id }}">
       <button type="submit" class="btn btn-sm btn-ghost">
         Search <span id="art-search-spin-{{ job_id }}" class="htmx-indicator"><span class="spinner"></span></span>
       </button>

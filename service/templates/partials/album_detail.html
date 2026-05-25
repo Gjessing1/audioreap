@@ -91,6 +91,7 @@
       {% endif %}
       <input type="hidden" name="apply_url" value="/library/albums/{{ album.id }}/apply-art">
       <input type="hidden" name="result_target" value="#album-art-apply-status-{{ aid }}">
+      <input type="hidden" name="page_key" value="album_{{ aid }}">
       <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">
         Search <span id="album-art-spin-{{ aid }}" class="htmx-indicator"><span class="spinner"></span></span>
       </button>

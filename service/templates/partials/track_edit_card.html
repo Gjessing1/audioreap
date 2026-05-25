@@ -85,6 +85,7 @@
       {% endif %}
       <input type="hidden" name="apply_url" value="/library/tracks/{{ track.id }}/apply-art">
       <input type="hidden" name="result_target" value="#art-apply-status-{{ safe_id }}">
+      <input type="hidden" name="page_key" value="{{ safe_id }}">
       <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">
         Search <span id="art-search-spin-{{ safe_id }}" class="htmx-indicator"><span class="spinner"></span></span>
       </button>

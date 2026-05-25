@@ -74,10 +74,10 @@
       <span style="font-weight:400;color:var(--t4)">(0 = disabled)</span>
     </label>
     <input class="rv-input" name="rescan_interval_minutes" type="number"
-           step="5" min="0" max="1440"
+           step="1" min="0" max="1440"
            value="{{ current.rescan_interval_minutes }}">
     <div style="font-size:11px;color:var(--t3);margin-top:4px">
-      Automatically scan /music and sync to Navidrome at this interval. 0 disables auto-rescan (use the Rescan button manually). Takes effect immediately without restart.
+      Automatically scan /music and sync to Navidrome at this interval. 0 disables auto-rescan (use the Rescan button manually). Takes effect immediately without restart. Minimum 1 minute.
     </div>
   </div>
 

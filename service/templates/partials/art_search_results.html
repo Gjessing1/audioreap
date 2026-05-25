@@ -25,6 +25,14 @@
   </div>
   {% endfor %}
 </div>
+{% if next_offset is not none %}
+<div id="art-more-{{ page_key }}" style="text-align:center;margin-top:4px">
+  <button class="btn btn-sm btn-ghost" style="font-size:11px"
+          hx-get="/art/search?q={{ q|urlencode }}&offset={{ next_offset }}&apply_url={{ apply_url|urlencode }}&result_target={{ result_target|urlencode }}&release_id={{ release_id|urlencode }}&release_group_id={{ release_group_id|urlencode }}&page_key={{ page_key|urlencode }}"
+          hx-target="#art-more-{{ page_key }}"
+          hx-swap="outerHTML">Load more</button>
+</div>
+{% endif %}
 {% else %}
 <p class="empty" style="font-size:12px;padding:8px 0">No results.</p>
 {% endif %}

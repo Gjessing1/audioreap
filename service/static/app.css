@@ -72,14 +72,18 @@ a:hover { text-decoration: underline; }
 #main-nav {
   background: var(--s1);
   border-bottom: 1px solid var(--b1);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  padding: 0 16px;
-  min-height: 52px;
   position: sticky;
   top: 0;
   z-index: 100;
+}
+.nav-inner {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 0 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-height: 52px;
   gap: 4px;
 }
 
@@ -771,7 +775,7 @@ input::placeholder { color: var(--t4); }
   .search-columns { flex-direction: row; gap: 28px; align-items: flex-start; }
   .search-col .section-title { margin-top: 0; }
   main { padding: 28px 24px; }
-  #main-nav { padding: 0 24px; }
+  .nav-inner { padding: 0 24px; }
   .rv-grid { grid-template-columns: 1fr 1fr; }
 }
 
