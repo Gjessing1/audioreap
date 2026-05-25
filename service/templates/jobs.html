@@ -8,13 +8,27 @@
     <button class="btn btn-ghost btn-sm"
             hx-get="/jobs/list"
             hx-target="#job-list"
+            hx-swap="innerHTML"
             hx-indicator="#refresh-spin">
       Refresh <span id="refresh-spin" class="htmx-indicator"><span class="spinner"></span></span>
     </button>
   </div>
 </div>
 
-<div id="job-list">
+<div id="job-list"
+     hx-get="/jobs/list"
+     hx-trigger="every 12s"
+     hx-swap="innerHTML">
   {% include "partials/job_list.html" %}
 </div>
+
+<script>
+  document.body.addEventListener('stopJobPoll', function() {
+    var el = document.getElementById('job-list');
+    if (el) {
+      el.removeAttribute('hx-trigger');
+      htmx.process(el);
+    }
+  });
+</script>
 {% endblock %}

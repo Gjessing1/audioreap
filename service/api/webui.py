@@ -139,6 +139,7 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     ctx["review_groups"] = review_groups
     ctx["safe_review_ids"] = safe_ids
     ctx["safe_review_count"] = len(safe_ids)
+    ctx["has_active_jobs"] = bool(active_rows)
     return ctx
 
 
@@ -449,9 +450,10 @@ async def jobs_list_partial(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     ctx = await _job_list_ctx(session)
-    return templates.TemplateResponse(
-        request, "partials/job_list.html", ctx
-    )
+    resp = templates.TemplateResponse(request, "partials/job_list.html", ctx)
+    if not ctx["has_active_jobs"]:
+        resp.headers["HX-Trigger"] = "stopJobPoll"
+    return resp
 
 
 @router.get("/jobs/completed/more", response_class=HTMLResponse)
@@ -930,9 +932,21 @@ async def approve_job(
         except Exception as rg_exc:
             logger.debug("ReplayGain failed for %s: %s", dest, rg_exc)
 
+    # Build a brief fade-out confirmation instead of showing the done card
     row = await session.get(AcquisitionJobRow, job_id)
-    return templates.TemplateResponse(
-        request, "partials/job_card.html", {"job": _job_to_model(row)}
+    meta: dict = {}
+    if row and row.resolved_metadata_json:
+        try:
+            meta = json.loads(row.resolved_metadata_json)
+        except Exception:
+            pass
+    placed_title = meta.get("title") or (row.query if row else "") or "Track"
+    placed_album = meta.get("album") or ""
+    dest_hint = f" → {placed_album}" if placed_album else ""
+    return HTMLResponse(
+        f'<div id="job-{job_id}" class="job-placed-feedback">'
+        f'✓ {placed_title}{dest_hint} · placed'
+        f'</div>'
     )
 
 
@@ -2261,6 +2275,16 @@ async def library_stats_fragment(
     stats_ctx = await _library_stats_context(session)
     inner = templates.get_template("partials/library_stats.html").render(stats_ctx)
     return HTMLResponse(f'<div id="library-stats" hx-swap-oob="true">{inner}</div>')
+
+
+@router.get("/library/stats-poll", response_class=HTMLResponse)
+async def library_stats_poll(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return inner stats content for periodic polling (no OOB wrapper)."""
+    stats_ctx = await _library_stats_context(session)
+    return templates.TemplateResponse(request, "partials/library_stats.html", stats_ctx)
 
 
 @router.post("/library/rescan", response_class=HTMLResponse)

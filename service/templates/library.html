@@ -14,7 +14,8 @@
             hx-post="/library/rescan"
             hx-target="#rescan-result"
             hx-on::before-request="this.disabled=true;this.textContent='Scanning…'"
-            hx-on::after-request="this.disabled=false;this.textContent='Rescan'">
+            hx-on::after-request="this.disabled=false;this.textContent='Rescan'"
+            title="Normally not needed — audioreap auto-scans after every change. Use this if you've added or moved files manually outside audioreap.">
       Rescan
     </button>
     <a href="/library/health" class="btn btn-ghost btn-sm">Health</a>
@@ -56,7 +57,10 @@
 </div>
 {% endif %}
 
-<div id="library-stats">
+<div id="library-stats"
+     hx-get="/library/stats-poll"
+     hx-trigger="every 30s"
+     hx-swap="innerHTML">
 {% include "partials/library_stats.html" %}
 </div>
 
