@@ -66,29 +66,49 @@
 
 {# ── Recent additions ── #}
 {% if recent %}
-<div class="section-title" style="margin-top:20px">Recent additions</div>
-{% for t in recent %}
-{% set safe_rid = t.internal_id | replace(':', '_') %}
-<div class="card" id="recent-{{ safe_rid }}">
-  <button class="play-btn" data-id="{{ t.internal_id }}"
-          onclick="playTrack('{{ t.internal_id }}', '{{ t.title|e }}')">▶</button>
-  <div class="card-info">
-    <div class="card-title">{{ t.title }}</div>
-    <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
+<details id="recent-additions" style="margin-top:20px">
+  <summary style="cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:8px">
+    <span class="section-title" style="margin:0">Recent additions</span>
+    <span style="font-size:11px;color:var(--t3)">({{ recent|length }})</span>
+    <span class="recent-chevron" style="font-size:11px;color:var(--t3);margin-left:auto">▶</span>
+  </summary>
+  <div style="margin-top:10px">
+  {% for t in recent %}
+  {% set safe_rid = t.internal_id | replace(':', '_') %}
+  <div class="card" id="recent-{{ safe_rid }}">
+    <button class="play-btn" data-id="{{ t.internal_id }}"
+            onclick="playTrack('{{ t.internal_id }}', '{{ t.title|e }}')">▶</button>
+    <div class="card-info">
+      <div class="card-title">{{ t.title }}</div>
+      <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
+    </div>
+    <div class="card-actions">
+      <button class="btn btn-sm btn-ghost"
+              hx-get="/library/tracks/{{ t.internal_id }}/edit-card"
+              hx-target="#recent-{{ safe_rid }}"
+              hx-swap="outerHTML">Edit</button>
+      <button class="btn btn-sm btn-ghost"
+              hx-delete="/library/tracks/{{ t.internal_id }}"
+              hx-target="#recent-{{ safe_rid }}"
+              hx-swap="outerHTML swap:0.3s"
+              hx-confirm="Move this track to trash?"
+              style="color:var(--t4)">✕</button>
+    </div>
   </div>
-  <div class="card-actions">
-    <button class="btn btn-sm btn-ghost"
-            hx-get="/library/tracks/{{ t.internal_id }}/edit-card"
-            hx-target="#recent-{{ safe_rid }}"
-            hx-swap="outerHTML">Edit</button>
-    <button class="btn btn-sm btn-ghost"
-            hx-delete="/library/tracks/{{ t.internal_id }}"
-            hx-target="#recent-{{ safe_rid }}"
-            hx-swap="outerHTML swap:0.3s"
-            hx-confirm="Move this track to trash?"
-            style="color:var(--t4)">✕</button>
+  {% endfor %}
   </div>
-</div>
-{% endfor %}
+</details>
+<script>
+(function() {
+  var det = document.getElementById('recent-additions');
+  if (!det) return;
+  function syncChevron() {
+    var ch = det.querySelector('.recent-chevron');
+    if (ch) ch.textContent = det.open ? '▼' : '▶';
+  }
+  det.addEventListener('toggle', syncChevron);
+  syncChevron();
+})();
+</script>
 {% endif %}
 {% endblock %}

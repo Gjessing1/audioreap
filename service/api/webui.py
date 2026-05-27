@@ -2668,6 +2668,7 @@ async def merge_artist(
         raise HTTPException(404)
 
     canonical_name = canonical.name
+    source_name = source.name
 
     # Carry over MB artist ID if canonical lacks one
     if not canonical.musicbrainz_artist_id and source.musicbrainz_artist_id:
@@ -2681,14 +2682,20 @@ async def merge_artist(
     for album in source.albums:
         album.artist_id = canonical_id
 
-    # Reassign tracks and collect files to retag
+    # Reassign tracks and collect files to retag; plan path moves but don't update DB yet
+    src_dir = settings.music_dir / source_name
+    dst_dir = settings.music_dir / canonical_name
     files_to_retag: list[Path] = []
+    planned_moves: list[tuple[Path, Path, "TrackFile"]] = []  # (old, new, orm_row)
     for track in source.tracks:
         track.artist_id = canonical_id
         if track.file:
             fp = Path(track.file.path)
             if fp.exists():
                 files_to_retag.append(fp)
+                if src_dir != dst_dir and str(fp).startswith(str(src_dir) + "/"):
+                    new_fp = dst_dir / fp.relative_to(src_dir)
+                    planned_moves.append((fp, new_fp, track.file))
 
     # Flush reassignments before deleting source (otherwise FK violations)
     await session.flush()
@@ -2697,24 +2704,47 @@ async def merge_artist(
     await session.commit()
 
     # Rewrite albumartist (and artist) tags so Navidrome groups under canonical name
-    retagged = 0
     for fp in files_to_retag:
         try:
             await asyncio.to_thread(_write_tags, fp, artist=canonical_name, albumartist=canonical_name)
-            retagged += 1
         except Exception as exc:
             logger.warning("merge_artist: tag write failed for %s: %s", fp, exc)
 
-    # Move artist.jpg from source dir if canonical doesn't have one
-    src_img = settings.music_dir / source.name / "artist.jpg"
-    dst_img = settings.music_dir / canonical_name / "artist.jpg"
-    if src_img.exists() and not dst_img.exists():
+    # Move files from source artist dir to canonical artist dir; update DB paths only
+    # for successfully moved files so the DB stays consistent with the filesystem.
+    import shutil as _shutil
+    paths_updated = False
+    for old_fp, new_fp, tf_row in planned_moves:
         try:
-            dst_img.parent.mkdir(parents=True, exist_ok=True)
-            import shutil as _shutil
-            _shutil.copy2(src_img, dst_img)
+            new_fp.parent.mkdir(parents=True, exist_ok=True)
+            if not new_fp.exists():
+                _shutil.move(str(old_fp), str(new_fp))
+            tf_row.path = str(new_fp)
+            paths_updated = True
         except Exception as exc:
-            logger.warning("merge_artist: could not copy artist.jpg: %s", exc)
+            logger.warning("merge_artist: could not move %s → %s: %s", old_fp, new_fp, exc)
+
+    # Move any remaining non-audio sidecars (cover.jpg, artist.jpg, etc.)
+    if src_dir.exists() and src_dir != dst_dir:
+        try:
+            for item in sorted(src_dir.rglob("*")):
+                if item.is_file():
+                    dest_item = dst_dir / item.relative_to(src_dir)
+                    dest_item.parent.mkdir(parents=True, exist_ok=True)
+                    if not dest_item.exists():
+                        _shutil.move(str(item), str(dest_item))
+            for d in sorted(src_dir.rglob("*"), reverse=True):
+                if d.is_dir():
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+            src_dir.rmdir()
+        except Exception as exc:
+            logger.warning("merge_artist: source dir cleanup failed: %s", exc)
+
+    if paths_updated:
+        await session.commit()
 
     await _do_scans()
 

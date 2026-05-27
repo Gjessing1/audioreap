@@ -60,6 +60,9 @@
   <button class="filter-tab {% if f=='low_bitrate_suppressed' %}filter-tab--active{% endif %}"
           onclick="setFilter(event,'low_bitrate_suppressed')"
           title="Tracks whose Low Bitrate warning has been suppressed">Bitrate OK'd</button>
+  <button class="filter-tab {% if f=='no_genre' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'no_genre')"
+          title="Tracks with no genre tag set">No Genre</button>
 </div>
 {% if genre %}
 <div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;font-size:12px">

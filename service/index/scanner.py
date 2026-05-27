@@ -182,6 +182,11 @@ async def _process_file(
     if tagged is None:
         return "error"
 
+    # A sidecar cover.jpg in the same directory counts as cover art for the
+    # "no cover" filter (Navidrome uses it for the whole album).
+    if not tagged.has_cover_art and (path.parent / "cover.jpg").exists():
+        tagged.has_cover_art = True
+
     # Skip files whose MB recording ID matches a tombstone with prevent_reimport=True.
     # A plain (prevent_reimport=False) tombstone only blocks explicit re-acquisition;
     # if the file reappears in /music (e.g. restored from backup, or a previous

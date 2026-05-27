@@ -835,6 +835,37 @@ async def place_approved_track(
                         # caused by different editions matching different release IDs)
                         if mb_release_id and not album_row.musicbrainz_release_id:
                             album_row.musicbrainz_release_id = mb_release_id
+                        # Normalize MUSICBRAINZ_ALBUMID on sibling tracks: if this track
+                        # has a release ID and existing siblings don't (or differ), rewrite
+                        # their file tags now so Navidrome groups them as one album.
+                        # This is the "Fix file tags" operation that users had to run manually.
+                        effective_release_id = mb_release_id or album_row.musicbrainz_release_id
+                        if effective_release_id and not is_enrichment:
+                            from sqlalchemy import select as _sel_sib
+                            from service.db.schema import Track as _SibTrack, TrackFile as _SibTF
+                            from sqlalchemy.orm import joinedload as _jl_sib
+                            sibling_tracks = (await session.execute(
+                                _sel_sib(_SibTrack)
+                                .options(_jl_sib(_SibTrack.file))
+                                .where(
+                                    _SibTrack.album_id == track_row.album_id,
+                                    _SibTrack.id != hash_track_id,
+                                )
+                            )).unique().scalars().all()
+                            for sib in sibling_tracks:
+                                if sib.file:
+                                    sib_fp = Path(sib.file.path)
+                                    if sib_fp.exists():
+                                        try:
+                                            await asyncio.to_thread(
+                                                write_tags, sib_fp,
+                                                mb_release_id=effective_release_id,
+                                            )
+                                        except Exception as sib_exc:
+                                            logger.debug(
+                                                "Approve: sibling retag failed for %s: %s",
+                                                sib_fp, sib_exc,
+                                            )
                 await session.flush()
     except Exception as exc:
         logger.warning("Approve: DB index failed for %s: %s", dest, exc)
