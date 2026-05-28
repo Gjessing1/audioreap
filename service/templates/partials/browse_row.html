@@ -37,59 +37,13 @@
     </div>
   </div>
 
-  {# Actions #}
+  {# Actions — kept intentionally minimal (▶ · Edit · ☐). Occasional-use controls
+     (quality-OK, bitrate-OK, cover art) live inside the Edit card. #}
   <div class="browse-actions">
     {% if t.file %}
     <button class="play-btn" data-id="{{ t.id }}"
             onclick="playTrack('{{ t.id }}','{{ t.title|e }}')"
             title="Play">▶</button>
-    {% endif %}
-    {% if t.tag_quality_score is not none and t.tag_quality_score < (4/7) and not t.quality_suppressed %}
-    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--t3)"
-            hx-post="/library/tracks/{{ t.id }}/suppress-quality"
-            hx-target="#browse-{{ safe_id }}"
-            hx-swap="outerHTML"
-            title="Hide this track from the Low Quality filter — quality is acceptable as-is">
-      OK
-    </button>
-    {% endif %}
-    {% if t.quality_suppressed %}
-    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--success)"
-            hx-post="/library/tracks/{{ t.id }}/unsuppress-quality"
-            hx-target="#browse-{{ safe_id }}"
-            hx-swap="outerHTML"
-            title="Re-enable quality filter for this track">
-      ↺ Quality
-    </button>
-    {% endif %}
-    {% if t.file and t.file.bitrate_kbps and not t.bitrate_suppressed %}
-    {% if t.file.bitrate_kbps < settings.min_bitrate_kbps %}
-    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--t3)"
-            hx-post="/library/tracks/{{ t.id }}/suppress-bitrate"
-            hx-target="#browse-{{ safe_id }}"
-            hx-swap="outerHTML"
-            title="Hide this track from the Low Bitrate filter — bitrate is acceptable as-is">
-      OK br
-    </button>
-    {% endif %}
-    {% endif %}
-    {% if t.bitrate_suppressed %}
-    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--success)"
-            hx-post="/library/tracks/{{ t.id }}/unsuppress-bitrate"
-            hx-target="#browse-{{ safe_id }}"
-            hx-swap="outerHTML"
-            title="Re-enable bitrate filter for this track">
-      ↺ Bitrate
-    </button>
-    {% endif %}
-    {% if not (t.file and t.file.has_cover_art) %}
-    <button class="btn btn-sm btn-ghost" style="font-size:10px;color:var(--t3)"
-            hx-get="/library/tracks/{{ t.id }}/edit-card?open_art=true"
-            hx-target="#browse-{{ safe_id }}"
-            hx-swap="outerHTML"
-            title="Set cover art">
-      Art
-    </button>
     {% endif %}
     <button class="btn btn-sm btn-ghost"
             hx-get="/library/tracks/{{ t.id }}/edit-card"

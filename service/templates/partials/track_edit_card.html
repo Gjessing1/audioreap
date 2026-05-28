@@ -40,6 +40,47 @@
     </div>
   </div>
 
+  {# ── Library filter controls (quality / bitrate suppression) ─────────────── #}
+  {% set q_low = track.tag_quality_score is not none and track.tag_quality_score < (4/7) %}
+  {% set br_low = track.file and track.file.bitrate_kbps and min_bitrate_kbps and track.file.bitrate_kbps < min_bitrate_kbps %}
+  {% if (q_low and not track.quality_suppressed) or track.quality_suppressed or (br_low and not track.bitrate_suppressed) or track.bitrate_suppressed %}
+  <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 4px;border-bottom:1px solid var(--b1)">
+    <span style="font-size:11px;color:var(--t4);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Library filters</span>
+    {% if q_low and not track.quality_suppressed %}
+    <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px;color:var(--t3)"
+            hx-post="/library/tracks/{{ track.id }}/suppress-quality?from_edit=true"
+            hx-target="#browse-{{ safe_id }}" hx-swap="outerHTML"
+            title="Hide this track from the Low Quality filter — quality is acceptable as-is">
+      ✓ Quality OK
+    </button>
+    {% endif %}
+    {% if track.quality_suppressed %}
+    <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px;color:var(--success)"
+            hx-post="/library/tracks/{{ track.id }}/unsuppress-quality?from_edit=true"
+            hx-target="#browse-{{ safe_id }}" hx-swap="outerHTML"
+            title="Re-enable the Low Quality filter for this track">
+      ↺ Re-flag quality
+    </button>
+    {% endif %}
+    {% if br_low and not track.bitrate_suppressed %}
+    <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px;color:var(--t3)"
+            hx-post="/library/tracks/{{ track.id }}/suppress-bitrate?from_edit=true"
+            hx-target="#browse-{{ safe_id }}" hx-swap="outerHTML"
+            title="Hide this track from the Low Bitrate filter — bitrate is acceptable as-is">
+      ✓ Bitrate OK
+    </button>
+    {% endif %}
+    {% if track.bitrate_suppressed %}
+    <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px;color:var(--success)"
+            hx-post="/library/tracks/{{ track.id }}/unsuppress-bitrate?from_edit=true"
+            hx-target="#browse-{{ safe_id }}" hx-swap="outerHTML"
+            title="Re-enable the Low Bitrate filter for this track">
+      ↺ Re-flag bitrate
+    </button>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {# ── Cover art panel ─────────────────────────────────────────────────────── #}
   <div id="art-panel-{{ safe_id }}" class="{% if open_art %}{% else %}hidden{% endif %}" style="padding:10px 4px;border-bottom:1px solid var(--b1)">
     {# Quick actions row #}

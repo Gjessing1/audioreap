@@ -3397,11 +3397,33 @@ async def library_bulk_edit(
     return HTMLResponse(f'<span class="badge-ok">{msg} ✓</span>')
 
 
+async def _suppression_response(
+    request: Request,
+    session: AsyncSession,
+    row: Track,
+    *,
+    from_health: bool,
+    from_edit: bool,
+) -> HTMLResponse:
+    """Render the appropriate partial after a (un)suppress toggle.
+
+    from_health → empty (row drops out of the health list); from_edit → re-render
+    the edit card so the user stays in it; otherwise the browse row.
+    """
+    if from_health:
+        return HTMLResponse("")
+    if from_edit:
+        ctx = await _edit_card_ctx(session, row)
+        return templates.TemplateResponse(request, "partials/track_edit_card.html", ctx)
+    return templates.TemplateResponse(request, "partials/browse_row.html", {"t": row})
+
+
 @router.post("/library/tracks/{internal_id}/suppress-quality", response_class=HTMLResponse)
 async def track_suppress_quality(
     request: Request,
     internal_id: str,
     from_health: bool = Query(False),
+    from_edit: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Mark a track's quality warning as suppressed so it no longer appears in the low-quality filter."""
@@ -3413,12 +3435,7 @@ async def track_suppress_quality(
         raise HTTPException(404)
     row.quality_suppressed = True
     await session.commit()
-    if from_health:
-        return HTMLResponse("")
-    return templates.TemplateResponse(
-        request, "partials/browse_row.html",
-        {"t": row},
-    )
+    return await _suppression_response(request, session, row, from_health=from_health, from_edit=from_edit)
 
 
 @router.post("/library/tracks/{internal_id}/suppress-bitrate", response_class=HTMLResponse)
@@ -3426,6 +3443,7 @@ async def track_suppress_bitrate(
     request: Request,
     internal_id: str,
     from_health: bool = Query(False),
+    from_edit: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Mark a track's bitrate warning as suppressed so it no longer appears in the low-bitrate filter."""
@@ -3437,18 +3455,14 @@ async def track_suppress_bitrate(
         raise HTTPException(404)
     row.bitrate_suppressed = True
     await session.commit()
-    if from_health:
-        return HTMLResponse("")
-    return templates.TemplateResponse(
-        request, "partials/browse_row.html",
-        {"t": row},
-    )
+    return await _suppression_response(request, session, row, from_health=from_health, from_edit=from_edit)
 
 
 @router.post("/library/tracks/{internal_id}/unsuppress-bitrate", response_class=HTMLResponse)
 async def track_unsuppress_bitrate(
     request: Request,
     internal_id: str,
+    from_edit: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Remove bitrate suppression for a track."""
@@ -3460,16 +3474,14 @@ async def track_unsuppress_bitrate(
         raise HTTPException(404)
     row.bitrate_suppressed = False
     await session.commit()
-    return templates.TemplateResponse(
-        request, "partials/browse_row.html",
-        {"t": row},
-    )
+    return await _suppression_response(request, session, row, from_health=False, from_edit=from_edit)
 
 
 @router.post("/library/tracks/{internal_id}/unsuppress-quality", response_class=HTMLResponse)
 async def track_unsuppress_quality(
     request: Request,
     internal_id: str,
+    from_edit: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Remove quality suppression for a track."""
@@ -3481,10 +3493,7 @@ async def track_unsuppress_quality(
         raise HTTPException(404)
     row.quality_suppressed = False
     await session.commit()
-    return templates.TemplateResponse(
-        request, "partials/browse_row.html",
-        {"t": row},
-    )
+    return await _suppression_response(request, session, row, from_health=False, from_edit=from_edit)
 
 
 @router.get("/library/tracks/{internal_id}/browse-row", response_class=HTMLResponse)
@@ -3508,26 +3517,22 @@ async def track_browse_row(
     )
 
 
-@router.get("/library/tracks/{internal_id}/edit-card", response_class=HTMLResponse)
-async def track_edit_card(
-    request: Request,
-    internal_id: str,
-    album_id: str = Query(""),
-    open_art: bool = Query(False),
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+async def _edit_card_ctx(
+    session: AsyncSession,
+    row: Track,
+    *,
+    source_album_id: str = "",
+    open_art: bool = False,
+) -> dict:
+    """Build the template context for track_edit_card.html.
+
+    Shared by the edit-card route and the suppression handlers (which re-render
+    the edit card so quality/bitrate-OK toggles keep the user in the card).
+    """
     from sqlalchemy import distinct as _distinct
-    stmt = (
-        select(Track)
-        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-        .where(Track.id == internal_id)
-    )
-    row = (await session.execute(stmt)).unique().scalar_one_or_none()
-    if row is None:
-        raise HTTPException(404)
-    # Use genre stored in DB (populated by scanner and save-tags)
+
+    # Use genre stored in DB (populated by scanner and save-tags); fall back to file.
     genre: str | None = row.genre
-    # Fall back to reading from file if DB has no genre yet
     if not genre and row.file:
         from service.library.tagger import read_tags as _read_tags
         fp = Path(row.file.path)
@@ -3535,7 +3540,7 @@ async def track_edit_card(
             tagged = await asyncio.to_thread(_read_tags, fp)
             if tagged:
                 genre = tagged.genre
-    # Fetch all known genres, artist names, and albums for autocomplete datalists
+    # Autocomplete datalists
     genre_rows = (await session.execute(
         select(_distinct(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
     )).scalars().all()
@@ -3548,21 +3553,38 @@ async def track_edit_card(
         .where(Album.artist_id == row.artist_id)
         .order_by(Album.title)
     )).scalars().all()
-    return templates.TemplateResponse(
-        request, "partials/track_edit_card.html",
-        {
-            "track": row,
-            "genre": genre,
-            "genres": list(genres),
-            "artist_names": list(artist_names),
-            "album_names": list(album_names),
-            "provider_ref": row.file.provider_ref if row.file else None,
-            "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
-            "min_bitrate_kbps": settings.min_bitrate_kbps,
-            "source_album_id": album_id,
-            "open_art": open_art,
-        },
+    return {
+        "track": row,
+        "genre": genre,
+        "genres": list(genres),
+        "artist_names": list(artist_names),
+        "album_names": list(album_names),
+        "provider_ref": row.file.provider_ref if row.file else None,
+        "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
+        "min_bitrate_kbps": settings.min_bitrate_kbps,
+        "source_album_id": source_album_id,
+        "open_art": open_art,
+    }
+
+
+@router.get("/library/tracks/{internal_id}/edit-card", response_class=HTMLResponse)
+async def track_edit_card(
+    request: Request,
+    internal_id: str,
+    album_id: str = Query(""),
+    open_art: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
     )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    ctx = await _edit_card_ctx(session, row, source_album_id=album_id, open_art=open_art)
+    return templates.TemplateResponse(request, "partials/track_edit_card.html", ctx)
 
 
 @router.post("/library/tracks/{internal_id}/save-tags", response_class=HTMLResponse)

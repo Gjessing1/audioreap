@@ -301,6 +301,61 @@ def test_dest_preview() -> None:
     assert "OK Computer" in html
 
 
+def _edit_track(**over: Any) -> _Obj:
+    base = {
+        "id": "test:track:edit",
+        "title": "Edit Me",
+        "artist_id": "artist:1",
+        "track_number": 3,
+        "musicbrainz_recording_id": None,
+        "tag_quality_score": 0.3,   # low → "Quality OK" control shows
+        "quality_suppressed": False,
+        "bitrate_suppressed": False,
+        "genre": None,
+        "artist": {"name": "Edit Artist"},
+        "album": {"title": "Edit Album", "year": 2024,
+                  "musicbrainz_release_id": None, "mb_release_group_id": None},
+        "file": {"codec": "opus", "bitrate_kbps": 96, "has_cover_art": False,
+                 "path": "/music/x.ogg", "provider_ref": "yt:abc"},
+    }
+    base.update(over)
+    return _Obj(base)
+
+
+def _edit_ctx(**over: Any) -> dict:
+    ctx: dict[str, Any] = {
+        "track": _edit_track(),
+        "genre": None,
+        "genres": [],
+        "artist_names": ["Edit Artist"],
+        "album_names": ["Edit Album"],
+        "provider_ref": "yt:abc",
+        "bitrate_kbps": 96,
+        "min_bitrate_kbps": 128,
+        "source_album_id": "",
+        "open_art": False,
+        "saved": False,
+    }
+    ctx.update(over)
+    return ctx
+
+
+def test_track_edit_card_renders() -> None:
+    html = _render("partials/track_edit_card.html", _edit_ctx())
+    assert "Edit Me" in html
+    # Low quality + low bitrate → both suppression controls present in the card
+    assert "Quality OK" in html
+    assert "Bitrate OK" in html
+    assert "from_edit=true" in html
+
+
+def test_track_edit_card_suppressed() -> None:
+    html = _render("partials/track_edit_card.html",
+                   _edit_ctx(track=_edit_track(quality_suppressed=True, bitrate_suppressed=True)))
+    assert "Re-flag quality" in html
+    assert "Re-flag bitrate" in html
+
+
 def test_dest_preview_single() -> None:
     html = _render("partials/dest_preview.html", {
         "dest": "/music/Singles/Aphex Twin/Avril 14th.ogg",
