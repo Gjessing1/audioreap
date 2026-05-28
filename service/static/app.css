@@ -244,6 +244,10 @@ input::placeholder { color: var(--t4); }
 
 /* state left-border indicator */
 .card[data-state="needs_review"] { border-left: 3px solid var(--primary); background: linear-gradient(90deg, rgba(123,92,245,0.06) 0%, var(--s2) 60%); }
+/* confidence-coded border for needs_review cards (overrides the default purple) */
+.card[data-state="needs_review"][data-confidence="verified"] { border-left-color: var(--success); background: linear-gradient(90deg, var(--success-bg) 0%, var(--s2) 60%); }
+.card[data-state="needs_review"][data-confidence="probable"] { border-left-color: var(--warn); background: linear-gradient(90deg, var(--warn-bg) 0%, var(--s2) 60%); }
+.card[data-state="needs_review"][data-confidence="flagged"] { border-left-color: var(--danger); background: linear-gradient(90deg, var(--danger-bg) 0%, var(--s2) 60%); }
 .card[data-state="done"] { opacity: 0.65; border-left: 3px solid var(--success); }
 .card[data-state="failed"], .card[data-state="cancelled"] { border-left: 3px solid var(--danger); }
 .card[data-state="downloading"], .card[data-state="processing"],
@@ -693,6 +697,33 @@ input::placeholder { color: var(--t4); }
   margin-left: 4px;
   pointer-events: none;
 }
+
+/* ── Destination preview ─────────────────────────────────────────────────── */
+.rv-dest {
+  padding: 10px 16px;
+  border-top: 1px solid var(--b1);
+  background: var(--s1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rv-dest-path {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  min-width: 0;
+}
+.rv-dest-arrow { color: var(--t4); flex-shrink: 0; }
+.rv-dest-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--t2);
+  word-break: break-all;
+}
+.rv-dest-notes { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.rv-dest-note { font-size: 11px; color: var(--t4); }
+.rv-dest-note--ok { color: var(--success); }
 
 /* ── MB search panel ─────────────────────────────────────────────────────── */
 .mb-panel {

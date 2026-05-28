@@ -33,6 +33,7 @@ _JOB = {
     "state": "needs_review",
     "progress": None,
     "error": None,
+    "is_replacement": False,
     "created_at": "2026-01-01T00:00:00",
     "updated_at": "2026-01-01T00:00:00",
     "track_ref": {
@@ -90,7 +91,11 @@ def _meta() -> dict:
         "mb_artist_sort": None,
         "isrc": None,
         "acoustid_confidence": None,
+        "text_search_similarity": None,
         "mb_match_source": None,
+        "mb_release_group_id": None,
+        "source_codec": "opus",
+        "source_bitrate_kbps": 160,
         "is_compilation": False,
         "force_staging_reason": None,
         "quality_score": 0.7,
@@ -99,6 +104,10 @@ def _meta() -> dict:
         "genre": None,
         "current_title": None,
         "current_artist": None,
+        "current_album": None,
+        "current_year": None,
+        "current_track_number": None,
+        "current_mb_recording_id": None,
         "prov_title": "candidate",
         "prov_artist": "candidate",
         "prov_album": "candidate",
@@ -112,6 +121,30 @@ def _meta() -> dict:
 def _render(template_name: str, ctx: dict) -> str:
     t = env.get_template(template_name)
     return t.render(**ctx)
+
+
+def _review_ctx(**overrides: Any) -> dict:
+    """Full review_card context mirroring webui._review_card_ctx() return keys."""
+    ctx: dict[str, Any] = {
+        "job_id": "abc12345",
+        "meta": _meta(),
+        "query": "Test Artist - Test Track",
+        "staging_exists": True,
+        "genres": [],
+        "is_enrichment": False,
+        "album_consistency_warning": None,
+        "album_batch_label": None,
+        "parsed_artists": ["Test Artist"],
+        "show_multi_artists": False,
+        "show_mb_search": False,
+        "show_src_panel": False,
+        "artist_names": ["Test Artist"],
+        "album_names": ["Test Album"],
+        "candidate_track_number": None,
+        "error": None,
+    }
+    ctx.update(overrides)
+    return ctx
 
 
 def test_job_card_needs_review() -> None:
@@ -136,20 +169,7 @@ def test_job_card_failed() -> None:
 
 
 def test_review_card_minimal() -> None:
-    html = _render("partials/review_card.html", {
-        "job_id": "abc12345",
-        "meta": _meta(),
-        "query": "Test Artist - Test Track",
-        "staging_exists": True,
-        "genres": [],
-        "is_enrichment": False,
-        "album_consistency_warning": None,
-        "album_batch_label": None,
-        "parsed_artists": ["Test Artist"],
-        "show_multi_artists": False,
-        "show_mb_search": False,
-        "error": None,
-    })
+    html = _render("partials/review_card.html", _review_ctx())
     assert "Test Track" in html
     assert "approve-btn-abc12345" in html
 
@@ -159,76 +179,33 @@ def test_review_card_acoustid_verified() -> None:
     meta["mb_match_source"] = "acoustid"
     meta["acoustid_confidence"] = 0.92
     meta["mb_recording_id"] = "aaaabbbb-0000-0000-0000-000000000000"
-    html = _render("partials/review_card.html", {
-        "job_id": "abc12345",
-        "meta": meta,
-        "query": "Test Artist - Test Track",
-        "staging_exists": True,
-        "genres": [],
-        "is_enrichment": False,
-        "album_consistency_warning": None,
-        "album_batch_label": None,
-        "parsed_artists": ["Test Artist"],
-        "show_multi_artists": False,
-        "show_mb_search": False,
-        "error": None,
-    })
-    assert "Verified" in html
+    html = _render("partials/review_card.html", _review_ctx(meta=meta))
+    assert "AcoustID confirmed" in html
+    assert "92%" in html
 
 
 def test_review_card_text_match() -> None:
     meta = _meta()
     meta["mb_match_source"] = "text_search"
-    html = _render("partials/review_card.html", {
-        "job_id": "abc12345",
-        "meta": meta,
-        "query": "Test Artist - Test Track",
-        "staging_exists": True,
-        "genres": [],
-        "is_enrichment": False,
-        "album_consistency_warning": None,
-        "album_batch_label": None,
-        "parsed_artists": ["Test Artist"],
-        "show_multi_artists": False,
-        "show_mb_search": False,
-        "error": None,
-    })
-    assert "Probable" in html
+    meta["text_search_similarity"] = 0.81
+    html = _render("partials/review_card.html", _review_ctx(meta=meta))
+    assert "text search" in html
+    assert "81%" in html
 
 
 def test_review_card_missing_staging() -> None:
-    html = _render("partials/review_card.html", {
-        "job_id": "abc12345",
-        "meta": _meta(),
-        "query": "",
-        "staging_exists": False,
-        "genres": [],
-        "is_enrichment": False,
-        "album_consistency_warning": None,
-        "album_batch_label": None,
-        "parsed_artists": ["Test Artist"],
-        "show_multi_artists": False,
-        "show_mb_search": False,
-        "error": None,
-    })
+    html = _render("partials/review_card.html",
+                   _review_ctx(query="", staging_exists=False))
     assert "Re-download" in html
 
 
 def test_review_card_with_album_batch() -> None:
-    html = _render("partials/review_card.html", {
-        "job_id": "abc12345",
-        "meta": _meta(),
-        "query": "",
-        "staging_exists": True,
-        "genres": ["Rock", "Pop"],
-        "is_enrichment": False,
-        "album_consistency_warning": "Album artist mismatch: ...",
-        "album_batch_label": "The Beatles — Abbey Road",
-        "parsed_artists": ["Test Artist"],
-        "show_multi_artists": False,
-        "show_mb_search": False,
-        "error": None,
-    })
+    html = _render("partials/review_card.html", _review_ctx(
+        query="",
+        genres=["Rock", "Pop"],
+        album_consistency_warning="Album artist mismatch: ...",
+        album_batch_label="The Beatles — Abbey Road",
+    ))
     assert "Abbey Road" in html
 
 
@@ -236,20 +213,11 @@ def test_review_card_flagged_with_album_batch() -> None:
     meta = _meta()
     meta["force_staging_reason"] = "Artist mismatch: expected 'Beatles', fingerprint says 'Lennon'"
     meta["album"] = "Abbey Road"
-    html = _render("partials/review_card.html", {
-        "job_id": "abc12345",
-        "meta": meta,
-        "query": "",
-        "staging_exists": True,
-        "genres": [],
-        "is_enrichment": False,
-        "album_consistency_warning": None,
-        "album_batch_label": "The Beatles — Abbey Road",
-        "parsed_artists": ["Test Artist"],
-        "show_multi_artists": False,
-        "show_mb_search": False,
-        "error": None,
-    })
+    html = _render("partials/review_card.html", _review_ctx(
+        meta=meta,
+        query="",
+        album_batch_label="The Beatles — Abbey Road",
+    ))
     assert "Flagged" in html
     assert "Keep album grouping" in html
     assert "data-album" in html
@@ -264,6 +232,10 @@ def test_browse_row() -> None:
         track_number = 1
         musicbrainz_recording_id = None
         tag_quality_score = 0.75
+        genre = None
+        quality_suppressed = False
+        bitrate_suppressed = False
+        stop = None
 
         class artist:
             name = "Test Artist"
@@ -277,7 +249,8 @@ def test_browse_row() -> None:
             codec = "opus"
             bitrate_kbps = 160
 
-    html = _render("partials/browse_row.html", {"t": _Track()})
+    html = _render("partials/browse_row.html",
+                   {"t": _Track(), "settings": _Obj({"min_bitrate_kbps": 128})})
     assert "Test Track" in html
     assert "Verified" in html  # quality_score 0.75 >= 0.7
 
@@ -291,6 +264,10 @@ def test_browse_row_no_file() -> None:
         track_number = None
         musicbrainz_recording_id = None
         tag_quality_score = 0.3
+        genre = None
+        quality_suppressed = False
+        bitrate_suppressed = False
+        stop = None
 
         class artist:
             name = "Test Artist"
@@ -298,6 +275,38 @@ def test_browse_row_no_file() -> None:
         album = None
         file = None
 
-    html = _render("partials/browse_row.html", {"t": _Track()})
+    html = _render("partials/browse_row.html",
+                   {"t": _Track(), "settings": _Obj({"min_bitrate_kbps": 128})})
     assert "No File Track" in html
     assert "Needs Review" in html  # quality_score 0.3 < 0.4
+
+
+def test_job_card_confidence_border() -> None:
+    """needs_review cards render a colour-coded confidence chip + data attribute."""
+    for conf, label in (("verified", "verified"), ("probable", "probable"), ("flagged", "flagged")):
+        html = _render("partials/job_card.html", {"job": _job(), "confidence": conf})
+        assert f'data-confidence="{conf}"' in html
+        assert label in html
+
+
+def test_dest_preview() -> None:
+    html = _render("partials/dest_preview.html", {
+        "dest": "/music/Radiohead/OK Computer (1997)/03 - Paranoid Android.ogg",
+        "joins_existing": True,
+        "canonical_album": "OK Computer",
+        "normalised_aa": None,
+        "is_single": False,
+    })
+    assert "Paranoid Android" in html
+    assert "OK Computer" in html
+
+
+def test_dest_preview_single() -> None:
+    html = _render("partials/dest_preview.html", {
+        "dest": "/music/Singles/Aphex Twin/Avril 14th.ogg",
+        "joins_existing": False,
+        "canonical_album": None,
+        "normalised_aa": None,
+        "is_single": True,
+    })
+    assert "single" in html.lower()

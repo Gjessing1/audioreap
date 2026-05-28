@@ -15,9 +15,11 @@
         {% if is_enrichment %}
         <span class="badge badge-busy">Metadata suggestion</span>
         {% elif meta.mb_match_source == 'acoustid' %}
-        <span class="badge badge-done" title="AcoustID fingerprint · {{ "%.0f"|format((meta.acoustid_confidence or 0) * 100) }}% confidence">✓ Verified</span>
+        <span class="badge badge-done" title="Identified by AcoustID audio fingerprint — the audio itself was matched, not just the text metadata">✓ AcoustID confirmed{% if meta.acoustid_confidence %} · {{ "%.0f"|format(meta.acoustid_confidence * 100) }}%{% endif %}</span>
+        {% elif meta.mb_match_source == 'locked_recording' %}
+        <span class="badge badge-busy" title="Recording chosen by the album batch coordinator — confirm before approving">🔒 locked (album batch)</span>
         {% elif meta.mb_match_source == 'text_search' %}
-        <span class="badge badge-busy" title="MusicBrainz text search match — confirm metadata before approving">≈ Probable</span>
+        <span class="badge {% if (meta.text_search_similarity or 0) >= 0.90 %}badge-done{% else %}badge-busy{% endif %}" title="Matched via MusicBrainz text search — confirm metadata before approving">≈ text search{% if meta.text_search_similarity %} · {{ "%.0f"|format(meta.text_search_similarity * 100) }}%{% endif %}</span>
         {% elif meta.mb_match_source == 'manual' %}
         <span class="badge badge-done" title="Manually linked to MusicBrainz">✓ Verified</span>
         {% else %}
@@ -220,18 +222,20 @@
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}','art-panel-{{ job_id }}')"
-              title="Keyboard: s">
+              title="Search MusicBrainz to override the matched recording — keyboard: s">
         Find recording <kbd class="rv-kbd">s</kbd>
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview file — keyboard: p">▶ Play <kbd class="rv-kbd">p</kbd></button>
+              onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview the staged audio file before approving — keyboard: p">▶ Play <kbd class="rv-kbd">p</kbd></button>
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="togglePanel('art-panel-{{ job_id }}','mb-panel-{{ job_id }}','src-panel-{{ job_id }}')">
+              onclick="togglePanel('art-panel-{{ job_id }}','mb-panel-{{ job_id }}','src-panel-{{ job_id }}')"
+              title="Search for and embed album cover art">
         Cover art
       </button>
       {% if not is_enrichment %}
       <button type="button" class="btn btn-sm btn-ghost"
-              onclick="togglePanel('src-panel-{{ job_id }}','mb-panel-{{ job_id }}','art-panel-{{ job_id }}')">
+              onclick="togglePanel('src-panel-{{ job_id }}','mb-panel-{{ job_id }}','art-panel-{{ job_id }}')"
+              title="Swap to a different YouTube source — re-downloads the audio, keeps all metadata">
         Different source
       </button>
       {% endif %}
@@ -260,6 +264,15 @@
       </button>
     </div>
   </form>
+
+  {# ── Destination preview (read-only; updates as metadata is edited) ───── #}
+  {% if staging_exists and not is_enrichment %}
+  <div id="dest-preview-{{ job_id }}"
+       hx-get="/jobs/{{ job_id }}/dest-preview"
+       hx-trigger="load, change from:#job-{{ job_id }} delay:400ms"
+       hx-include="#job-{{ job_id }} .rv-form"
+       hx-swap="innerHTML"></div>
+  {% endif %}
 
   {# ── MB search panel (requires staged file to apply result) ─────────── #}
   {% if staging_exists %}

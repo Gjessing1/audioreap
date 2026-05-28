@@ -1,0 +1,19 @@
+{# Destination-path + album-cohesion preview, loaded into the review card. #}
+<div class="rv-dest">
+  <div class="rv-dest-path" title="{{ dest }}">
+    <span class="rv-dest-arrow">→</span>
+    <span class="rv-dest-mono">{{ dest }}</span>
+  </div>
+  <div class="rv-dest-notes">
+    {% if is_single %}
+    <span class="rv-dest-note">Placed as a single (no album)</span>
+    {% elif joins_existing %}
+    <span class="rv-dest-note rv-dest-note--ok">↳ Will join existing album “{{ canonical_album }}”</span>
+    {% else %}
+    <span class="rv-dest-note">↳ Creates a new album</span>
+    {% endif %}
+    {% if normalised_aa %}
+    <span class="rv-dest-note rv-dest-note--ok">↳ Album artist normalised to “{{ normalised_aa }}”</span>
+    {% endif %}
+  </div>
+</div>

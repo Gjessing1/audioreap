@@ -292,6 +292,33 @@ def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
     }
 
 
+def _classify_review_confidence(row: AcquisitionJobRow) -> tuple[str, str | None]:
+    """Classify a needs_review job for the job-list confidence border.
+
+    Returns (confidence, flag_reason) where confidence is one of:
+      "flagged"  — force_staging_reason set or staging file missing (red border)
+      "verified" — AcoustID-confirmed or text_search_similarity ≥ 0.90 (green)
+      "probable" — no flags, but below the verified threshold (amber)
+    flag_reason is the human-readable reason when flagged, else None.
+    """
+    has_staging = bool(row.staging_path and Path(row.staging_path).exists())
+    if not has_staging:
+        return "flagged", "Staging file missing — use Re-download"
+    if row.resolved_metadata_json:
+        try:
+            m = json.loads(row.resolved_metadata_json)
+        except Exception:
+            m = {}
+        if m.get("force_staging_reason"):
+            return "flagged", m["force_staging_reason"]
+        source = m.get("mb_match_source")
+        if source == "acoustid" or (
+            source == "text_search" and (m.get("text_search_similarity") or 0) >= 0.90
+        ):
+            return "verified", None
+    return "probable", None
+
+
 async def _build_review_groups(
     session: AsyncSession,
     review_rows: list[AcquisitionJobRow],
@@ -326,39 +353,27 @@ async def _build_review_groups(
     safe_ids: list[str] = []
 
     for r, j in zip(review_rows, review_jobs):
-        is_flagged = False
-        is_acoustid_verified = False
-        flag_reason: str | None = None
-        has_staging = bool(r.staging_path and Path(r.staging_path).exists())
-
-        if not has_staging:
-            is_flagged = True
-            flag_reason = "Staging file missing — use Re-download"
-        elif r.resolved_metadata_json:
-            try:
-                m = json.loads(r.resolved_metadata_json)
-                if m.get("force_staging_reason"):
-                    is_flagged = True
-                    flag_reason = m["force_staging_reason"]
-                source = m.get("mb_match_source")
-                if source == "acoustid":
-                    is_acoustid_verified = True
-                elif source == "text_search" and (m.get("text_search_similarity") or 0) >= 0.90:
-                    is_acoustid_verified = True  # high-confidence text match is equally trustworthy
-            except Exception:
-                pass
+        # Confidence drives the colour-coded left border on the job-list card so the
+        # user can triage needs_review jobs without opening each review card.
+        confidence, flag_reason = _classify_review_confidence(r)
+        is_flagged = confidence == "flagged"
 
         # Safe = confident match + no flags + staging file present.
         # Only standalone (non-album-batch) jobs go into the top-level "Approve N verified"
         # button. Album-batch jobs are handled per-batch by the "Approve N clean" button.
-        if has_staging and is_acoustid_verified and not is_flagged and not r.album_job_id:
+        if confidence == "verified" and not r.album_job_id:
             safe_ids.append(j.id)
 
-        item = {"job": j, "is_flagged": is_flagged, "flag_reason": flag_reason}
+        item = {
+            "job": j,
+            "is_flagged": is_flagged,
+            "flag_reason": flag_reason,
+            "confidence": confidence,
+        }
         if r.album_job_id:
             album_buckets.setdefault(r.album_job_id, []).append(item)
         else:
-            singles.append({"type": "single", "job": j})
+            singles.append({"type": "single", "job": j, "confidence": confidence})
 
     groups: list[dict] = list(singles)
     for ajid, items in album_buckets.items():
@@ -505,9 +520,10 @@ async def job_status_partial(
     row = await session.get(AcquisitionJobRow, job_id)
     if row is None:
         raise HTTPException(404)
-    return templates.TemplateResponse(
-        request, "partials/job_card.html", {"job": _job_to_model(row)}
-    )
+    ctx: dict[str, object] = {"job": _job_to_model(row)}
+    if row.state == "needs_review":
+        ctx["confidence"], _ = _classify_review_confidence(row)
+    return templates.TemplateResponse(request, "partials/job_card.html", ctx)
 
 
 @router.post("/jobs/retry/{job_id}", response_class=HTMLResponse)
@@ -798,6 +814,102 @@ async def _review_card_ctx(
         "album_names": album_names,
         "candidate_track_number": candidate_track_number,
     }
+
+
+@router.get("/jobs/{job_id}/dest-preview", response_class=HTMLResponse)
+async def job_dest_preview(
+    request: Request,
+    job_id: str,
+    title: str | None = Query(None),
+    artist: str | None = Query(None),
+    album: str | None = Query(None),
+    year: str | None = Query(None),
+    track_number: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Read-only preview of where an approved track will land and how it will group.
+
+    Computes the destination path via track_path() and the album-cohesion outcome
+    via find_canonical_album()/stable_albumartist() — all pure / DB-read-only, no
+    side effects. The review card hx-gets this on load and on metadata edits so the
+    user sees the destination before approving.
+    """
+    from service.library.cohesion import find_canonical_album, stable_albumartist
+    from service.library.layout import track_path
+
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None or not row.resolved_metadata_json:
+        return HTMLResponse("")
+    try:
+        meta = json.loads(row.resolved_metadata_json)
+    except Exception:
+        return HTMLResponse("")
+
+    # Enrichment edits a file already in /music — no move/grouping preview applies.
+    if meta.get("is_enrichment"):
+        return HTMLResponse("")
+
+    def _int(v: str | None) -> int | None:
+        try:
+            return int((v or "").strip()) if (v or "").strip() else None
+        except (ValueError, TypeError):
+            return None
+
+    # Form values (if supplied) override stored metadata; blank falls back to stored.
+    eff_title = (title if title is not None else meta.get("title")) or "Unknown"
+    eff_artist = (artist if artist is not None else meta.get("artist")) or "Unknown"
+    eff_album = (album if album is not None else meta.get("album")) or None
+    if eff_album is not None and not str(eff_album).strip():
+        eff_album = None
+    eff_year = _int(year) if year is not None else meta.get("year")
+    eff_track = _int(track_number) if track_number is not None else meta.get("track_number")
+    eff_disc = meta.get("disc_number")
+    ext = meta.get("ext") or "ogg"
+
+    albumartist = meta.get("albumartist") or eff_artist
+    mb_artist_id = meta.get("mb_artist_id") or None
+    mb_release_group_id = meta.get("mb_release_group_id") or None
+
+    # Album cohesion (read-only): does this join an existing album, and will the
+    # albumartist be normalised to a locally-established name?
+    joins_existing = False
+    canonical_album: str | None = None
+    normalised_aa: str | None = None
+    if eff_album:
+        stable_aa = await stable_albumartist(session, albumartist, mb_artist_id)
+        if stable_aa != albumartist:
+            normalised_aa = stable_aa
+        albumartist = stable_aa
+        canonical = await find_canonical_album(session, eff_album, albumartist, mb_release_group_id)
+        if canonical is not None:
+            joins_existing = True
+            canonical_album, albumartist, c_year, _ = canonical
+            if c_year is not None:
+                eff_year = c_year
+            eff_album = canonical_album
+
+    dest = track_path(
+        settings.music_dir,
+        artist=eff_artist,
+        album=eff_album,
+        year=eff_year,
+        track_number=eff_track,
+        disc_number=eff_disc,
+        title=eff_title,
+        ext=ext,
+        albumartist=albumartist,
+    )
+
+    return templates.TemplateResponse(
+        request, "partials/dest_preview.html",
+        {
+            "dest": str(dest),
+            "joins_existing": joins_existing,
+            "canonical_album": canonical_album,
+            "normalised_aa": normalised_aa,
+            "is_single": eff_album is None,
+        },
+    )
 
 
 @router.post("/jobs/batch-approve", response_class=HTMLResponse)

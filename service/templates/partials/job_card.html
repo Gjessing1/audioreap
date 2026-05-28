@@ -9,6 +9,7 @@
 <div class="card"
      id="job-{{ job.id }}"
      data-state="{{ job.state }}"
+     {% if job.state == 'needs_review' and confidence is defined and confidence %}data-confidence="{{ confidence }}"{% endif %}
      {% if job.state not in ('done','failed','cancelled','needs_review') %}
      hx-get="/jobs/status/{{ job.id }}"
      hx-trigger="every 3s"
@@ -39,6 +40,14 @@
   <div class="card-actions">
     {% if job.state == 'done' and job.is_replacement %}
     <span class="badge badge-done" title="Source replaced — file swapped, metadata unchanged">replaced ✓</span>
+    {% elif job.state == 'needs_review' and confidence is defined and confidence %}
+    {% if confidence == 'verified' %}
+    <span class="badge badge-done" title="High-confidence match (AcoustID-confirmed or strong text match) — no warnings">✓ verified</span>
+    {% elif confidence == 'flagged' %}
+    <span class="badge badge-fail" title="Flagged — review this match carefully before approving">⚠ flagged</span>
+    {% else %}
+    <span class="badge badge-review" title="Probable match — below the verified threshold, confirm metadata">≈ probable</span>
+    {% endif %}
     {% else %}
     <span class="badge {{ state_badge }}">{{ job.state.replace('_',' ') }}</span>
     {% endif %}
