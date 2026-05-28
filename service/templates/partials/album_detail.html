@@ -151,15 +151,26 @@
   </form>
 
   {# ── Link MusicBrainz ─────────────────────────────────────────────────── #}
+  {% set is_linked = album.mb_release_group_id or album.musicbrainz_release_id %}
   <div style="border-top:1px solid var(--b1);padding:10px 16px">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      {% if not album.mb_release_group_id and not album.musicbrainz_release_id %}
-      <span style="font-size:12px;color:var(--t3)">No MusicBrainz release linked</span>
+      <span style="font-size:11px;color:var(--t4);font-weight:600;text-transform:uppercase;letter-spacing:.05em">MusicBrainz</span>
+      {% if is_linked %}
+      <span style="font-size:12px;color:var(--success)">✓ {{ album.title }}{% if album.year %} ({{ album.year }}){% endif %}</span>
+      {% if album.musicbrainz_release_id %}
+      <a href="https://musicbrainz.org/release/{{ album.musicbrainz_release_id }}"
+         target="_blank" style="font-size:11px">↗</a>
+      {% elif album.mb_release_group_id %}
+      <a href="https://musicbrainz.org/release-group/{{ album.mb_release_group_id }}"
+         target="_blank" style="font-size:11px">↗</a>
+      {% endif %}
+      {% else %}
+      <span style="font-size:12px;color:var(--t3)">Not linked</span>
       {% endif %}
       <button class="btn btn-sm btn-ghost"
               onclick="document.getElementById('mb-link-panel-{{ aid }}').classList.toggle('hidden')"
-              style="font-size:11px">
-        {% if album.mb_release_group_id or album.musicbrainz_release_id %}Re-link{% else %}Link{% endif %} MusicBrainz release
+              style="font-size:11px;margin-left:auto">
+        {% if is_linked %}Re-link{% else %}Link ↗{% endif %}
       </button>
     </div>
     <div id="mb-link-panel-{{ aid }}" class="hidden" style="margin-top:8px">
