@@ -9,7 +9,6 @@ Writes final tags, moves file from staging to /music, indexes, triggers Navidrom
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -21,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from service.acquisition.states import classify_failure
 from service.config import settings
 from service.core.identity import make_id
-from service.core.models import TrackCandidate
+from service.core.models import ResolvedTrackMetadata, TrackCandidate
 from service.core.normalize import clean_for_search, normalize
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
@@ -534,48 +533,48 @@ async def run_acquisition(
             return
 
         # ── 5. Store resolved metadata → needs_review ─────────────────────────
-        resolved_metadata = {
-            "title": title,
-            "artist": artist,
-            "albumartist": albumartist,
-            "album": album,
-            "year": year,
-            "original_year": mb_original_year,
-            "track_number": track_number,
-            "disc_number": disc_number,
-            "duration_seconds": duration,
-            "ext": ext,
-            "source_codec": fetch_result.codec,
-            "source_bitrate_kbps": fetch_result.bitrate_kbps,
-            "mb_recording_id": mb_recording_id,
-            "mb_release_id": mb_release_id,
-            "mb_release_group_id": mb_release_group_id,
-            "mb_artist_id": mb_artist_id,
-            "mb_artist_sort": mb_artist_sort,
-            "isrc": isrc,
-            "acoustid_confidence": acoustid_confidence,
-            "text_search_similarity": text_search_similarity,
-            "mb_match_source": mb_match_source,
-            "is_compilation": is_compilation,
-            "force_staging_reason": force_staging_reason,
-            "quality_score": quality_score,
-            "thumbnail_url": candidate.thumbnail_url,
-            "mb_genres": mb_genres,
+        resolved_metadata = ResolvedTrackMetadata(
+            title=title,
+            artist=artist,
+            albumartist=albumartist,
+            album=album,
+            year=year,
+            original_year=mb_original_year,
+            track_number=track_number,
+            disc_number=disc_number,
+            duration_seconds=duration,
+            ext=ext,
+            source_codec=fetch_result.codec,
+            source_bitrate_kbps=fetch_result.bitrate_kbps,
+            mb_recording_id=mb_recording_id,
+            mb_release_id=mb_release_id,
+            mb_release_group_id=mb_release_group_id,
+            mb_artist_id=mb_artist_id,
+            mb_artist_sort=mb_artist_sort,
+            isrc=isrc,
+            acoustid_confidence=acoustid_confidence,
+            text_search_similarity=text_search_similarity,
+            mb_match_source=mb_match_source,
+            is_compilation=is_compilation,
+            force_staging_reason=force_staging_reason,
+            quality_score=quality_score,
+            thumbnail_url=candidate.thumbnail_url,
+            mb_genres=mb_genres,
             # Metadata provenance: which source contributed each key field
-            "prov_title": prov_title,
-            "prov_artist": prov_artist,
-            "prov_album": prov_album,
-            "prov_year": prov_year,
-            "prov_recording": prov_recording,
+            prov_title=prov_title,
+            prov_artist=prov_artist,
+            prov_album=prov_album,
+            prov_year=prov_year,
+            prov_recording=prov_recording,
             # Propagate replacement flag so place_approved_track can trash the old file
-            "is_replacement": candidate.skip_dedup,
-        }
+            is_replacement=candidate.skip_dedup,
+        )
 
         row = await session.get(AcquisitionJobRow, job_id)
         if row is not None:
             row.state = "needs_review"
             row.staging_path = str(staging_dest)
-            row.resolved_metadata_json = json.dumps(resolved_metadata)
+            row.resolved_metadata_json = resolved_metadata.model_dump_json()
             if force_staging_reason:
                 row.error = force_staging_reason
             row.updated_at = datetime.now(UTC).replace(tzinfo=None)
@@ -633,47 +632,47 @@ async def place_approved_track(
     if not staging_path.exists():
         raise FileNotFoundError(f"Staged file missing: {staging_path}")
 
-    meta: dict[str, object] = json.loads(row.resolved_metadata_json)
+    meta = ResolvedTrackMetadata.model_validate_json(row.resolved_metadata_json)
 
     # Apply user-supplied overrides — non-empty string values win
     for k in ("title", "artist", "album", "mb_recording_id", "mb_release_id", "genre"):
         if k in overrides:
             val = (overrides[k] or "").strip()
-            meta[k] = val or None
+            setattr(meta, k, val or None)
     for k in ("year", "track_number", "disc_number"):
         if k in overrides:
             raw = (overrides[k] or "").strip()
             if raw:
                 try:
-                    meta[k] = int(raw)
+                    setattr(meta, k, int(raw))
                 except (ValueError, TypeError):
                     pass
             else:
-                meta[k] = None
+                setattr(meta, k, None)
 
     # Sync albumartist when artist was overridden but albumartist wasn't
     if "artist" in overrides and "albumartist" not in overrides:
-        meta["albumartist"] = meta.get("artist")
+        meta.albumartist = meta.artist
 
-    is_enrichment: bool = bool(meta.get("is_enrichment", False))
-    title: str = str(meta.get("title") or "Unknown")
-    artist: str = str(meta.get("artist") or "Unknown")
-    albumartist: str = str(meta.get("albumartist") or artist)
-    album: str | None = meta.get("album") or None  # type: ignore[assignment]
-    year: int | None = meta.get("year")  # type: ignore[assignment]
-    original_year: int | None = meta.get("original_year")  # type: ignore[assignment]
-    track_number: int | None = meta.get("track_number")  # type: ignore[assignment]
-    disc_number: int | None = meta.get("disc_number")  # type: ignore[assignment]
-    mb_recording_id: str | None = meta.get("mb_recording_id") or None  # type: ignore[assignment]
-    mb_release_id: str | None = meta.get("mb_release_id") or None  # type: ignore[assignment]
-    mb_release_group_id: str | None = meta.get("mb_release_group_id") or None  # type: ignore[assignment]
-    mb_artist_id: str | None = meta.get("mb_artist_id") or None  # type: ignore[assignment]
-    mb_artist_sort: str | None = meta.get("mb_artist_sort") or None  # type: ignore[assignment]
-    isrc: str | None = meta.get("isrc") or None  # type: ignore[assignment]
-    is_compilation: bool = bool(meta.get("is_compilation", False))
-    genre: str | None = meta.get("genre") or None  # type: ignore[assignment]
-    duration_seconds: int | None = meta.get("duration_seconds")  # type: ignore[assignment]
-    ext: str = str(meta.get("ext") or staging_path.suffix.lstrip("."))
+    is_enrichment: bool = meta.is_enrichment
+    title: str = meta.title or "Unknown"
+    artist: str = meta.artist or "Unknown"
+    albumartist: str = meta.albumartist or artist
+    album: str | None = meta.album or None
+    year: int | None = meta.year
+    original_year: int | None = meta.original_year
+    track_number: int | None = meta.track_number
+    disc_number: int | None = meta.disc_number
+    mb_recording_id: str | None = meta.mb_recording_id or None
+    mb_release_id: str | None = meta.mb_release_id or None
+    mb_release_group_id: str | None = meta.mb_release_group_id or None
+    mb_artist_id: str | None = meta.mb_artist_id or None
+    mb_artist_sort: str | None = meta.mb_artist_sort or None
+    isrc: str | None = meta.isrc or None
+    is_compilation: bool = meta.is_compilation
+    genre: str | None = meta.genre or None
+    duration_seconds: int | None = meta.duration_seconds
+    ext: str = meta.ext or staging_path.suffix.lstrip(".")
 
     # ── Canonical album cohesion ───────────────────────────────────────────────
     # Anchor to existing local album grouping before writing tags or computing
@@ -731,7 +730,7 @@ async def place_approved_track(
             albumartist=albumartist,
         )
 
-        is_replacement: bool = bool(meta.get("is_replacement", False))
+        is_replacement: bool = meta.is_replacement
         if dest.exists() and is_replacement:
             # Trash the old file before placing the replacement so the new
             # version actually lands instead of being skipped.
@@ -765,7 +764,7 @@ async def place_approved_track(
             from service.metadata.artwork import fetch_artwork
             artwork_bytes = await fetch_artwork(
                 release_mbid=mb_release_id,
-                thumbnail_url=meta.get("thumbnail_url"),  # type: ignore[arg-type]
+                thumbnail_url=meta.thumbnail_url,
                 cache_dir=settings.cache_dir,
             )
         except Exception as exc:

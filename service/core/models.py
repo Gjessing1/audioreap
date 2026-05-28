@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class TrackQuality(BaseModel):
@@ -134,6 +134,66 @@ class AlbumCandidate(BaseModel):
     year: int | None = None
     track_count: int | None = None
     tracks: list[TrackCandidate] = []
+
+
+class ResolvedTrackMetadata(BaseModel):
+    """Typed metadata handoff between identification (Phase 1) and approval (Phase 2).
+
+    Built in ``pipeline.run_acquisition``, persisted as JSON on
+    ``AcquisitionJobRow.resolved_metadata_json``, then consumed in
+    ``pipeline.place_approved_track`` when the user approves.
+
+    ``extra="allow"`` keeps this forward- and backward-compatible: enrichment rows
+    carry ``current_*`` fields, legacy/synthesised rows may omit fields, and future
+    scoring breakdowns can be added without breaking deserialisation — unknown keys
+    survive a load→dump round-trip rather than being dropped or rejected.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    # Core tags
+    title: str = "Unknown"
+    artist: str = "Unknown"
+    albumartist: str = ""
+    album: str | None = None
+    year: int | None = None
+    original_year: int | None = None
+    track_number: int | None = None
+    disc_number: int | None = None
+    duration_seconds: int | None = None
+    genre: str | None = None
+    ext: str = "ogg"
+
+    # Source audio
+    source_codec: str | None = None
+    source_bitrate_kbps: int | None = None
+
+    # MusicBrainz / AcoustID identification
+    mb_recording_id: str | None = None
+    mb_release_id: str | None = None
+    mb_release_group_id: str | None = None
+    mb_artist_id: str | None = None
+    mb_artist_sort: str | None = None
+    isrc: str | None = None
+    acoustid_confidence: float | None = None
+    text_search_similarity: float | None = None
+    mb_match_source: str | None = None
+    mb_genres: list[str] = []
+
+    # Review / placement state
+    is_compilation: bool = False
+    force_staging_reason: str | None = None
+    quality_score: float = 0.0
+    thumbnail_url: str | None = None
+    is_replacement: bool = False
+    is_enrichment: bool = False
+
+    # Metadata provenance (which source contributed each field)
+    prov_title: str | None = None
+    prov_artist: str | None = None
+    prov_album: str | None = None
+    prov_year: str | None = None
+    prov_recording: str | None = None
 
 
 # Re-export the async generator type alias used by providers
