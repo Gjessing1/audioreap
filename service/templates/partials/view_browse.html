@@ -1,0 +1,144 @@
+{# Browse view content (no page toolbar). Shared by the full /library/browse
+   page and the in-place library view (embed=1). #}
+<div class="browse-controls">
+  <form id="browse-form"
+        hx-get="/library/browse/results"
+        hx-trigger="input delay:300ms from:#bq, change from:#bgenre, submit"
+        hx-target="#browse-results"
+        hx-include="#bq, #bf, #bs, #bgenre">
+    <input id="bq" name="q" type="search"
+           placeholder="Search title or artist…"
+           value="{{ q }}" autocomplete="off" autofocus class="browse-search-input">
+    <input type="hidden" id="bf" name="f" value="{{ f }}">
+    <input type="hidden" id="bs" name="sort" value="{{ sort or 'artist' }}">
+    {# Genre picker — replaces the hidden #bg input #}
+    <select id="bgenre" name="genre" class="rv-input" style="width:auto;font-size:12px;max-width:140px;flex-shrink:0"
+            title="Filter by genre">
+      <option value="">All genres</option>
+      {% for g in genre_list|default([]) %}
+      <option value="{{ g }}" {% if g == genre %}selected{% endif %}>{{ g }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  {# Sort selector #}
+  <div class="browse-sort">
+    <span style="font-size:11px;color:var(--t3);white-space:nowrap">Sort:</span>
+    <select id="sort-select" class="browse-sort-select" onchange="setSort(this.value)">
+      <option value="artist" {% if not sort or sort=='artist' %}selected{% endif %}>Artist</option>
+      <option value="title"  {% if sort=='title'   %}selected{% endif %}>Title</option>
+      <option value="album"  {% if sort=='album'   %}selected{% endif %}>Album</option>
+      <option value="quality"{% if sort=='quality' %}selected{% endif %}>Quality ↑</option>
+      <option value="recent" {% if sort=='recent'  %}selected{% endif %}>Recent</option>
+    </select>
+  </div>
+</div>
+
+{# Filter chips #}
+<div class="filter-tabs" style="margin-bottom:{% if genre %}6px{% else %}14px{% endif %}">
+  <button class="filter-tab {% if not f %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'')">All</button>
+  <button class="filter-tab {% if f=='no_mb' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'no_mb')">No MB ID</button>
+  <button class="filter-tab {% if f=='no_art' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'no_art')">No Cover</button>
+  <button class="filter-tab {% if f=='low_quality' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'low_quality')">Low Quality</button>
+  <button class="filter-tab {% if f=='low_bitrate' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'low_bitrate')">Low Bitrate</button>
+  <button class="filter-tab {% if f=='quality_suppressed' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'quality_suppressed')"
+          title="Tracks whose Low Quality warning has been suppressed">Quality OK'd</button>
+  <button class="filter-tab {% if f=='low_bitrate_suppressed' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'low_bitrate_suppressed')"
+          title="Tracks whose Low Bitrate warning has been suppressed">Bitrate OK'd</button>
+  <button class="filter-tab {% if f=='no_genre' %}filter-tab--active{% endif %}"
+          onclick="setFilter(event,'no_genre')"
+          title="Tracks with no genre tag set">No Genre</button>
+</div>
+{% if genre %}
+<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;font-size:12px">
+  <span style="color:var(--t3)">Genre:</span>
+  <span class="badge badge-queued" style="font-size:12px;padding:3px 8px">{{ genre }}</span>
+  <a href="/library/browse{% if f %}?f={{ f|urlencode }}{% endif %}" style="color:var(--t3);text-decoration:none;font-size:11px" title="Clear genre filter">✕ clear</a>
+</div>
+{% endif %}
+
+{# Bulk edit toolbar — hidden until tracks are checked #}
+<div id="bulk-toolbar" style="display:none;margin-bottom:12px">
+  <form id="bulk-edit-form"
+        hx-post="/library/browse/bulk-edit"
+        hx-target="#bulk-edit-result"
+        hx-swap="innerHTML"
+        hx-include=".browse-check:checked"
+        style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--b2);border-radius:var(--radius);padding:10px 12px">
+    <span id="bulk-count-label" style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap">0 selected</span>
+    <input type="text" name="genre" id="bulk-genre" placeholder="Genre (leave blank to skip)"
+           list="bulk-genre-list"
+           autocomplete="off"
+           style="flex:1;min-width:120px;max-width:200px">
+    <datalist id="bulk-genre-list"></datalist>
+    <input type="text" name="year" placeholder="Year" inputmode="numeric"
+           style="width:70px">
+    <button type="submit" class="btn btn-sm">
+      Apply
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+    <button type="button" class="btn btn-sm btn-ghost" onclick="clearBulkSelection()">Clear</button>
+  </form>
+  <div id="bulk-edit-result" style="margin-top:6px"></div>
+</div>
+
+<div id="browse-results"
+     hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}&sort={{ sort or 'artist' }}{% if genre %}&genre={{ genre|urlencode }}{% endif %}"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <div style="color:var(--t3);font-size:13px;padding:20px 0;display:flex;gap:8px;align-items:center">
+    <span class="spinner"></span> Loading…
+  </div>
+</div>
+
+<script>
+function setFilter(evt, val) {
+  document.getElementById('bf').value = val;
+  document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('filter-tab--active'));
+  evt.target.classList.add('filter-tab--active');
+  htmx.trigger(document.getElementById('browse-form'), 'submit');
+}
+function setSort(val) {
+  document.getElementById('bs').value = val;
+  htmx.trigger(document.getElementById('browse-form'), 'submit');
+}
+function updateBulkBar() {
+  const checked = document.querySelectorAll('.browse-check:checked');
+  const toolbar = document.getElementById('bulk-toolbar');
+  toolbar.style.display = checked.length > 0 ? '' : 'none';
+  document.getElementById('bulk-count-label').textContent = checked.length + ' selected';
+  // Populate genre datalist from existing inputs if not already done
+  const dl = document.getElementById('bulk-genre-list');
+  if (dl.children.length === 0) {
+    document.querySelectorAll('datalist[id^="genre-list-"]').forEach(src => {
+      Array.from(src.options).forEach(o => {
+        if (!Array.from(dl.options).some(x => x.value === o.value)) {
+          dl.appendChild(o.cloneNode(true));
+        }
+      });
+    });
+  }
+}
+function clearBulkSelection() {
+  document.querySelectorAll('.browse-check:checked').forEach(cb => cb.checked = false);
+  updateBulkBar();
+}
+// Hide toolbar after results reload (selections lost on HTMX swap). Guard so the
+// listener is registered once even if this view is re-embedded multiple times.
+if (!window.__browseToolbarInit) {
+  window.__browseToolbarInit = true;
+  document.addEventListener('htmx:afterSwap', function(e) {
+    if (e.target.id === 'browse-results') {
+      var tb = document.getElementById('bulk-toolbar');
+      if (tb) tb.style.display = 'none';
+    }
+  });
+}
+</script>

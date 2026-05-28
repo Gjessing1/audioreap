@@ -64,6 +64,11 @@
 {% include "partials/library_stats.html" %}
 </div>
 
+{# ── In-place view (Tracks / Albums / Artists / Genres / quality filters) ──
+   Loaded here by the stat tiles above instead of navigating to a separate
+   page. Empty until a tile is clicked. #}
+<div id="library-view" style="margin-top:18px"></div>
+
 {# ── Recent additions ── #}
 {% if recent %}
 <details id="recent-additions" style="margin-top:20px">

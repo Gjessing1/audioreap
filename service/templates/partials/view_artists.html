@@ -1,0 +1,23 @@
+{# Artists view content (no page toolbar). Shared by /library/artists and the
+   in-place library view (embed=1). The search form posts to /library/artists,
+   which returns partials/artist_list.html for HX-Request. #}
+<form hx-get="/library/artists"
+      hx-target="#artist-list"
+      hx-swap="innerHTML"
+      hx-trigger="input changed delay:300ms from:input[name='q'], change from:select[name='sort'], submit"
+      style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+  <div class="search-bar" style="margin-bottom:0;flex:1;min-width:160px">
+    <input name="q" type="search"
+           placeholder="Search artists…"
+           value="{{ q }}" autocomplete="off" autofocus>
+  </div>
+  <select name="sort" class="rv-input" style="width:auto;font-size:13px">
+    <option value="name"   {% if sort == 'name'   or not sort %}selected{% endif %}>Sort: Name</option>
+    <option value="tracks" {% if sort == 'tracks' %}selected{% endif %}>Sort: Tracks ↓</option>
+    <option value="albums" {% if sort == 'albums' %}selected{% endif %}>Sort: Albums ↓</option>
+  </select>
+</form>
+
+<div id="artist-list">
+{% include "partials/artist_list.html" %}
+</div>

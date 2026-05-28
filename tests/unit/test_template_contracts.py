@@ -301,6 +301,30 @@ def test_dest_preview() -> None:
     assert "OK Computer" in html
 
 
+def test_view_browse_embeddable() -> None:
+    html = _render("partials/view_browse.html",
+                   {"q": "", "f": "low_quality", "sort": "artist", "genre": "", "genre_list": ["Rock"]})
+    assert 'id="browse-results"' in html
+    assert "filter-tab--active" in html  # low_quality tab marked active
+
+
+def test_view_albums_embeddable() -> None:
+    html = _render("partials/view_albums.html", {"q": "", "sort": "artist"})
+    assert 'id="album-list"' in html
+
+
+def test_view_artists_embeddable() -> None:
+    html = _render("partials/view_artists.html", {"artists": [], "q": "", "sort": "name"})
+    assert 'id="artist-list"' in html
+
+
+def test_view_genres_embeddable() -> None:
+    html = _render("partials/view_genres.html",
+                   {"genres": [{"name": "Jazz", "count": 2}], "untagged_count": 0})
+    assert 'id="genre-search"' in html
+    assert "Jazz" in html
+
+
 def test_genre_list_filterable() -> None:
     html = _render("partials/genre_list.html", {
         "genres": [{"name": "Electronic", "count": 12}, {"name": "Jazz", "count": 3}],

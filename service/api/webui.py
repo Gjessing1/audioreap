@@ -1788,12 +1788,13 @@ async def replace_job_source(
 async def library_albums_page(
     request: Request,
     q: str = "",
+    sort: str = "",
+    embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request, "library_albums.html",
-        {"active": "library", "q": q},
-    )
+    ctx = {"active": "library", "q": q, "sort": sort}
+    tmpl = "partials/view_albums.html" if embed else "library_albums.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/library/albums/merge-candidates", response_class=HTMLResponse)
@@ -3069,6 +3070,7 @@ async def library_artists_page(
     request: Request,
     q: str = "",
     sort: str = "name",
+    embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy import func as _func
@@ -3100,7 +3102,10 @@ async def library_artists_page(
         for r in rows
     ]
     ctx = {"active": "library", "artists": artists, "q": q, "sort": sort}
-    # HTMX partial reload: return only the list block
+    # embed=1: full view content for in-place loading on the /library page.
+    if embed:
+        return templates.TemplateResponse(request, "partials/view_artists.html", ctx)
+    # HTMX partial reload (search form): return only the list block.
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(request, "partials/artist_list.html", ctx)
     return templates.TemplateResponse(request, "library_artists.html", ctx)
@@ -3109,9 +3114,9 @@ async def library_artists_page(
 @router.get("/library/genres", response_class=HTMLResponse)
 async def library_genres_page(
     request: Request,
+    embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from sqlalchemy import case as sa_case
     rows = (await session.execute(
         select(Track.genre, func.count(Track.id).label("track_count"))
         .join(Track.file)
@@ -3123,10 +3128,9 @@ async def library_genres_page(
         select(func.count(Track.id)).join(Track.file).where(Track.genre.is_(None))
     )).scalar_one()
     genres = [{"name": r.genre, "count": r.track_count} for r in rows]
-    return templates.TemplateResponse(
-        request, "library_genres.html",
-        {"active": "library", "genres": genres, "untagged_count": untagged_count},
-    )
+    ctx = {"active": "library", "genres": genres, "untagged_count": untagged_count}
+    tmpl = "partials/view_genres.html" if embed else "library_genres.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.post("/library/genres/rename", response_class=HTMLResponse)
@@ -3230,16 +3234,20 @@ async def library_browse(
     f: str = "",
     sort: str = "artist",
     genre: str = "",
+    embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Unified library browser: search + quality review + metadata edit."""
+    """Unified library browser: search + quality review + metadata edit.
+
+    embed=1 returns just the view content for in-place loading into the /library
+    page; otherwise the full standalone page.
+    """
     genre_list = (await session.execute(
         select(Track.genre).where(Track.genre.isnot(None)).distinct().order_by(Track.genre)
     )).scalars().all()
-    return templates.TemplateResponse(
-        request, "library_browse.html",
-        {"active": "library", "q": q, "f": f, "sort": sort, "genre": genre, "genre_list": genre_list},
-    )
+    ctx = {"active": "library", "q": q, "f": f, "sort": sort, "genre": genre, "genre_list": genre_list}
+    tmpl = "partials/view_browse.html" if embed else "library_browse.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/library/browse/results", response_class=HTMLResponse)

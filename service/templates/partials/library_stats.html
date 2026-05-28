@@ -5,21 +5,29 @@
 </div>
 {% else %}
 
-{# ── Clickable stat tiles ── #}
+{# ── Clickable stat tiles — load the view in-place into #library-view ── #}
 <div class="stats">
-  <a href="/library/browse" class="stat stat-link">
+  <a href="/library/browse" class="stat stat-link"
+     hx-get="/library/browse?embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse">
     <div class="stat-val">{{ stats.tracks }}</div>
     <div class="stat-label">Tracks</div>
   </a>
-  <a href="/library/albums" class="stat stat-link">
+  <a href="/library/albums" class="stat stat-link"
+     hx-get="/library/albums?embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/albums">
     <div class="stat-val">{{ stats.albums }}</div>
     <div class="stat-label">Albums</div>
   </a>
-  <a href="/library/artists" class="stat stat-link">
+  <a href="/library/artists" class="stat stat-link"
+     hx-get="/library/artists?embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/artists">
     <div class="stat-val">{{ stats.artists }}</div>
     <div class="stat-label">Artists</div>
   </a>
-  <a href="/library/genres" class="stat stat-link">
+  <a href="/library/genres" class="stat stat-link"
+     hx-get="/library/genres?embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/genres">
     <div class="stat-val">{{ stats.genres }}</div>
     <div class="stat-label">Genres</div>
   </a>
@@ -30,39 +38,55 @@
 <div class="section-title" style="margin-top:20px">Metadata quality</div>
 <div class="stats">
   <a href="/library/browse?f=low_quality" class="stat stat-link"
+     hx-get="/library/browse?f=low_quality&embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse?f=low_quality"
      title="Tracks with a metadata quality score below threshold. Quality = completeness of title, artist, album, year, track number, MusicBrainz ID, and cover art (7 factors).">
     <div class="stat-val" style="color:{% if quality.low_quality == 0 %}var(--success){% elif quality.low_quality > stats.tracks // 3 %}var(--danger){% else %}var(--warn){% endif %}">
       {{ quality.low_quality }}
     </div>
     <div class="stat-label">Low quality</div>
   </a>
-  <a href="/library/browse?f=no_mb" class="stat stat-link">
+  <a href="/library/browse?f=no_mb" class="stat stat-link"
+     hx-get="/library/browse?f=no_mb&embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse?f=no_mb">
     <div class="stat-val" style="color:{% if quality.no_mbid == 0 %}var(--success){% else %}var(--t2){% endif %}">
       {{ quality.no_mbid }}
     </div>
     <div class="stat-label">No MB match</div>
   </a>
-  <a href="/library/browse?f=no_art" class="stat stat-link">
+  <a href="/library/browse?f=no_art" class="stat stat-link"
+     hx-get="/library/browse?f=no_art&embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse?f=no_art">
     <div class="stat-val" style="color:{% if quality.no_art == 0 %}var(--success){% else %}var(--t2){% endif %}">
       {{ quality.no_art }}
     </div>
     <div class="stat-label">No cover art</div>
   </a>
   <a href="/library/browse?f=low_bitrate" class="stat stat-link"
+     hx-get="/library/browse?f=low_bitrate&embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse?f=low_bitrate"
      title="Tracks whose audio bitrate is below the configured minimum ({{ min_bitrate_kbps }} kbps). Unlike Low quality, this is about the audio encoding — a 96 kbps file can have perfect metadata but still sound worse than a 320 kbps file.">
     <div class="stat-val" style="color:{% if quality.low_bitrate == 0 %}var(--success){% else %}var(--t2){% endif %}">
       {{ quality.low_bitrate }}
     </div>
     <div class="stat-label">Low bitrate</div>
   </a>
-  <a href="/library/browse?f=dupes" class="stat stat-link">
+  <a href="/library/browse?f=dupes" class="stat stat-link"
+     hx-get="/library/browse?f=dupes&embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse?f=dupes">
     <div class="stat-val" style="color:{% if quality.dupes %}var(--warn){% else %}var(--success){% endif %}">{{ quality.dupes }}</div>
     <div class="stat-label">Duplicates</div>
   </a>
 </div>
 <div style="font-size:11px;color:var(--t3);margin-top:6px;display:flex;gap:16px;flex-wrap:wrap">
-  <a href="/library/browse?f=quality_suppressed" style="color:var(--t3)" title="Tracks whose Low Quality warning has been suppressed — click to browse and re-enable">{{ quality.quality_suppressed }} quality suppressed ↗</a>
-  <a href="/library/browse?f=low_bitrate_suppressed" style="color:var(--t3)" title="Tracks whose Low Bitrate warning has been suppressed — click to browse and re-enable">{{ quality.bitrate_suppressed }} bitrate suppressed ↗</a>
+  <a href="/library/browse?f=quality_suppressed" style="color:var(--t3)"
+     hx-get="/library/browse?f=quality_suppressed&embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse?f=quality_suppressed"
+     title="Tracks whose Low Quality warning has been suppressed — click to browse and re-enable">{{ quality.quality_suppressed }} quality suppressed ↗</a>
+  <a href="/library/browse?f=low_bitrate_suppressed" style="color:var(--t3)"
+     hx-get="/library/browse?f=low_bitrate_suppressed&embed=1" hx-target="#library-view" hx-swap="innerHTML"
+     hx-push-url="/library/browse?f=low_bitrate_suppressed"
+     title="Tracks whose Low Bitrate warning has been suppressed — click to browse and re-enable">{{ quality.bitrate_suppressed }} bitrate suppressed ↗</a>
 </div>
 {% endif %}
 

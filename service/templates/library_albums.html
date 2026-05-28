@@ -7,31 +7,6 @@
   <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
 </div>
 
-<form id="album-search-form"
-      hx-get="/library/albums/list"
-      hx-trigger="input changed delay:300ms from:#aq, change from:#album-sort, submit"
-      hx-target="#album-list"
-      hx-include="#aq, #album-sort"
-      style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-  <div class="search-bar" style="margin-bottom:0;flex:1;min-width:160px">
-    <input id="aq" name="q" type="search"
-           placeholder="Search albums or artists…"
-           value="{{ q }}" autocomplete="off" autofocus>
-  </div>
-  <select id="album-sort" name="sort" class="rv-input" style="width:auto;font-size:13px">
-    <option value="artist"  {% if sort == 'artist'  or not sort %}selected{% endif %}>Sort: Artist</option>
-    <option value="title"   {% if sort == 'title'   %}selected{% endif %}>Sort: Title</option>
-    <option value="year"    {% if sort == 'year'    %}selected{% endif %}>Sort: Year ↓</option>
-    <option value="quality" {% if sort == 'quality' %}selected{% endif %}>Sort: Quality ↑</option>
-  </select>
-</form>
+{% include "partials/view_albums.html" %}
 
-<div id="album-list"
-     hx-get="/library/albums/list?q={{ q|urlencode }}&sort={{ sort|default('artist') }}"
-     hx-trigger="load"
-     hx-swap="innerHTML">
-  <div style="color:var(--t3);font-size:13px;padding:20px 0;display:flex;gap:8px;align-items:center">
-    <span class="spinner"></span> Loading albums…
-  </div>
-</div>
 {% endblock %}
