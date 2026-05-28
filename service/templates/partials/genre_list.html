@@ -1,7 +1,7 @@
 {% if genres %}
 <div id="genre-list" style="display:flex;flex-direction:column;gap:4px">
   {% for g in genres %}
-  <div class="card" style="padding:10px 14px;align-items:flex-start;flex-direction:column;gap:6px" id="genre-card-{{ g.name|replace(' ','_')|e }}">
+  <div class="card genre-card-item" data-genre-name="{{ g.name|lower|e }}" style="padding:10px 14px;align-items:flex-start;flex-direction:column;gap:6px" id="genre-card-{{ g.name|replace(' ','_')|e }}">
     <div style="display:flex;align-items:center;gap:10px;width:100%">
       <a href="/library/browse?f=genre&genre={{ g.name|urlencode }}" style="flex:1;min-width:0;text-decoration:none;color:inherit">
         <span style="font-size:14px;font-weight:500">{{ g.name }}</span>
@@ -35,7 +35,7 @@
   </div>
   {% endfor %}
   {% if untagged_count %}
-  <a href="/library/browse?f=no_genre" style="text-decoration:none;color:inherit">
+  <a href="/library/browse?f=no_genre" class="genre-untagged-item" style="text-decoration:none;color:inherit">
   <div class="card" style="padding:10px 14px;align-items:center;gap:12px">
     <div style="flex:1;min-width:0">
       <div style="font-size:14px;color:var(--t3)">No genre tag</div>

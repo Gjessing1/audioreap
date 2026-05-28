@@ -7,6 +7,40 @@
   <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
 </div>
 
+<div style="margin-bottom:10px">
+  <input type="search" id="genre-search" class="rv-input"
+         placeholder="Filter genres…" autocomplete="off"
+         oninput="filterGenres()"
+         style="width:100%;max-width:360px;font-size:13px">
+</div>
+
+<p id="genre-no-match" class="empty hidden" style="padding:24px 0">No genres match your filter.</p>
+
 {% include "partials/genre_list.html" %}
+
+<script>
+function filterGenres() {
+  var input = document.getElementById('genre-search');
+  if (!input) return;
+  var q = input.value.trim().toLowerCase();
+  var cards = document.querySelectorAll('.genre-card-item');
+  var shown = 0;
+  cards.forEach(function (card) {
+    var name = card.getAttribute('data-genre-name') || '';
+    var match = !q || name.indexOf(q) !== -1;
+    card.style.display = match ? '' : 'none';
+    if (match) shown++;
+  });
+  // Hide the "No genre tag" bucket while actively filtering by name
+  var untagged = document.querySelector('.genre-untagged-item');
+  if (untagged) untagged.style.display = q ? 'none' : '';
+  var noMatch = document.getElementById('genre-no-match');
+  if (noMatch) noMatch.classList.toggle('hidden', !(q && shown === 0));
+}
+// Re-apply the active filter after the list is re-rendered (rename/remove swaps)
+document.body.addEventListener('htmx:afterSettle', function (e) {
+  if (e.target && e.target.id === 'genre-list') filterGenres();
+});
+</script>
 
 {% endblock %}

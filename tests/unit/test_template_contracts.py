@@ -301,6 +301,17 @@ def test_dest_preview() -> None:
     assert "OK Computer" in html
 
 
+def test_genre_list_filterable() -> None:
+    html = _render("partials/genre_list.html", {
+        "genres": [{"name": "Electronic", "count": 12}, {"name": "Jazz", "count": 3}],
+        "untagged_count": 5,
+    })
+    assert "Electronic" in html
+    assert 'data-genre-name="electronic"' in html
+    assert "genre-card-item" in html
+    assert "genre-untagged-item" in html
+
+
 def _edit_track(**over: Any) -> _Obj:
     base = {
         "id": "test:track:edit",
