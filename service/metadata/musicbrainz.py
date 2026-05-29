@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -250,6 +251,150 @@ def lookup_recording(
     return best
 
 
+# ── Staged Lucene retrieval (Phase 4) ─────────────────────────────────────────
+# Instead of one fuzzy structured query, build a sequence of explicit-field Lucene
+# queries from most to least specific and run them SEQUENTIALLY, short-circuiting
+# as soon as the accumulated pool contains a strong match. This widens retrieval
+# breadth for noisy titles without query explosion (budget: ≤4 queries/track,
+# never parallelised — MB throttles to 1 req/s).
+
+_LUCENE_SPECIALS = re.compile(r'([+\-!(){}\[\]^"~*?:\\/])')
+
+# Title tokens dropped in the modifier-stripped fallback stage so a noisy YouTube
+# title ("… (Official Live Video) [Remastered]") can still reach the canonical
+# MB recording. We REMOVE these here (vs. extract_modifiers which only flags them).
+_MODIFIER_STOPWORDS = frozenset({
+    "live", "remix", "remixed", "acoustic", "cover", "karaoke", "instrumental",
+    "version", "remaster", "remastered", "official", "video", "audio", "lyrics",
+    "lyric", "explicit", "clean", "hd", "hq", "feat", "ft", "featuring",
+    "unplugged", "session", "edit", "radio",
+})
+
+
+def _lucene_escape(term: str) -> str:
+    """Backslash-escape Lucene syntax so a user term is a safe query fragment."""
+    term = term.replace("&&", " ").replace("||", " ")
+    return _LUCENE_SPECIALS.sub(r"\\\1", term).strip()
+
+
+def _lucene_phrase(term: str) -> str:
+    """Quote a term as an exact Lucene phrase (escape embedded quote/backslash)."""
+    inner = term.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{inner}"'
+
+
+def _lucene_tokens(text: str) -> list[str]:
+    return [t for t in re.split(r"\s+", text.strip()) if t]
+
+
+def _and_field(field: str, text: str) -> str | None:
+    """Build ``field:(t1 AND t2 …)`` from escaped, lower-cased tokens, or None.
+
+    Tokens are lower-cased for stable output; MB Lucene text matching is
+    case-insensitive so this changes nothing functionally.
+    """
+    toks = [e for e in (_lucene_escape(t.lower()) for t in _lucene_tokens(text)) if e]
+    if not toks:
+        return None
+    return f"{field}:(" + " AND ".join(toks) + ")"
+
+
+def _safe_mbid(value: str) -> str:
+    """Keep only UUID-legal characters — MBID fields must not be Lucene-escaped."""
+    return re.sub(r"[^0-9a-fA-F-]", "", value)
+
+
+def _staged_recording_queries(
+    title: str,
+    artist: str,
+    duration_seconds: int | None,
+    preferred_release_group: str | None,
+) -> list[str]:
+    """Return Lucene queries from most to least specific (deduped, ≤4)."""
+    title = title.strip()
+    artist = artist.strip()
+    ra = _and_field("artist", artist)
+    queries: list[str] = []
+
+    # Stage 1 — strict phrase (+ duration window + release-group when known)
+    s1 = f"recording:{_lucene_phrase(title)}"
+    if artist:
+        s1 += f" AND artist:{_lucene_phrase(artist)}"
+    if duration_seconds:
+        lo = max(0, duration_seconds - 10) * 1000
+        hi = (duration_seconds + 10) * 1000
+        s1 += f" AND dur:[{lo} TO {hi}]"
+    if preferred_release_group:
+        s1 += f" AND rgid:{_safe_mbid(preferred_release_group)}"
+    queries.append(s1)
+
+    # Stage 2 — relaxed structured: all tokens present, any order, no duration gate
+    rt = _and_field("recording", title)
+    if rt:
+        queries.append(rt + (f" AND {ra}" if ra else ""))
+
+    # Stage 3 — modifier-stripped title + artist. Strip punctuation to alnum words
+    # so bracketed modifiers ("(Live)") don't survive as attached tokens.
+    words = re.findall(r"[0-9a-zA-Z']+", title)
+    stripped = " ".join(w for w in words if w.lower() not in _MODIFIER_STOPWORDS)
+    rt3 = _and_field("recording", stripped)
+    if rt3 and stripped.lower() != title.lower():
+        queries.append(rt3 + (f" AND {ra}" if ra else ""))
+
+    # Stage 4 — title-only (drop artist constraint entirely)
+    rt4 = _and_field("recording", stripped or title)
+    if rt4:
+        queries.append(rt4)
+
+    # Dedup preserving order, cap at the 4-query budget.
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out[:4]
+
+
+def _staged_recording_search(
+    title: str,
+    artist: str,
+    duration_seconds: int | None,
+    limit: int,
+    preferred_release_group: str | None,
+) -> list[dict]:
+    """Run staged queries sequentially, stopping once the pool is strong enough.
+
+    Returns merged raw recording dicts (deduped by MBID, first-seen order).
+    """
+    merged: dict[str, dict] = {}
+    for q in _staged_recording_queries(title, artist, duration_seconds, preferred_release_group):
+        try:
+            result = musicbrainzngs.search_recordings(query=q, limit=limit)
+        except Exception as exc:
+            logger.warning("MB staged query failed (%s): %s", q, exc)
+            continue
+        for rec in result.get("recording-list") or []:
+            if isinstance(rec, dict):
+                rid = str(rec.get("id", ""))
+                if rid and rid not in merged:
+                    merged[rid] = rec
+        # Sufficiency: stop as soon as any candidate clears the confidence bar.
+        best = 0.0
+        for rec in merged.values():
+            parsed = _parse_recording(rec)
+            best = max(best, track_similarity(
+                title, artist, duration_seconds,
+                parsed.title, parsed.artist, parsed.duration_seconds,
+            ))
+            if best >= DEDUP_THRESHOLD:
+                break
+        logger.debug("MB staged: %d candidates after %r (best_sim=%.2f)", len(merged), q, best)
+        if best >= DEDUP_THRESHOLD:
+            break
+    return list(merged.values())
+
+
 def get_recording_candidates(
     title: str,
     artist: str,
@@ -261,28 +406,24 @@ def get_recording_candidates(
 ) -> list[tuple["MBRecording", float]]:
     """Return all plausible (recording, text_sim) pairs for multi-signal ranking.
 
-    Uses the same cache as lookup_recording. The low min_sim floor lets the
-    caller apply additional signals (user query intent, AcoustID boost) before
-    choosing the winner and applying the final confidence threshold.
+    Retrieval uses staged explicit-field Lucene queries (see
+    :func:`_staged_recording_search`). The low min_sim floor lets the caller apply
+    additional signals (user query intent, AcoustID boost) before choosing the
+    winner and applying the final confidence threshold.
     """
-    key = _cache_key(title, artist)
+    # Key includes duration + release-group because they shape the staged pool.
+    key = f"cand:{_cache_key(title, artist)}:{duration_seconds or 0}:{preferred_release_group or ''}"
     raw: dict[str, object] | None = None
     if cache_dir is not None:
         raw = _load_cache(cache_dir, key)
 
     if raw is None:
-        try:
-            result = musicbrainzngs.search_recordings(
-                recording=title,
-                artistname=artist,
-                limit=limit,
-            )
-            raw = dict(result)
-            if cache_dir is not None:
-                _save_cache(cache_dir, key, raw)
-        except Exception as exc:
-            logger.warning("MusicBrainz candidates lookup failed for %r / %r: %s", title, artist, exc)
-            return []
+        records = _staged_recording_search(
+            title, artist, duration_seconds, limit, preferred_release_group
+        )
+        raw = {"recording-list": records}
+        if cache_dir is not None:
+            _save_cache(cache_dir, key, raw)
     else:
         logger.debug("MB cache hit (candidates): %s", key)
 
