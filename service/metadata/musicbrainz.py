@@ -234,10 +234,10 @@ def lookup_recording(
             title, artist, duration_seconds,
             parsed.title, parsed.artist, parsed.duration_seconds,
         )
-        # Small boost for recordings in the preferred release group so that
-        # album-context text searches stay within the expected release.
+        # Cohesion boost for recordings in the preferred release group so that
+        # album-context text searches stay within the expected release (Phase 5).
         if preferred_release_group and parsed.release_group_id == preferred_release_group:
-            sim = min(sim + 0.05, 1.0)
+            sim = min(sim + 0.10, 1.0)
         if sim > best_sim:
             best_sim = sim
             best = parsed
@@ -440,8 +440,10 @@ def get_recording_candidates(
             title, artist, duration_seconds,
             parsed.title, parsed.artist, parsed.duration_seconds,
         )
+        # Phase 5: strong cohesion bias — keep tracks anchored to a release group
+        # the user already owns (was +0.05; too weak to beat alternate editions).
         if preferred_release_group and parsed.release_group_id == preferred_release_group:
-            sim = min(sim + 0.05, 1.0)
+            sim = min(sim + 0.10, 1.0)
         if sim >= min_sim:
             out.append((parsed, sim))
 

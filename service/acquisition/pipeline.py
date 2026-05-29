@@ -246,6 +246,10 @@ async def run_acquisition(
         # Seed from candidate so discography/album jobs always carry the RG ID
         # even when the MB lookup returns a result without release_group_id.
         mb_release_group_id: str | None = candidate.mb_release_group_id
+        # Phase 5: the release group we prefer for cohesion — the locked candidate
+        # RG, or (Path B) one discovered from a locally-owned album below. Biases
+        # ranking and stops AcoustID from redefining album grouping.
+        _preferred_rg: str | None = candidate.mb_release_group_id
         isrc: str | None = None
         acoustid_confidence: float | None = None
         mb_match_source: str | None = None
@@ -327,6 +331,17 @@ async def run_acquisition(
 
             else:
                 # ── Path B: multi-signal candidate ranking ───────────────────
+                # Phase 5: if the user already owns an album by this artist with a
+                # matching title, bias retrieval toward its release group so we
+                # don't fragment it with a remaster / alternate edition.
+                if not _preferred_rg and album:
+                    from service.library.cohesion import find_local_release_group
+                    _preferred_rg = await find_local_release_group(session, album, artist)
+                    if _preferred_rg:
+                        logger.info(
+                            "Path B cohesion: %r / %r → preferred release group %s",
+                            artist, album, _preferred_rg,
+                        )
                 # Fetch candidate pool and AcoustID fingerprint in parallel.
                 candidates_coro = asyncio.to_thread(
                     get_recording_candidates,
@@ -334,7 +349,7 @@ async def run_acquisition(
                     clean_for_search(artist),
                     duration,
                     settings.cache_dir,
-                    candidate.mb_release_group_id,
+                    _preferred_rg,
                 )
                 acoustid_coro = (
                     acoustid_to_mbid(audio_path, settings.acoustid_api_key)
@@ -436,6 +451,15 @@ async def run_acquisition(
                 # Keep candidate's release_group_id as fallback so album-locked jobs
                 # never lose the RG ID when MB returns an incomplete result.
                 mb_release_group_id = mb.release_group_id or mb_release_group_id  # type: ignore[union-attr]
+                # Phase 5 AcoustID boundary: a fingerprint match may pick the right
+                # RECORDING but must not redefine the album's release group when we
+                # hold a strong local cohesion signal — re-anchor to the owned RG.
+                if _preferred_rg and mb_from_acoustid and mb_release_group_id != _preferred_rg:
+                    logger.info(
+                        "Keeping owned release group %s over AcoustID's %s for %r",
+                        _preferred_rg, mb_release_group_id, title,
+                    )
+                    mb_release_group_id = _preferred_rg
                 isrc = mb.isrc  # type: ignore[union-attr]
                 prov_recording = mb_match_source or "mb"
                 # Only accept title/artist from MB if the MB result actually corresponds

@@ -100,6 +100,38 @@ async def find_canonical_album(
     return None
 
 
+async def find_local_release_group(
+    session: AsyncSession,
+    album: str | None,
+    albumartist: str,
+) -> str | None:
+    """Return the MB release-group ID of an existing local album matching
+    ``album`` + ``albumartist`` (normalized title within the same artist), or None.
+
+    Phase 5 retrieval-time cohesion hint: bias MB candidate ranking toward the
+    release group the user already owns so remasters / alternate editions don't
+    fragment a locally stable album. Unlike :func:`find_canonical_album` this
+    takes no MB release-group input — it *discovers* one from the local library.
+    """
+    if not album:
+        return None
+    from sqlalchemy import select
+
+    from service.db.schema import Album
+
+    norm_new = normalize_album_for_grouping(album)
+    artist_id = _artist_id(albumartist)
+    result = await session.execute(
+        select(Album)
+        .where(Album.artist_id == artist_id, Album.mb_release_group_id.is_not(None))
+        .order_by(Album.created_at)
+    )
+    for existing in result.scalars().all():
+        if normalize_album_for_grouping(existing.title) == norm_new:
+            return existing.mb_release_group_id
+    return None
+
+
 async def get_owned_recording_ids(
     session: "AsyncSession",
     recording_ids: list[str],
