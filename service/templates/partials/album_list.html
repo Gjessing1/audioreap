@@ -29,12 +29,18 @@
   {% for t in album.tracks %}{% if t.file and cover_track.value is none %}{% set cover_track.value = t %}{% endif %}{% endfor %}
 
   {% set aid = album.id | replace(':', '_') %}
+  {% if album.id == open_id %}
+  {# Expanded inline — only one album is ever open; opening another reloads the
+     list with that one open, which collapses this one. #}
+  {% include "partials/album_detail.html" %}
+  {% else %}
+  {% set open_url = "/library/albums/list?q=" ~ (q | urlencode) ~ "&sort=" ~ (sort | urlencode) ~ "&open=" ~ (album.id | urlencode) %}
   <div class="album-row" id="album-{{ aid }}">
     {# Cover art #}
     <div class="album-art"
-         hx-get="/library/albums/{{ album.id }}/detail"
-         hx-target="#album-{{ aid }}"
-         hx-swap="outerHTML"
+         hx-get="{{ open_url }}"
+         hx-target="#album-list"
+         hx-swap="innerHTML"
          style="cursor:pointer">
       {% if cover_track.value %}
       <img src="/library/tracks/{{ cover_track.value.id }}/cover-art"
@@ -47,9 +53,9 @@
     </div>
     {# Info #}
     <div class="album-info"
-         hx-get="/library/albums/{{ album.id }}/detail"
-         hx-target="#album-{{ aid }}"
-         hx-swap="outerHTML"
+         hx-get="{{ open_url }}"
+         hx-target="#album-list"
+         hx-swap="innerHTML"
          style="cursor:pointer">
       <div class="album-title">{{ album.title }}</div>
       <div class="album-meta">
@@ -72,11 +78,12 @@
             title="Metadata quality score: completeness of title, artist, album, year, track number, MB ID, and cover art across owned tracks (7 factors, avg {{ '%.0f'|format(aq * 100) }}%)">{{ "%.0f"|format(aq * 100) }}% meta</span>
       {% endif %}
       <button class="btn btn-sm btn-ghost"
-              hx-get="/library/albums/{{ album.id }}/detail"
-              hx-target="#album-{{ aid }}"
-              hx-swap="outerHTML">Edit</button>
+              hx-get="{{ open_url }}"
+              hx-target="#album-list"
+              hx-swap="innerHTML">Edit</button>
     </div>
   </div>
+  {% endif %}
   {% endfor %}
 </div>
 {% else %}

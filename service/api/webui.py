@@ -1939,6 +1939,7 @@ async def library_albums_list(
     request: Request,
     q: str = "",
     sort: str = "artist",
+    open_id: str = Query("", alias="open"),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy.orm import joinedload as _jl
@@ -1990,7 +1991,8 @@ async def library_albums_list(
     return templates.TemplateResponse(
         request, "partials/album_list.html",
         {"albums": albums, "q": q, "sort": sort, "album_quality": album_quality,
-         "singles_count": singles_count, "singles_cover_id": singles_cover_id},
+         "singles_count": singles_count, "singles_cover_id": singles_cover_id,
+         "open_id": open_id},
     )
 
 
