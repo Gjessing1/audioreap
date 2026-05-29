@@ -35,7 +35,12 @@
 
 {# ── Quality stat tiles — each links to relevant filter ── #}
 {% if quality %}
-<div class="section-title" style="margin-top:20px">Metadata quality</div>
+<details class="js-persist" data-persist-key="lib-quality" style="margin-top:20px">
+  <summary class="section-title" style="margin:0;cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px">
+    Metadata quality
+    <span class="persist-chevron" style="font-size:11px;color:var(--t3)">▶</span>
+  </summary>
+  <div style="margin-top:10px">
 <div class="stats">
   <a href="/library/browse?f=low_quality" class="stat stat-link"
      hx-get="/library/browse?f=low_quality&embed=1" hx-target="#library-view" hx-swap="innerHTML"
@@ -88,6 +93,8 @@
      hx-push-url="/library/browse?f=low_bitrate_suppressed"
      title="Tracks whose Low Bitrate warning has been suppressed — click to browse and re-enable">{{ quality.bitrate_suppressed }} bitrate suppressed ↗</a>
 </div>
+  </div>
+</details>
 {% endif %}
 
 {% endif %}

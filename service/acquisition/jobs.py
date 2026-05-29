@@ -240,6 +240,8 @@ async def acquire_album_from_mb(
     - Skips tracks already owned by MB recording ID.
     """
     import asyncio as _asyncio
+    from datetime import timedelta as _timedelta
+
     from arq import create_pool
     from arq.connections import RedisSettings
     from service.config import settings as _settings
@@ -370,6 +372,10 @@ async def acquire_album_from_mb(
                 child_row.acquired_from_release_group = release_group_id
                 child_row.acquired_from_release = release_id
 
+            # Stagger download starts so a whole album doesn't hit YouTube at once
+            # (the thundering herd that triggers HTTP 429 / rate-limit transient
+            # failures and forces manual requeues). Spreading them out lets the
+            # batch finish in a single pass. First track fires immediately.
             await redis.enqueue_job(
                 "acquire_track",
                 job_id=job_id,
@@ -379,6 +385,7 @@ async def acquire_album_from_mb(
                 music_dir=music_dir,
                 tmp_acquire_dir=tmp_acquire_dir,
                 _job_id=f"acquire:{job_id}",
+                _defer_by=_timedelta(seconds=queued_count * _ALBUM_DOWNLOAD_STAGGER_SECONDS),
             )
             queued_count += 1
 
@@ -397,6 +404,9 @@ async def acquire_album_from_mb(
 
 _RETRY_DELAYS = [30, 120, 600]  # seconds: 30s, 2 min, 10 min
 _MAX_RETRIES = len(_RETRY_DELAYS)
+
+# Seconds to space out successive album-track download starts (anti-rate-limit).
+_ALBUM_DOWNLOAD_STAGGER_SECONDS = 6
 
 
 async def acquire_track(

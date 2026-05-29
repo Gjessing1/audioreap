@@ -102,6 +102,10 @@ window.togglePanel = function(showId, ...hideIds) {
 };
 
 /* ── Batch approve checkboxes ────────────────────────────────────────────── */
+/* Selected job IDs survive the 12s job-list polling swap (innerHTML wipes the
+ * DOM checkboxes, so we re-apply from this set after each swap). */
+const _selectedJobs = new Set();
+
 function _updateBatchCount() {
   const toolbar = document.getElementById('batch-toolbar');
   const label   = document.getElementById('batch-count-label');
@@ -117,21 +121,37 @@ function _updateBatchCount() {
 
 /* Event delegation — no inline handlers needed, works after HTMX swaps */
 document.body.addEventListener('change', function(e) {
-  if (e.target.classList.contains('job-check')) _updateBatchCount();
+  if (e.target.classList.contains('job-check')) {
+    if (e.target.checked) _selectedJobs.add(e.target.value);
+    else _selectedJobs.delete(e.target.value);
+    _updateBatchCount();
+  }
 });
 
 window.clearJobChecks = function() {
   document.querySelectorAll('.job-check').forEach(cb => { cb.checked = false; });
+  _selectedJobs.clear();
   _updateBatchCount();
 };
 
 window.selectAllReview = function() {
-  document.querySelectorAll('.job-check').forEach(cb => { cb.checked = true; });
+  document.querySelectorAll('.job-check').forEach(cb => {
+    cb.checked = true;
+    _selectedJobs.add(cb.value);
+  });
   _updateBatchCount();
 };
 
 /* Reset after HTMX swaps */
 document.body.addEventListener('htmx:afterSwap', () => {
+  // Restore selection a poll-driven innerHTML swap would otherwise have wiped,
+  // then prune IDs whose checkbox is gone (track left the review queue).
+  const present = new Set();
+  document.querySelectorAll('.job-check').forEach(cb => {
+    cb.checked = _selectedJobs.has(cb.value);
+    present.add(cb.value);
+  });
+  _selectedJobs.forEach(v => { if (!present.has(v)) _selectedJobs.delete(v); });
   _updateBatchCount();
   updatePlayBtns();
 });
@@ -221,6 +241,52 @@ window.filterDiscoReleases = function(q) {
     el.style.display = (!lower || title.indexOf(lower) !== -1) ? '' : 'none';
   });
 };
+
+/* ── Persisted <details> (open state survives HTMX poll swaps) ───────────────
+ * Any <details data-persist-key="..."> remembers its open/closed state in
+ * localStorage and re-applies it after the element is re-rendered (e.g. the
+ * library stats poll every 30s). Default (no stored value) stays as authored.
+ */
+function applyPersistedDetails(root) {
+  const scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll('details[data-persist-key]').forEach(function(d) {
+    const key = 'details:' + d.getAttribute('data-persist-key');
+    const stored = localStorage.getItem(key);
+    if (stored !== null) d.open = (stored === '1');
+    const chevron = d.querySelector('.persist-chevron');
+    if (chevron) chevron.textContent = d.open ? '▼' : '▶';
+    if (!d._persistBound) {
+      d._persistBound = true;
+      d.addEventListener('toggle', function() {
+        localStorage.setItem(key, d.open ? '1' : '0');
+        const ch = d.querySelector('.persist-chevron');
+        if (ch) ch.textContent = d.open ? '▼' : '▶';
+      });
+    }
+  });
+}
+document.addEventListener('DOMContentLoaded', function() { applyPersistedDetails(document); });
+document.body.addEventListener('htmx:afterSettle', function(e) { applyPersistedDetails(e.target); });
+
+/* ── Library: remember last in-place view, default to Tracks on entry ────────
+ * Stat tiles load a view into #library-view via embed=1. We persist the last
+ * tile's URL so revisiting /library reopens it; first-ever visit defaults to
+ * the Tracks (browse) view instead of an empty pane.
+ */
+document.body.addEventListener('click', function(e) {
+  const link = e.target.closest && e.target.closest('.stat-link');
+  if (link) {
+    const u = link.getAttribute('hx-push-url') || link.getAttribute('href');
+    if (u) localStorage.setItem('library:lastView', u);
+  }
+});
+document.addEventListener('DOMContentLoaded', function() {
+  const view = document.getElementById('library-view');
+  if (!view || view.children.length || typeof htmx === 'undefined') return;
+  const last = localStorage.getItem('library:lastView') || '/library/browse';
+  const url = last + (last.indexOf('?') >= 0 ? '&' : '?') + 'embed=1';
+  htmx.ajax('GET', url, { target: '#library-view', swap: 'innerHTML' });
+});
 
 /* ── Service worker registration ─────────────────────────────────────────── */
 if ("serviceWorker" in navigator) {

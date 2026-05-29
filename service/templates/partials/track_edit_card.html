@@ -202,6 +202,14 @@
     <div class="rv-actions">
       <button type="submit" class="btn btn-lg rv-approve">Save Tags</button>
       <button type="button" class="btn btn-sm btn-ghost"
+              hx-post="/library/tracks/{{ track.id }}/save-tags/preview"
+              hx-include="closest form"
+              hx-target="#edit-preview-{{ safe_id }}"
+              hx-swap="innerHTML"
+              title="Dry-run: preview the before/after diff and any album regrouping before saving">
+        Preview changes
+      </button>
+      <button type="button" class="btn btn-sm btn-ghost"
               onclick="document.getElementById('mb-edit-panel-{{ safe_id }}').classList.toggle('hidden')">
         Search MB
       </button>
@@ -256,6 +264,7 @@
       {% endif %}
     </div>
     <div id="replace-status-{{ safe_id }}"></div>
+    <div id="edit-preview-{{ safe_id }}" style="margin-top:8px"></div>
   </form>
 
   {# ── Replace source panel ────────────────────────────────────────────────── #}

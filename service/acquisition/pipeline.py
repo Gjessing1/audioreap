@@ -314,17 +314,34 @@ async def run_acquisition(
                 if _aq_result and isinstance(_aq_result, tuple):
                     acoustid_mbid_a, acoustid_confidence = _aq_result
                     if acoustid_mbid_a != candidate.mb_recording_id:
+                        # Resolve both sides to "Title — Artist" so the review card
+                        # tells the user WHICH song was matched vs expected, not just
+                        # opaque truncated MBIDs. The lookup only runs on a mismatch.
+                        _exp_t = (mb.title if mb else None) or candidate.title
+                        _exp_a = (mb.artist if mb else None) or candidate.artist
+                        expected_label = f"{_exp_t} — {_exp_a}" if _exp_a else _exp_t
+                        got_rec = await asyncio.to_thread(
+                            get_recording_by_id, acoustid_mbid_a, settings.cache_dir
+                        )
+                        if got_rec and got_rec.title:
+                            got_label = (
+                                f"{got_rec.title} — {got_rec.artist}"
+                                if got_rec.artist else got_rec.title
+                            )
+                        else:
+                            got_label = f"recording {acoustid_mbid_a[:8]}…"
                         mismatch_note = (
-                            f"Fingerprint mismatch: expected {candidate.mb_recording_id[:8]}…, "
-                            f"got {acoustid_mbid_a[:8]}…"
+                            f"Fingerprint mismatch: expected “{expected_label}”, "
+                            f"got “{got_label}”"
                         )
                         force_staging_reason = (
                             f"{force_staging_reason} | {mismatch_note}"
                             if force_staging_reason else mismatch_note
                         )
                         logger.warning(
-                            "Job %s %r: AcoustID mismatch (expected %s, got %s)",
-                            job_id, title, candidate.mb_recording_id, acoustid_mbid_a,
+                            "Job %s %r: AcoustID mismatch (expected %s [%s], got %s [%s])",
+                            job_id, title, candidate.mb_recording_id, expected_label,
+                            acoustid_mbid_a, got_label,
                         )
                     else:
                         mb_from_acoustid = True  # AcoustID confirmed the locked recording
@@ -670,6 +687,7 @@ async def place_approved_track(
     overrides: dict[str, str | None],
     session: AsyncSession,
     scan_trigger: ScanTrigger | None = None,
+    mark_progress: bool = False,
 ) -> Path:
     """Phase 2 (place): write tags, move staging → /music, index, scan.
 
@@ -686,18 +704,33 @@ async def place_approved_track(
     row = await session.get(AcquisitionJobRow, job_id)
     if row is None:
         raise ValueError(f"Job {job_id} not found")
-    if row.state != "needs_review":
+    # "importing" is accepted so a job left mid-placement (worker/route crash after
+    # mark_progress committed) can be re-approved.
+    if row.state not in ("needs_review", "importing"):
         raise ValueError(f"Job {job_id} is in state {row.state!r}, expected needs_review")
     if not row.resolved_metadata_json:
         raise ValueError(f"Job {job_id} has no resolved metadata")
     if not row.staging_path:
         raise ValueError(f"Job {job_id} has no staging path")
 
+    resolved_json = row.resolved_metadata_json
     staging_path = Path(row.staging_path)
     if not staging_path.exists():
         raise FileNotFoundError(f"Staged file missing: {staging_path}")
 
-    meta = ResolvedTrackMetadata.model_validate_json(row.resolved_metadata_json)
+    # Publish an intermediate "importing" state (committed) so the job-list poll —
+    # which runs in a separate transaction — never momentarily sees this job as
+    # needs_review while its staging file has already been moved out. That race
+    # produced a spurious "Staging file missing — use Re-download" flag during the
+    # several seconds of ReplayGain + artwork + scan. Only the API approval paths
+    # set mark_progress; the in-transaction auto-approve path (run_acquisition)
+    # keeps its single atomic commit.
+    if mark_progress and row.state != "importing":
+        row.state = "importing"
+        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.commit()
+
+    meta = ResolvedTrackMetadata.model_validate_json(resolved_json)
 
     # Apply user-supplied overrides — non-empty string values win
     for k in ("title", "artist", "album", "mb_recording_id", "mb_release_id", "genre"):

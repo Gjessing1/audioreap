@@ -321,13 +321,19 @@ class YtdlpProvider(Provider):
 
 # ── Shared YouTube source-selection helpers ──────────────────────────────────
 
-_EXPLICIT_RE = re.compile(r"\b(explicit|explicit version)\b", re.IGNORECASE)
-_CLEAN_RE = re.compile(r"\b(clean|clean version|radio edit|censored|edited)\b", re.IGNORECASE)
+_EXPLICIT_RE = re.compile(r"\b(explicit|dirty|uncensored|uncut)\b", re.IGNORECASE)
+_CLEAN_RE = re.compile(
+    r"\b(clean|radio edit|radio version|censored|edited|family friendly|no swearing)\b",
+    re.IGNORECASE,
+)
 
 def explicit_score(title: str, age_limit: int | None = None) -> int:
     """Return +1 for explicit, -1 for clean/radio-edit, 0 otherwise.
 
-    age_limit: yt-dlp's age_limit field (18 = explicit) takes precedence over title keywords.
+    age_limit: yt-dlp's age_limit field (18 = explicit) takes precedence over title
+    keywords. Note: under extract_flat search (how yt_search_best lists candidates)
+    age_limit is usually absent, so the title-keyword signal does the real work —
+    keep these patterns broad.
     """
     if age_limit is not None and age_limit >= 18:
         return 1
@@ -385,6 +391,9 @@ def yt_search_best(
             continue
         entry = entry  # type: ignore[assignment]
         vid_title = str(entry.get("track") or entry.get("title") or "")  # type: ignore[union-attr]
+        # The cleaned "track" field often drops the "(Explicit)"/"(Clean)" suffix,
+        # so scan the full raw title for the explicit/clean signal as well.
+        vid_full_title = str(entry.get("title") or vid_title)  # type: ignore[union-attr]
         vid_dur = entry.get("duration")  # type: ignore[union-attr]
         vid_id = entry.get("id") or ""  # type: ignore[union-attr]
         url = str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")  # type: ignore[union-attr]
@@ -406,9 +415,16 @@ def yt_search_best(
         score = t_sim * 0.65 + dur_score * 0.25
 
         age_limit = int(entry.get("age_limit") or 0)  # type: ignore[union-attr]
-        exp = explicit_score(vid_title, age_limit if age_limit >= 18 else None)
+        exp = explicit_score(vid_full_title, age_limit if age_limit >= 18 else None)
         if exp != 0:
-            score += exp * 0.10 if prefer_explicit else -exp * 0.05
+            # Make a labelled version decisive: when preferring explicit, an explicit
+            # gets a strong boost and a clean a strong penalty (and vice-versa). The
+            # spread (≈0.30) exceeds the title-similarity gap between near-identical
+            # "Song" vs "Song (Clean)" uploads so the wanted edition actually wins.
+            if prefer_explicit:
+                score += 0.15 if exp > 0 else -0.18
+            else:
+                score += 0.15 if exp < 0 else -0.18
 
         if looks_like_live(vid_title) and not looks_like_live(title):
             score -= 0.30

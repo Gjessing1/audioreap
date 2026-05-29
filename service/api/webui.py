@@ -140,6 +140,28 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     ctx["safe_review_ids"] = safe_ids
     ctx["safe_review_count"] = len(safe_ids)
     ctx["has_active_jobs"] = bool(active_rows)
+
+    # Album batches whose child track jobs don't exist yet (worker still fetching
+    # the MB tracklist) would otherwise be invisible on /jobs. Surface a ghost
+    # placeholder so the user can see the album query is working. Once any child
+    # row exists, the placeholder is dropped and the real album group renders.
+    from service.db.schema import AlbumAcquisitionJob as _AlbumJob
+    represented_album_ids = {r.album_job_id for r in rows if r.album_job_id}
+    pending_album_rows = (await session.execute(
+        select(_AlbumJob)
+        .where(_AlbumJob.state.in_(("queued", "running")))
+        .order_by(_AlbumJob.created_at.desc())
+        .limit(50)
+    )).scalars().all()
+    ctx["album_placeholders"] = [
+        {
+            "album_job_id": a.id,
+            "label": " — ".join(p for p in [a.album_artist, a.album_title] if p)
+                     or (a.query or a.id[:8]),
+        }
+        for a in pending_album_rows
+        if a.id not in represented_album_ids
+    ]
     return ctx
 
 
@@ -375,8 +397,22 @@ async def _build_review_groups(
         else:
             singles.append({"type": "single", "job": j, "confidence": confidence})
 
+    # Within an album batch, order tracks by review status so the approvable ones
+    # cluster at the top and problems escalate toward the bottom:
+    # verified → probable → flagged → fingerprint-mismatch. Stable sort preserves
+    # the arrival (≈track) order within each rank.
+    def _item_rank(it: dict) -> int:
+        conf = it.get("confidence")
+        if conf == "verified":
+            return 0
+        if conf == "probable":
+            return 1
+        reason = (it.get("flag_reason") or "").lower()
+        return 3 if "fingerprint mismatch" in reason else 2
+
     groups: list[dict] = list(singles)
     for ajid, items in album_buckets.items():
+        items.sort(key=_item_rank)
         clean_ids = [it["job"].id for it in items if not it["is_flagged"]]
         groups.append({
             "type": "album",
@@ -927,7 +963,7 @@ async def batch_approve(
     fail_count = 0
     for jid in job_ids:
         try:
-            dest = await place_approved_track(jid, {}, session)
+            dest = await place_approved_track(jid, {}, session, mark_progress=True)
             await session.commit()
             if dest is not None and dest.exists():
                 try:
@@ -945,6 +981,10 @@ async def batch_approve(
                 await session.rollback()
                 row = await session.get(AcquisitionJobRow, jid)
                 if row:
+                    # Undo the intermediate "importing" state so the job returns
+                    # to the review queue instead of being stuck mid-import.
+                    if row.state == "importing":
+                        row.state = "needs_review"
                     row.error = str(exc)[:200]
                     await session.commit()
             except Exception:
@@ -1001,7 +1041,7 @@ async def approve_job(
 
     dest: Path | None = None
     try:
-        dest = await place_approved_track(job_id, overrides, session)
+        dest = await place_approved_track(job_id, overrides, session, mark_progress=True)
         await session.commit()
     except Exception as exc:
         logger.error("Approve job %s failed: %s", job_id, exc)
@@ -1010,6 +1050,10 @@ async def approve_job(
             await session.rollback()
             row = await session.get(AcquisitionJobRow, job_id)
             if row:
+                # Undo the intermediate "importing" state so the job returns to the
+                # review queue instead of being stuck mid-import.
+                if row.state == "importing":
+                    row.state = "needs_review"
                 row.error = str(exc)[:200]
                 await session.commit()
         except Exception:
@@ -3747,6 +3791,128 @@ async def save_track_tags(
     return templates.TemplateResponse(
         request, "partials/browse_row.html",
         {"t": updated},
+    )
+
+
+@router.post("/library/tracks/{internal_id}/save-tags/preview", response_class=HTMLResponse)
+async def preview_track_tags(
+    request: Request,
+    internal_id: str,
+    title: str = Form(""),
+    artist: str = Form(""),
+    album: str = Form(""),
+    year: str = Form(""),
+    track_number: str = Form(""),
+    mb_recording_id: str = Form(""),
+    genre: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Read-only before/after preview for a library metadata edit (dry-run).
+
+    Mirrors save-tags' input parsing and DB regrouping logic but writes nothing.
+    Classifies each changed field as safe (retag only) or structural (regroups
+    artist/album in Navidrome) and surfaces the album-split consequence — only
+    this track moves, siblings stay put. save-tags re-tags the file in place; it
+    does not relocate it, so we say so when structure changes.
+    """
+    from service.library.tagger import read_tags as _read_tags
+
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None or not row.file:
+        raise HTTPException(404)
+
+    file_path = Path(row.file.path)
+
+    # Current ("before") state
+    cur_title = row.title
+    cur_artist = row.artist.name
+    cur_album = row.album.title if row.album else None
+    cur_year = row.album.year if row.album and row.album.year else None
+    cur_track = row.track_number
+    cur_genre = row.genre
+    if not cur_genre and file_path.exists():
+        tagged = await asyncio.to_thread(_read_tags, file_path)
+        if tagged:
+            cur_genre = tagged.genre
+    cur_mbid = row.musicbrainz_recording_id
+
+    # Proposed ("after") state — same parsing as save-tags
+    year_val: int | None = int(year) if year.strip().isdigit() else None
+    track_num_val: int | None = int(track_number) if track_number.strip().isdigit() else None
+    new_title = title.strip() or cur_title
+    new_artist = artist.strip() or cur_artist
+    new_album = album.strip() or None
+    new_mbid = mb_recording_id.strip() or None
+    new_genre = genre.strip() or None
+
+    changes: list[dict] = []
+
+    def _add(field: str, before: object, after: object, structural: bool) -> None:
+        if str(before or "") != str(after or ""):
+            changes.append({
+                "field": field,
+                "before": before if (before is not None and before != "") else "—",
+                "after": after if (after is not None and after != "") else "—",
+                "structural": structural,
+            })
+
+    _add("Title", cur_title, new_title, False)
+    _add("Artist", cur_artist, new_artist, True)
+    _add("Album", cur_album, new_album, True)
+    _add("Year", cur_year, year_val, False)
+    _add("Track #", cur_track, track_num_val, False)
+    _add("Genre", cur_genre, new_genre, False)
+    _add("MB Recording ID", cur_mbid, new_mbid, True)
+
+    structural = any(c["structural"] for c in changes)
+    warnings: list[str] = []
+    notes: list[str] = []
+
+    artist_changed = new_artist != cur_artist
+    album_changed = (new_album or None) != (cur_album or None)
+
+    if artist_changed:
+        existing_artist = (await session.execute(
+            select(Artist).where(Artist.name == new_artist)
+        )).scalars().first()
+        if existing_artist:
+            notes.append(f"Artist “{new_artist}” already exists — track merges into it.")
+        else:
+            notes.append(f"New artist “{new_artist}” will be created.")
+
+    if album_changed and row.album_id:
+        siblings = (await session.execute(
+            select(func.count(Track.id)).where(
+                Track.album_id == row.album_id, Track.id != row.id
+            )
+        )).scalar_one()
+        if siblings > 0:
+            warnings.append(
+                f"Only this track moves. {siblings} other track"
+                f"{'s' if siblings != 1 else ''} stay in “{cur_album}”."
+            )
+    if album_changed:
+        if new_album:
+            notes.append(f"Track regroups under album “{new_album}”.")
+        else:
+            notes.append("Album cleared — track becomes a Single.")
+
+    if structural:
+        notes.append("The audio file is re-tagged in place — it is not moved to a new folder.")
+
+    return templates.TemplateResponse(
+        request, "partials/edit_preview.html",
+        {
+            "changes": changes,
+            "structural": structural,
+            "warnings": warnings,
+            "notes": notes,
+        },
     )
 
 

@@ -1,9 +1,22 @@
-{% if not review and not active and not completed %}
+{% if not review and not active and not completed and not album_placeholders %}
 <div class="empty-state">
   <p>No jobs yet — search for music and hit <strong>Get</strong>.</p>
 </div>
 
 {% else %}
+
+{% if album_placeholders %}
+<div class="job-section">
+  {% for ph in album_placeholders %}
+  <div class="album-batch-group album-batch-group--pending" id="album-pending-{{ ph.album_job_id[:8] }}">
+    <div class="album-batch-header">
+      <span class="album-batch-title">♫ {{ ph.label }}</span>
+      <span class="album-batch-stats muted"><span class="spinner"></span> fetching tracklist…</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% if review %}
 <div class="rv-section-header">
