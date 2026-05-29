@@ -273,7 +273,11 @@ async def run_acquisition(
                 get_recording_by_id,
                 get_recording_candidates,
             )
-            from service.search.matcher import DEDUP_THRESHOLD as _DEDUP, title_similarity as _title_sim
+            from service.search.matcher import (
+                DEDUP_THRESHOLD as _DEDUP,
+                artist_similarity as _artist_sim,
+                title_similarity as _title_sim,
+            )
 
             mb: object = None
             mb_from_acoustid = False
@@ -314,35 +318,61 @@ async def run_acquisition(
                 if _aq_result and isinstance(_aq_result, tuple):
                     acoustid_mbid_a, acoustid_confidence = _aq_result
                     if acoustid_mbid_a != candidate.mb_recording_id:
-                        # Resolve both sides to "Title — Artist" so the review card
-                        # tells the user WHICH song was matched vs expected, not just
-                        # opaque truncated MBIDs. The lookup only runs on a mismatch.
+                        # A different recording MBID is NOT automatically a wrong
+                        # track. MusicBrainz holds many distinct recording entities
+                        # for one song (album cut vs single vs remaster); a fingerprint
+                        # legitimately matches any of them. Resolve both sides to
+                        # title/artist — if it's the same song, the fingerprint
+                        # actually CONFIRMS the audio and we keep the locked recording.
+                        # Only a genuinely different song is flagged for review.
                         _exp_t = (mb.title if mb else None) or candidate.title
                         _exp_a = (mb.artist if mb else None) or candidate.artist
-                        expected_label = f"{_exp_t} — {_exp_a}" if _exp_a else _exp_t
                         got_rec = await asyncio.to_thread(
                             get_recording_by_id, acoustid_mbid_a, settings.cache_dir
                         )
-                        if got_rec and got_rec.title:
-                            got_label = (
-                                f"{got_rec.title} — {got_rec.artist}"
-                                if got_rec.artist else got_rec.title
+                        _got_t = got_rec.title if got_rec else None
+                        _got_a = got_rec.artist if got_rec else None
+                        _same_song = (
+                            _got_t is not None
+                            and _title_sim(
+                                clean_for_search(_exp_t), clean_for_search(_got_t)
+                            ) >= 0.85
+                            and (
+                                not _exp_a or not _got_a
+                                or _artist_sim(_exp_a, _got_a) >= 0.55
+                            )
+                        )
+                        if _same_song:
+                            # Same song, sibling recording entity — confirmation, not
+                            # a mismatch. Avoids the confusing "expected X, got X"
+                            # review flag that looked identical to the user.
+                            mb_from_acoustid = True
+                            logger.info(
+                                "Job %s %r: AcoustID matched sibling recording %s of the "
+                                "same song (expected %s) — accepting as confirmation",
+                                job_id, title, acoustid_mbid_a, candidate.mb_recording_id,
                             )
                         else:
-                            got_label = f"recording {acoustid_mbid_a[:8]}…"
-                        mismatch_note = (
-                            f"Fingerprint mismatch: expected “{expected_label}”, "
-                            f"got “{got_label}”"
-                        )
-                        force_staging_reason = (
-                            f"{force_staging_reason} | {mismatch_note}"
-                            if force_staging_reason else mismatch_note
-                        )
-                        logger.warning(
-                            "Job %s %r: AcoustID mismatch (expected %s [%s], got %s [%s])",
-                            job_id, title, candidate.mb_recording_id, expected_label,
-                            acoustid_mbid_a, got_label,
-                        )
+                            # Genuinely different song — surface "Title — Artist" so the
+                            # review card names what was matched vs expected.
+                            expected_label = f"{_exp_t} — {_exp_a}" if _exp_a else _exp_t
+                            if _got_t:
+                                got_label = f"{_got_t} — {_got_a}" if _got_a else _got_t
+                            else:
+                                got_label = f"recording {acoustid_mbid_a[:8]}…"
+                            mismatch_note = (
+                                f"Fingerprint mismatch: expected “{expected_label}”, "
+                                f"got “{got_label}”"
+                            )
+                            force_staging_reason = (
+                                f"{force_staging_reason} | {mismatch_note}"
+                                if force_staging_reason else mismatch_note
+                            )
+                            logger.warning(
+                                "Job %s %r: AcoustID mismatch (expected %s [%s], got %s [%s])",
+                                job_id, title, candidate.mb_recording_id, expected_label,
+                                acoustid_mbid_a, got_label,
+                            )
                     else:
                         mb_from_acoustid = True  # AcoustID confirmed the locked recording
 

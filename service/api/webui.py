@@ -1819,8 +1819,31 @@ async def replace_job_source(
                 safe_trash(p, settings.staging_dir / ".trash")
         except Exception:
             pass
-    # Update candidate if provided
-    if candidate_json:
+    # Preserve the ORIGINAL candidate's identity (locked recording ID, album,
+    # track number, release group) and swap only the download pointer. Overwriting
+    # candidate_json wholesale with the raw YouTube search result dropped the album
+    # lock — re-acquired album tracks then lost their MB link and fragmented the
+    # album (the "song I replaced lost its musicbrainz link" report). Only the
+    # source pointer and its quality hints should change.
+    from service.core.models import TrackCandidate as _TC
+    base: _TC | None = None
+    if row.candidate_json:
+        try:
+            base = _TC.model_validate_json(row.candidate_json)
+        except Exception:
+            base = None
+    if base is not None:
+        update: dict[str, object] = {"provider_ref": provider_ref}
+        if candidate_json:
+            try:
+                picked = _TC.model_validate_json(candidate_json)
+                update["thumbnail_url"] = picked.thumbnail_url
+                update["raw_metadata"] = picked.raw_metadata
+            except Exception:
+                pass
+        row.candidate_json = base.model_copy(update=update).model_dump_json()
+    elif candidate_json:
+        # No original candidate to anchor to — fall back to the picked source.
         row.candidate_json = candidate_json
     row.provider_ref = provider_ref
     row.staging_path = None
