@@ -287,6 +287,13 @@ async def run_acquisition(
             )
             _clean_query = clean_for_search(_search_query) if _search_query else None
 
+            # Phase 3: capture the source's semantic modifiers (live/cover/karaoke/…)
+            # from the download title + user query BEFORE MB overwrites `title`.
+            # Fed to the incompatibility gates once a winner is chosen.
+            from service.core.modifiers import modifier_mismatch_reason
+            from service.core.normalize import extract_modifiers as _extract_modifiers
+            _source_modifiers = _extract_modifiers(f"{title} {_search_query or ''}")
+
             if candidate.mb_recording_id:
                 # ── Path A: locked recording from album coordinator ──────────
                 # Look up and verify with AcoustID in parallel.
@@ -453,23 +460,43 @@ async def run_acquisition(
                 if mb.original_year:  # type: ignore[union-attr]
                     prov_year = "mb:original"
 
-                # Flag artist mismatch when AcoustID fingerprint identifies a different artist.
-                # Applies to ALL downloads (not just album-locked), since AcoustID can return
-                # a plausible-looking wrong match (e.g. Foo Fighters for an Offspring song).
-                if mb_from_acoustid and candidate.artist and mb.artist:  # type: ignore[union-attr]
-                    from service.search.matcher import artist_similarity as _artist_sim
-                    a_sim = _artist_sim(candidate.artist, mb.artist)  # type: ignore[union-attr]
-                    if a_sim < 0.55:
-                        mismatch = (
-                            f"Artist mismatch: expected \"{candidate.artist}\","
-                            f" fingerprint identified \"{mb.artist}\" (similarity {a_sim:.2f})"  # type: ignore[union-attr]
-                            f" — may be wrong track"
-                        )
+                # ── Phase 3 incompatibility gates ─────────────────────────────
+                # Run regardless of match source. Skipped when the recording ID was
+                # overridden back to the locked candidate — there mb.title/artist
+                # describe the WRONG track and would mis-fire. AcoustID can rescue a
+                # weak text match but does NOT exempt a track from these gates.
+                if not _recording_id_overridden:
+                    # (a) Artist mismatch — on ALL paths (was AcoustID-only before).
+                    #     Catches both fingerprint wrong-matches and text-search
+                    #     candidates from a different artist (title dominated the score).
+                    if candidate.artist and mb.artist:  # type: ignore[union-attr]
+                        from service.search.matcher import artist_similarity as _artist_sim
+                        a_sim = _artist_sim(candidate.artist, mb.artist)  # type: ignore[union-attr]
+                        if a_sim < 0.55:
+                            _how = "fingerprint identified" if mb_from_acoustid else "MB matched"
+                            mismatch = (
+                                f"Artist mismatch: expected \"{candidate.artist}\", "
+                                f"{_how} \"{mb.artist}\" (similarity {a_sim:.2f}) — may be wrong track"  # type: ignore[union-attr]
+                            )
+                            force_staging_reason = (
+                                f"{force_staging_reason} | {mismatch}"
+                                if force_staging_reason else mismatch
+                            )
+                            logger.warning("Job %s %r: %s", job_id, candidate.title, mismatch)
+
+                    # (b) Modifier incompatibility — e.g. a live/cover/karaoke source
+                    #     that matched a studio/original MB recording. The MB winner's
+                    #     own title+album supply its flags.
+                    _mb_modifiers = _extract_modifiers(
+                        f"{mb.title or ''} {mb.album or ''}"  # type: ignore[union-attr]
+                    )
+                    _mod_reason = modifier_mismatch_reason(_source_modifiers, _mb_modifiers)
+                    if _mod_reason:
                         force_staging_reason = (
-                            f"{force_staging_reason} | {mismatch}"
-                            if force_staging_reason else mismatch
+                            f"{force_staging_reason} | {_mod_reason}"
+                            if force_staging_reason else _mod_reason
                         )
-                        logger.warning("Job %s %r: %s", job_id, candidate.title, mismatch)
+                        logger.warning("Job %s %r: %s", job_id, candidate.title, _mod_reason)
 
             # ── 3c. Title mismatch detection ──────────────────────────────────────────
             # When the candidate specifies an expected title and the resolved title is

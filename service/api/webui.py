@@ -1290,7 +1290,7 @@ async def job_mb_apply(
     return templates.TemplateResponse(request, "partials/review_card.html", ctx)
 
 
-from service.providers.ytdlp import explicit_score as _explicit_score, looks_like_live as _looks_like_live
+from service.providers.ytdlp import explicit_score as _explicit_score
 
 
 @router.delete("/jobs/dismiss/{job_id}", response_class=HTMLResponse)

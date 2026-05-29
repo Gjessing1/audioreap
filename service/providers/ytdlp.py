@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
+from service.core.modifiers import looks_like_live
 from service.core.models import (
     AlbumCandidate,
     FetchResult,
@@ -323,13 +324,6 @@ class YtdlpProvider(Provider):
 _EXPLICIT_RE = re.compile(r"\b(explicit|explicit version)\b", re.IGNORECASE)
 _CLEAN_RE = re.compile(r"\b(clean|clean version|radio edit|censored|edited)\b", re.IGNORECASE)
 
-_LIVE_KEYWORDS = frozenset({
-    "live", "concert", "in concert", "at the", "at madison", "tour",
-    "tribute", "cover", "karaoke", "instrumental", "acoustic",
-    "session", "radio edit", "bbc", "unplugged", "bootleg",
-})
-
-
 def explicit_score(title: str, age_limit: int | None = None) -> int:
     """Return +1 for explicit, -1 for clean/radio-edit, 0 otherwise.
 
@@ -342,19 +336,6 @@ def explicit_score(title: str, age_limit: int | None = None) -> int:
     if _CLEAN_RE.search(title):
         return -1
     return 0
-
-
-def looks_like_live(title: str) -> bool:
-    """Return True if a YouTube title suggests a live/cover/tribute version."""
-    lower = title.lower()
-    bracketed = re.findall(r'[\(\[\{]([^\)\]\}]+)[\)\]\}]', lower)
-    for chunk in bracketed:
-        words = set(chunk.split())
-        if words & _LIVE_KEYWORDS:
-            return True
-    if re.search(r'\blive\b', lower) or re.search(r'\btribute\b', lower):
-        return True
-    return False
 
 
 def yt_search_best(
