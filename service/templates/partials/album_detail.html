@@ -189,44 +189,15 @@
     </div>
   </div>
 
-  {# ── Track list ────────────────────────────────────────────────────────── #}
+  {# ── Track list (unified: owned + MB-canonical status + missing in one list) #}
   <div style="border-top:1px solid var(--b1);padding:14px 16px">
     <div class="section-title" style="margin:0 0 10px">Tracks</div>
-    <div class="track-list">
-      {% for track in sorted_tracks %}
-      {% set safe_id = track.id | replace(':', '_') %}
-      <div class="track-row" id="altrack-{{ safe_id }}">
-        <span class="track-num">{{ track.track_number or '—' }}</span>
-        {% if track.file %}
-        <button class="play-btn" style="width:26px;height:26px;min-width:26px;min-height:26px;font-size:10px"
-                onclick="playTrack('{{ track.id }}', '{{ track.title|e }}')">▶</button>
-        {% endif %}
-        <button class="track-name"
-                hx-get="/library/tracks/{{ track.id }}/edit-card?album_id={{ album.id }}"
-                hx-target="#altrack-{{ safe_id }}"
-                hx-swap="outerHTML"
-                style="background:none;border:none;padding:0;text-align:left;cursor:pointer;color:var(--t1);font-size:inherit;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ track.title }}</button>
-        <span class="track-dur" style="font-family:var(--font-mono);font-size:11px;flex-shrink:0">
-          {% if track.file and track.file.bitrate_kbps %}{{ track.file.bitrate_kbps }}k{% endif %}
-        </span>
-      </div>
-      {% else %}
-      <p class="muted" style="font-size:13px">No tracks.</p>
-      {% endfor %}
+    <div id="album-tracks-{{ aid }}"
+         hx-get="/library/albums/{{ album.id }}/tracklist"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <span class="muted" style="font-size:12px"><span class="spinner" style="width:10px;height:10px"></span> Loading tracks…</span>
     </div>
-
-    {# Missing tracks — auto-loads MB tracklist comparison if release group or release ID known #}
-    {% if album.mb_release_group_id or album.musicbrainz_release_id %}
-    <div style="margin-top:14px">
-      <div class="section-title" style="margin:0 0 8px;font-size:11px">Tracklist vs MusicBrainz</div>
-      <div id="mb-compare-{{ aid }}"
-           hx-get="/library/albums/{{ album.id }}/mb-compare"
-           hx-trigger="load"
-           hx-swap="innerHTML">
-        <span class="muted" style="font-size:12px"><span class="spinner" style="width:10px;height:10px"></span> Loading…</span>
-      </div>
-    </div>
-    {% endif %}
 
     {# Merge with another album #}
     <div style="margin-top:12px">

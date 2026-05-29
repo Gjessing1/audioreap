@@ -2152,13 +2152,21 @@ async def album_set_genre(
     )
 
 
-@router.get("/library/albums/{album_id}/mb-compare", response_class=HTMLResponse)
-async def album_mb_compare(
+@router.get("/library/albums/{album_id}/tracklist", response_class=HTMLResponse)
+async def album_tracklist(
     request: Request,
     album_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Compare local tracks in this album against the MB release tracklist."""
+    """Unified album tracklist.
+
+    When the album is linked to MusicBrainz, the MB release tracklist is the
+    backbone: each row is tagged ``here`` (owned in this album), ``elsewhere``
+    (owned on another album), or ``missing``, and any local track absent from
+    the MB list is appended as ``extra``. Unlinked albums degrade to a plain
+    owned-track list. Replaces the old three-section layout (local list + full
+    MB list + local list again) with one status-annotated list.
+    """
     from sqlalchemy.orm import joinedload as _jl
     from service.search.matcher import title_similarity as _tsim
 
@@ -2167,9 +2175,28 @@ async def album_mb_compare(
         .options(_jl(Album.tracks).joinedload(Track.file), _jl(Album.artist))
         .where(Album.id == album_id)
     )).unique().scalar_one_or_none()
-    if album is None or (not album.mb_release_group_id and not album.musicbrainz_release_id):
-        return HTMLResponse('<p class="muted" style="font-size:12px">No MusicBrainz release linked.</p>')
+    if album is None:
+        return HTMLResponse('<p class="muted" style="font-size:12px">Album not found.</p>')
 
+    local_tracks = sorted(
+        album.tracks, key=lambda t: (t.track_number is None, t.track_number or 0)
+    )
+    linked = bool(album.mb_release_group_id or album.musicbrainz_release_id)
+
+    # ── Unlinked: plain owned list, no MB backbone ────────────────────────────
+    if not linked:
+        rows = [
+            {"status": "plain", "number": t.track_number, "title": t.title, "track": t}
+            for t in local_tracks
+        ]
+        return templates.TemplateResponse(
+            request, "partials/album_tracklist.html",
+            {"album": album, "rows": rows, "linked": False,
+             "here": len(rows), "total": len(rows),
+             "elsewhere": 0, "missing": 0, "extra": 0},
+        )
+
+    # ── Linked: reconcile against the MB tracklist ────────────────────────────
     try:
         if album.mb_release_group_id:
             from service.metadata.musicbrainz import get_release_group_tracks as _get_rg_tracks
@@ -2182,128 +2209,86 @@ async def album_mb_compare(
                 _get_rel_tracks, album.musicbrainz_release_id, settings.cache_dir
             )
     except Exception as exc:
-        return HTMLResponse(f'<p class="muted" style="font-size:12px">MB fetch failed: {exc}</p>')
+        return HTMLResponse(f'<p class="muted" style="font-size:12px">MusicBrainz fetch failed: {exc}</p>')
 
-    # Build lookup structures
-    local_tracks = list(album.tracks)
-    local_track_titles = [t.title for t in local_tracks]
-    # Recording IDs for tracks IN THIS ALBUM
-    local_rids = {t.musicbrainz_recording_id for t in local_tracks if t.musicbrainz_recording_id}
+    local_by_rid = {t.musicbrainz_recording_id: t for t in local_tracks if t.musicbrainz_recording_id}
+    local_rids = set(local_by_rid)
 
-    # Find recording IDs owned ANYWHERE in the library (different album = "elsewhere")
+    # Recording IDs owned ANYWHERE in the library — those not in this album = "elsewhere"
     from service.library.cohesion import get_owned_recording_ids as _owned_rids
     mb_recording_ids = [t.recording_id for t in mb_tracks if t.recording_id]
     all_owned_rids = await _owned_rids(session, mb_recording_ids) if mb_recording_ids else set()
-    elsewhere_rids = all_owned_rids - local_rids  # owned but not in this album
+    elsewhere_rids = all_owned_rids - local_rids
 
-    # --- Section 1: MB tracklist ---
-    lines = []
-    owned_count = 0
+    rows: list[dict] = []
+    matched_ids: set[str] = set()
+    here = elsewhere = missing = 0
+
     for mt in mb_tracks:
-        if mt.recording_id and mt.recording_id in local_rids:
+        track = None
+        status = None
+        if mt.recording_id and mt.recording_id in local_by_rid:
+            track = local_by_rid[mt.recording_id]
             status = "here"
-        elif mt.recording_id and mt.recording_id in elsewhere_rids:
-            status = "elsewhere"
-        elif any(_tsim(mt.title, lt) >= 0.80 for lt in local_track_titles):
-            status = "here"  # title match counts as owned here
         else:
-            status = "missing"
+            # Title match against not-yet-matched local tracks (recording ID absent)
+            for lt in local_tracks:
+                if lt.id in matched_ids:
+                    continue
+                if _tsim(mt.title, lt.title) >= 0.80:
+                    track, status = lt, "here"
+                    break
+            if status is None:
+                status = "elsewhere" if (mt.recording_id and mt.recording_id in elsewhere_rids) else "missing"
 
-        if status in ("here", "elsewhere"):
-            owned_count += 1
-
-        if status == "here":
-            icon, color, label = "✓", "var(--success)", ""
+        owner_track_id = None
+        if status == "here" and track is not None:
+            matched_ids.add(track.id)
+            here += 1
         elif status == "elsewhere":
-            icon, color, label = "⚠", "#e8a000", " <span style='font-size:10px;color:#e8a000'>(owned elsewhere)</span>"
-        else:
-            icon, color, label = "✕", "var(--danger)", ""
-
-        acquire_btn = ""
-        if status == "missing" and mt.recording_id:
-            acquire_btn = (
-                f'<form style="display:inline"'
-                f' hx-post="/discography/{album.artist.musicbrainz_artist_id if album.artist and album.artist.musicbrainz_artist_id else "unknown"}/{album.mb_release_group_id or album.musicbrainz_release_id or album.id}/acquire-track"'
-                f' hx-target="closest div" hx-swap="outerHTML">'
-                f'<input type="hidden" name="recording_id" value="{mt.recording_id}">'
-                f'<input type="hidden" name="title" value="{mt.title}">'
-                f'<input type="hidden" name="artist" value="{album.artist.name if album.artist else ""}">'
-                f'<input type="hidden" name="album" value="{album.title}">'
-                f'<input type="hidden" name="track_number" value="{mt.number}">'
-                + (f'<input type="hidden" name="duration_seconds" value="{mt.duration_seconds}">' if mt.duration_seconds else '')
-                + f'<button type="submit" class="btn btn-sm" style="font-size:10px;padding:2px 6px">Get</button>'
-                f'</form>'
-            )
-
-        move_btn = ""
-        if status == "elsewhere" and mt.recording_id:
-            # Find the track DB row that owns this recording
-            et_row = (await session.execute(
+            elsewhere += 1
+            owner = (await session.execute(
                 select(Track).where(Track.musicbrainz_recording_id == mt.recording_id).limit(1)
             )).scalar_one_or_none()
-            if et_row:
-                move_btn = (
-                    f' <button class="btn btn-sm btn-ghost" style="font-size:10px;padding:2px 6px"'
-                    f' hx-post="/library/tracks/{et_row.id}/move-to-album/{album_id}"'
-                    f' hx-target="closest div" hx-swap="innerHTML">Move here</button>'
-                )
+            owner_track_id = owner.id if owner else None
+        else:
+            missing += 1
 
-        lines.append(
-            f'<div style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:12px">'
-            f'<span style="color:{color};font-weight:700;width:14px;text-align:center;flex-shrink:0">{icon}</span>'
-            f'<span style="color:var(--t3);min-width:20px;flex-shrink:0">{mt.number}.</span>'
-            f'<span style="color:{"var(--t2)" if status == "here" else "var(--t1)"};flex:1">{mt.title}{label}</span>'
-            + acquire_btn + move_btn
-            + '</div>'
-        )
+        rows.append({
+            "status": status,
+            "number": mt.number,
+            "title": (track.title if track is not None else mt.title),
+            "track": track,
+            "recording_id": mt.recording_id,
+            "duration_seconds": mt.duration_seconds,
+            "owner_track_id": owner_track_id,
+        })
 
-    if not lines:
-        return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found in MB tracklist.</p>')
+    # Local tracks not matched to any MB track → "extra" (not in MB list)
+    extra = 0
+    for lt in local_tracks:
+        if lt.id in matched_ids:
+            continue
+        extra += 1
+        rows.append({"status": "extra", "number": lt.track_number, "title": lt.title, "track": lt})
+
+    if not rows:
+        return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found.</p>')
 
     total = len(mb_tracks)
-    missing = total - owned_count
-    if missing == 0:
-        summary = f'<div style="font-size:12px;color:var(--success);font-weight:600;margin-bottom:8px">✓ All {total} tracks owned</div>'
-    else:
-        summary = f'<div style="font-size:12px;color:var(--danger);font-weight:600;margin-bottom:8px">Missing {missing} of {total} tracks</div>'
-
     # Persist the MB track count so the album list can show "N/total" without re-fetching
     if album.track_count != total:
         album.track_count = total
         await session.commit()
 
-    # --- Section 2: Local tracks in this album ---
-    mb_rids_set = {t.recording_id for t in mb_tracks if t.recording_id}
-    mb_titles = [t.title for t in mb_tracks]
-    local_section_lines = []
-    for lt in sorted(local_tracks, key=lambda t: t.track_number or 999):
-        # Does this local track match any MB track?
-        in_mb = (lt.musicbrainz_recording_id and lt.musicbrainz_recording_id in mb_rids_set) or any(
-            _tsim(lt.title, mt) >= 0.80 for mt in mb_titles
-        )
-        icon = "✓" if in_mb else "❓"
-        icon_color = "var(--t3)" if in_mb else "#e8a000"
-        note = "" if in_mb else " <span style='font-size:10px;color:#e8a000'>not in MB list</span>"
-        local_section_lines.append(
-            f'<div style="display:flex;gap:8px;align-items:center;padding:2px 0;font-size:12px">'
-            f'<span style="color:{icon_color};width:14px;text-align:center;flex-shrink:0">{icon}</span>'
-            f'<span style="color:var(--t3);min-width:20px;flex-shrink:0">{lt.track_number or "—"}.</span>'
-            f'<span style="color:var(--t2);flex:1">{lt.title}{note}</span>'
-            f'</div>'
-        )
-
-    local_section = ""
-    if local_section_lines:
-        local_section = (
-            '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--b1)">'
-            '<div style="font-size:11px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Tracks in your library</div>'
-            + "".join(local_section_lines)
-            + '</div>'
-        )
-
-    return HTMLResponse(
-        '<div style="border:1px solid var(--b1);border-radius:var(--radius-s);padding:10px">'
-        + summary + "".join(lines) + local_section + '</div>'
+    return templates.TemplateResponse(
+        request, "partials/album_tracklist.html",
+        {"album": album, "rows": rows, "linked": True,
+         "here": here, "elsewhere": elsewhere, "missing": missing,
+         "extra": extra, "total": total,
+         "artist_mbid": (album.artist.musicbrainz_artist_id
+                         if album.artist and album.artist.musicbrainz_artist_id else "unknown"),
+         "release_ref": album.mb_release_group_id or album.musicbrainz_release_id or album.id},
     )
 
 

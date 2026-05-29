@@ -1,0 +1,87 @@
+{# Unified album tracklist: one list using MB's canonical order as the backbone.
+   Each row carries a status icon and the single action that fits it —
+   play/edit when owned, Get when missing, Move when owned on another album.
+   Local tracks absent from the MB list are appended as "extra". When the album
+   is not linked to MB it degrades to a plain owned-track list (no status). #}
+
+{% macro status_icon(status) %}
+  {%- if status == 'here' -%}<span style="color:var(--success);font-weight:700">✓</span>
+  {%- elif status == 'elsewhere' -%}<span style="color:#e8a000;font-weight:700">⚠</span>
+  {%- elif status == 'missing' -%}<span style="color:var(--danger);font-weight:700">✕</span>
+  {%- elif status == 'extra' -%}<span style="color:#e8a000;font-weight:700">❓</span>
+  {%- endif -%}
+{% endmacro %}
+
+{# ── Summary line ──────────────────────────────────────────────────────────── #}
+{% if linked %}
+  {% if missing == 0 and elsewhere == 0 and extra == 0 %}
+  <div style="font-size:12px;color:var(--success);font-weight:600;margin-bottom:8px">✓ All {{ total }} tracks owned</div>
+  {% else %}
+  <div style="font-size:12px;font-weight:600;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:baseline">
+    <span style="color:{% if missing %}var(--danger){% else %}var(--success){% endif %}">{{ here }} / {{ total }} owned</span>
+    {% if elsewhere %}<span style="color:#e8a000;font-weight:500;font-size:11px">{{ elsewhere }} owned elsewhere</span>{% endif %}
+    {% if missing %}<span style="color:var(--danger);font-weight:500;font-size:11px">{{ missing }} missing</span>{% endif %}
+    {% if extra %}<span style="color:#e8a000;font-weight:500;font-size:11px">{{ extra }} not in MusicBrainz</span>{% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+
+{# ── The list ──────────────────────────────────────────────────────────────── #}
+<div class="track-list">
+  {% for r in rows %}
+  {% set t = r.track %}
+  {% set safe_id = (t.id | replace(':', '_')) if t else loop.index %}
+  <div class="track-row" {% if t %}id="altrack-{{ safe_id }}"{% endif %}
+       style="{% if r.status == 'missing' %}opacity:.72{% endif %}">
+    <span class="track-num">{{ r.number or '—' }}</span>
+    {% if linked %}<span style="width:14px;text-align:center;flex-shrink:0;font-size:12px">{{ status_icon(r.status) }}</span>{% endif %}
+
+    {% if r.status in ('here', 'extra', 'plain') and t %}
+      {# Owned — playable + inline-editable, exactly like before #}
+      {% if t.file %}
+      <button class="play-btn" style="width:26px;height:26px;min-width:26px;min-height:26px;font-size:10px"
+              onclick="playTrack('{{ t.id }}', '{{ t.title|e }}')">▶</button>
+      {% else %}
+      <span style="width:26px;flex-shrink:0"></span>
+      {% endif %}
+      <button class="track-name"
+              hx-get="/library/tracks/{{ t.id }}/edit-card?album_id={{ album.id }}"
+              hx-target="#altrack-{{ safe_id }}"
+              hx-swap="outerHTML"
+              style="background:none;border:none;padding:0;text-align:left;cursor:pointer;color:var(--t1);font-size:inherit;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}{% if r.status == 'extra' %} <span style="font-size:10px;color:#e8a000">· not in MB list</span>{% endif %}</button>
+      <span class="track-dur" style="font-family:var(--font-mono);font-size:11px;flex-shrink:0">
+        {% if t.file and t.file.bitrate_kbps %}{{ t.file.bitrate_kbps }}k{% endif %}
+      </span>
+
+    {% elif r.status == 'elsewhere' %}
+      {# Owned on a different album — offer to move it here #}
+      <span style="flex:1;min-width:0;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span>
+      {% if r.owner_track_id %}
+      <button class="btn btn-sm btn-ghost" style="font-size:10px;padding:2px 8px;flex-shrink:0"
+              hx-post="/library/tracks/{{ r.owner_track_id }}/move-to-album/{{ album.id }}"
+              hx-target="closest .track-row" hx-swap="innerHTML">Move here</button>
+      {% endif %}
+
+    {% elif r.status == 'missing' and r.recording_id %}
+      {# Absent — acquire it #}
+      <span style="flex:1;min-width:0;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span>
+      <form style="flex-shrink:0"
+            hx-post="/discography/{{ artist_mbid }}/{{ release_ref }}/acquire-track"
+            hx-target="closest .track-row" hx-swap="innerHTML">
+        <input type="hidden" name="recording_id" value="{{ r.recording_id }}">
+        <input type="hidden" name="title" value="{{ r.title|e }}">
+        <input type="hidden" name="artist" value="{{ album.artist.name if album.artist else '' }}">
+        <input type="hidden" name="album" value="{{ album.title|e }}">
+        <input type="hidden" name="track_number" value="{{ r.number }}">
+        {% if r.duration_seconds %}<input type="hidden" name="duration_seconds" value="{{ r.duration_seconds }}">{% endif %}
+        <button type="submit" class="btn btn-sm" style="font-size:10px;padding:2px 8px">Get</button>
+      </form>
+
+    {% else %}
+      <span style="flex:1;min-width:0;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="muted" style="font-size:13px">No tracks.</p>
+  {% endfor %}
+</div>
