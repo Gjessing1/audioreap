@@ -864,7 +864,12 @@ async def place_approved_track(
                     await session.flush()
             await index_file(session, dest)
             hca = await asyncio.to_thread(has_cover_art, dest)
-            track_row = await session.get(_Track, hash_track_id)
+            # Eager-load the file relationship: async SQLAlchemy can't lazy-load it
+            # synchronously when accessed below (greenlet_spawn error otherwise).
+            from sqlalchemy.orm import selectinload as _selin_file
+            track_row = await session.get(
+                _Track, hash_track_id, options=[_selin_file(_Track.file)]
+            )
             if track_row is not None:
                 if mb_recording_id:
                     track_row.musicbrainz_recording_id = mb_recording_id

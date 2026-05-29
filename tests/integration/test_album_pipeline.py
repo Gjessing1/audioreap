@@ -134,6 +134,13 @@ async def test_child_jobs_created(tmp_path: Path, db: async_sessionmaker[AsyncSe
 
 
 async def test_track_ordering_preserved(tmp_path: Path, db: async_sessionmaker[AsyncSession]) -> None:
+    """Child jobs are created in tracklist order.
+
+    The old dedicated `track_index` column was dropped (it was written but never
+    read — migration k7l8m9n0o1p2). Tracklist order now survives only as creation
+    order, which the album pipeline drives by iterating the tracklist; we assert
+    the per-track provider_ref sequence in created_at order.
+    """
     album_job_id, _ = await _run(tmp_path, db)
 
     async with db() as session:
@@ -141,12 +148,12 @@ async def test_track_ordering_preserved(tmp_path: Path, db: async_sessionmaker[A
             await session.execute(
                 select(AcquisitionJobRow)
                 .where(AcquisitionJobRow.album_job_id == album_job_id)
-                .order_by(AcquisitionJobRow.track_index)
+                .order_by(AcquisitionJobRow.created_at)
             )
         ).scalars().all()
 
-    indices = [c.track_index for c in children]
-    assert indices == [0, 1, 2, 3]
+    refs = [c.provider_ref for c in children]
+    assert refs == ["fake-album-01", "fake-album-02", "fake-album-03", "fake-album-04"]
 
 
 async def test_navidrome_scan_triggered(tmp_path: Path, db: async_sessionmaker[AsyncSession]) -> None:
