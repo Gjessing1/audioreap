@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from dataclasses import dataclass
 
 # ── Search-query cleanup ──────────────────────────────────────────────────────
 # Stripped from titles/artists before sending to MB text search.
@@ -36,6 +37,61 @@ _EMOJI_RE = re.compile(
     r"\U0001f680-\U0001f6ff\U0001f1e0-\U0001f1ff☀-⛿✀-➿]+",
     re.UNICODE,
 )
+
+
+# ── Semantic modifier extraction ──────────────────────────────────────────────
+# Phase 2: detect what KIND of recording a title/query describes BEFORE
+# clean_for_search strips the surface noise. The flags flow into Phase 3's
+# incompatibility gates (e.g. a `live` source must not silently match a studio
+# MB recording). This is pure detection — it never mutates the text.
+#
+# Patterns are intentionally conservative (word-boundaried) to avoid false hits
+# such as "alive" → live or "discover" → cover.
+_MODIFIER_PATTERNS: dict[str, re.Pattern[str]] = {
+    "is_live": re.compile(
+        r"\b(?:live|unplugged|in\s+concert|concert)\b", re.IGNORECASE),
+    "is_remix": re.compile(r"\b(?:remix|remixed|re-?edit)\b", re.IGNORECASE),
+    "is_acoustic": re.compile(r"\bacoustic\b", re.IGNORECASE),
+    "is_cover": re.compile(r"\b(?:cover|tribute)\b", re.IGNORECASE),
+    "is_explicit": re.compile(r"\bexplicit\b", re.IGNORECASE),
+    "is_karaoke": re.compile(r"\bkaraoke\b", re.IGNORECASE),
+    "is_instrumental": re.compile(r"\binstrumental\b", re.IGNORECASE),
+}
+
+
+@dataclass(frozen=True)
+class ModifierFlags:
+    """Semantic flags describing what kind of recording a title/query refers to."""
+
+    is_live: bool = False
+    is_remix: bool = False
+    is_acoustic: bool = False
+    is_cover: bool = False
+    is_explicit: bool = False
+    is_karaoke: bool = False
+    is_instrumental: bool = False
+
+    @property
+    def any(self) -> bool:
+        """True if any modifier is set."""
+        return any((
+            self.is_live, self.is_remix, self.is_acoustic, self.is_cover,
+            self.is_explicit, self.is_karaoke, self.is_instrumental,
+        ))
+
+
+def extract_modifiers(text: str) -> ModifierFlags:
+    """Detect semantic modifiers in a raw title/query before search cleanup.
+
+    Runs ahead of :func:`clean_for_search` so signals like ``(Live)`` or
+    ``[Explicit]`` — which cleanup would otherwise discard — are preserved as
+    structured flags for the identification gates.
+    """
+    if not text:
+        return ModifierFlags()
+    return ModifierFlags(**{
+        name: bool(pat.search(text)) for name, pat in _MODIFIER_PATTERNS.items()
+    })
 
 
 def clean_for_search(text: str) -> str:

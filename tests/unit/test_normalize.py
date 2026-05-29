@@ -68,3 +68,50 @@ def test_strip_diacritics_preserves_ascii() -> None:
 
 def test_normalize_empty_string() -> None:
     assert normalize("") == ""
+
+
+# ── extract_modifiers (Phase 2) ───────────────────────────────────────────────
+from service.core.normalize import ModifierFlags, extract_modifiers
+
+
+@pytest.mark.parametrize(
+    "text, flag",
+    [
+        ("Creep (Live at Glastonbury)", "is_live"),
+        ("Song - Unplugged", "is_live"),
+        ("Karma Police (In Concert)", "is_live"),
+        ("Get Lucky (Daft Punk Remix)", "is_remix"),
+        ("Song [Remixed]", "is_remix"),
+        ("Layla (Acoustic)", "is_acoustic"),
+        ("Hurt (Johnny Cash Cover)", "is_cover"),
+        ("Imagine - Tribute", "is_cover"),
+        ("WAP [Explicit]", "is_explicit"),
+        ("Bohemian Rhapsody (Karaoke Version)", "is_karaoke"),
+        ("Comfortably Numb (Instrumental)", "is_instrumental"),
+    ],
+)
+def test_extract_modifiers_detects(text: str, flag: str) -> None:
+    flags = extract_modifiers(text)
+    assert getattr(flags, flag) is True
+    assert flags.any is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Stayin' Alive",          # 'alive' must not trigger is_live
+        "Discover",               # 'discover' must not trigger is_cover
+        "Paranoid Android",       # plain studio title
+        "",                       # empty
+    ],
+)
+def test_extract_modifiers_no_false_positives(text: str) -> None:
+    flags = extract_modifiers(text)
+    assert flags == ModifierFlags()
+    assert flags.any is False
+
+
+def test_extract_modifiers_multiple() -> None:
+    flags = extract_modifiers("Song (Live Acoustic) [Explicit]")
+    assert flags.is_live and flags.is_acoustic and flags.is_explicit
+    assert not flags.is_remix
