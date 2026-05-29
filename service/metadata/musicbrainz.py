@@ -752,6 +752,10 @@ def get_release_group_genres(
     return [name for _, name in scored[:max_genres]]
 
 
+# MB medium `format` substrings that denote a video side rather than audio.
+_VIDEO_MEDIUM_HINTS = ("dvd", "blu-ray", "bluray", "vhs", "vcd", "umd", "video")
+
+
 @dataclass
 class MBTrack:
     number: int
@@ -861,8 +865,16 @@ def _fetch_release_tracks(
             except ValueError:
                 pass
 
+    seen_rids: set[str] = set()
     for medium in rel_data.get("medium-list") or []:
         if not isinstance(medium, dict):
+            continue
+        # Skip video sides (DualDisc DVD-Video, bonus DVDs/Blu-rays, …). They list
+        # the same songs as the audio disc, which otherwise doubles the tracklist
+        # (e.g. The Offspring "Greatest Hits" DualDisc), and they aren't audio
+        # tracks the user acquires anyway.
+        fmt = str(medium.get("format") or "").lower()
+        if any(h in fmt for h in _VIDEO_MEDIUM_HINTS):
             continue
         for t in medium.get("track-list") or []:
             if not isinstance(t, dict):
@@ -877,6 +889,12 @@ def _fetch_release_tracks(
             duration_ms = t.get("length") or (rec.get("length") if isinstance(rec, dict) else None)
             duration_s: int | None = int(int(duration_ms) / 1000) if duration_ms else None
             rid = str(rec.get("id") or "") or None if isinstance(rec, dict) else None
+            # Dedupe by recording ID — guards against the same recording appearing
+            # on more than one medium of the release.
+            if rid:
+                if rid in seen_rids:
+                    continue
+                seen_rids.add(rid)
             tracks.append(MBTrack(number=number, title=title, duration_seconds=duration_s, recording_id=rid))
 
     tracks.sort(key=lambda t: t.number)
