@@ -333,18 +333,20 @@ async def scan(
             await session.execute(delete(TrackFile).where(TrackFile.path == path_str))
             result.removed += 1
             logger.info("Removed missing file from index: %s", path_str)
-        if removed_paths:
+        await session.flush()
+        # Cascade: remove Track rows that no longer have any TrackFile. Runs on
+        # every full scan — not only when a file was removed this pass — so stray
+        # fileless Track rows (e.g. ghosts left behind by a source replacement)
+        # are swept even when nothing changed on disk.
+        orphan_track_ids = (
+            await session.execute(
+                select(Track.id).where(~Track.id.in_(select(TrackFile.track_id)))
+            )
+        ).scalars().all()
+        if orphan_track_ids:
+            await session.execute(delete(Track).where(Track.id.in_(orphan_track_ids)))
+            logger.info("Removed %d orphaned (fileless) Track rows", len(orphan_track_ids))
             await session.flush()
-            # Cascade: remove Track rows that no longer have any TrackFile
-            orphan_track_ids = (
-                await session.execute(
-                    select(Track.id).where(~Track.id.in_(select(TrackFile.track_id)))
-                )
-            ).scalars().all()
-            if orphan_track_ids:
-                await session.execute(delete(Track).where(Track.id.in_(orphan_track_ids)))
-                logger.info("Removed %d orphaned Track rows", len(orphan_track_ids))
-                await session.flush()
             # Cascade: remove Album rows with no remaining tracks
             await session.execute(
                 delete(Album).where(~Album.id.in_(select(Track.album_id).where(Track.album_id.is_not(None))))
