@@ -40,13 +40,8 @@
     {% if linked %}<span style="width:14px;text-align:center;flex-shrink:0;font-size:12px">{{ status_icon(r.status) }}</span>{% endif %}
 
     {% if r.status in ('here', 'extra', 'plain') and t %}
-      {# Owned — playable + inline-editable, exactly like before #}
-      {% if t.file %}
-      <button class="play-btn" style="width:26px;height:26px;min-width:26px;min-height:26px;font-size:10px"
-              onclick="playTrack('{{ t.id }}', '{{ t.title|e }}')">▶</button>
-      {% else %}
-      <span style="width:26px;flex-shrink:0"></span>
-      {% endif %}
+      {# Owned — inline-editable name; play button sits on the right, in line with
+         the Get/Move action column. #}
       <button class="track-name"
               hx-get="/library/tracks/{{ t.id }}/edit-card?album_id={{ album.id }}"
               hx-target="#altrack-{{ safe_id }}"
@@ -55,6 +50,10 @@
       <span class="track-dur" style="font-family:var(--font-mono);font-size:11px;flex-shrink:0">
         {% if t.file and t.file.bitrate_kbps %}{{ t.file.bitrate_kbps }}k{% endif %}
       </span>
+      {% if t.file %}
+      <button class="play-btn" style="width:26px;height:26px;min-width:26px;min-height:26px;font-size:10px;flex-shrink:0"
+              onclick="playTrack('{{ t.id }}', '{{ t.title|e }}')">▶</button>
+      {% endif %}
 
     {% elif r.status == 'elsewhere' %}
       {# Owned on a different album — offer to move it here #}
