@@ -1,12 +1,13 @@
+{% set grid_id = safe_id | default(artist_id | replace(':', '_')) %}
 {% if offset == 0 %}
-<div id="artist-img-grid-{{ artist_id }}" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+<div id="artist-img-grid-{{ grid_id }}" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px">
 {% endif %}
   {% for r in results %}
   <div style="text-align:center">
     <img src="{{ r.image_url }}" alt="{{ r.name }}"
          style="width:80px;height:80px;object-fit:cover;border-radius:8px;display:block;cursor:pointer;border:2px solid transparent;transition:border-color .15s"
          onclick="
-           document.querySelectorAll('#artist-img-grid-{{ artist_id }} img').forEach(i=>i.style.borderColor='transparent');
+           document.querySelectorAll('#artist-img-grid-{{ grid_id }} img').forEach(i=>i.style.borderColor='transparent');
            this.style.borderColor='var(--primary)';
            document.getElementById('artist-img-url-input').value='{{ r.image_url }}'
          "
@@ -15,10 +16,10 @@
   </div>
   {% endfor %}
   {% if next_offset is not none %}
-  <div id="artist-img-more-{{ artist_id }}" style="display:flex;align-items:center">
+  <div id="artist-img-more-{{ grid_id }}" style="display:flex;align-items:center">
     <button class="btn btn-sm btn-ghost" style="font-size:11px"
             hx-get="/library/artists/{{ artist_id }}/image-search?q={{ q|urlencode }}&offset={{ next_offset }}"
-            hx-target="#artist-img-more-{{ artist_id }}"
+            hx-target="#artist-img-more-{{ grid_id }}"
             hx-swap="outerHTML">More</button>
   </div>
   {% endif %}

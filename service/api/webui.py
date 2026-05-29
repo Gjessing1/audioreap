@@ -145,11 +145,23 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     # the MB tracklist) would otherwise be invisible on /jobs. Surface a ghost
     # placeholder so the user can see the album query is working. Once any child
     # row exists, the placeholder is dropped and the real album group renders.
+    #
+    # Gate tightly so stale album rows don't haunt the queue: the worker stamps
+    # track_count once it has fetched the tracklist, so track_count == 0/NULL is
+    # the precise "still fetching" signal. Also bound by age — acquire_album_from_mb
+    # leaves the row in "running" indefinitely (independent child jobs finish on
+    # their own), so without a recency window every past album would reappear.
+    from datetime import UTC as _UTC, datetime as _dt, timedelta as _td
+
+    from sqlalchemy import or_ as _or
     from service.db.schema import AlbumAcquisitionJob as _AlbumJob
     represented_album_ids = {r.album_job_id for r in rows if r.album_job_id}
+    _placeholder_cutoff = _dt.now(_UTC).replace(tzinfo=None) - _td(minutes=15)
     pending_album_rows = (await session.execute(
         select(_AlbumJob)
         .where(_AlbumJob.state.in_(("queued", "running")))
+        .where(_or(_AlbumJob.track_count == 0, _AlbumJob.track_count.is_(None)))
+        .where(_AlbumJob.created_at >= _placeholder_cutoff)
         .order_by(_AlbumJob.created_at.desc())
         .limit(50)
     )).scalars().all()
@@ -1605,10 +1617,22 @@ async def _library_stats_context(session: AsyncSession) -> dict:
     track_count = (await session.execute(
         select(func.count(Track.id)).join(Track.artist).join(Track.file)
     )).scalar_one()
-    album_count = (await session.execute(select(func.count(Album.id)))).scalar_one()
-    artist_count = (await session.execute(select(func.count(Artist.id)))).scalar_one()
+    # Count albums/artists/genres by the tracks that actually exist (with a file),
+    # not by raw Album/Artist row counts. Empty rows left behind by edits that move
+    # the last track out of an album/artist would otherwise inflate these until a
+    # manual Rescan ran the scanner's cascade cleanup — the recurring "counts don't
+    # match reality" complaint. Counting through tracks-with-files keeps the overview
+    # correct immediately, regardless of which mutation path forgot to prune.
+    album_count = (await session.execute(
+        select(func.count(func.distinct(Track.album_id)))
+        .join(Track.file).where(Track.album_id.isnot(None))
+    )).scalar_one()
+    artist_count = (await session.execute(
+        select(func.count(func.distinct(Track.artist_id))).join(Track.file)
+    )).scalar_one()
     genre_count = (await session.execute(
-        select(func.count(func.distinct(Track.genre))).where(Track.genre.isnot(None))
+        select(func.count(func.distinct(Track.genre)))
+        .join(Track.file).where(Track.genre.isnot(None))
     )).scalar_one()
     no_mbid_count = (await session.execute(
         select(func.count(Track.id)).join(Track.file).where(Track.musicbrainz_recording_id.is_(None))
@@ -2917,15 +2941,20 @@ async def artist_image(
     artist_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Serve artist.jpg from the artist's music folder, or 404."""
-    from fastapi.responses import FileResponse
+    """Serve artist.jpg from the artist's music folder.
+
+    When no image exists, return 204 (not 404): the <img> tags that request this
+    fall back via onerror either way, but a 2xx keeps the browser console clean
+    instead of logging a 404 for every artist without a saved photo.
+    """
+    from fastapi.responses import FileResponse, Response
     artist = await session.get(Artist, artist_id)
     if artist is None:
-        raise HTTPException(404)
+        return Response(status_code=204)
     img_path = settings.music_dir / artist.name / "artist.jpg"
     if img_path.exists():
         return FileResponse(str(img_path), media_type="image/jpeg")
-    raise HTTPException(404)
+    return Response(status_code=204)
 
 
 @router.get("/library/artists/{artist_id}/mb-search", response_class=HTMLResponse)
@@ -3007,6 +3036,7 @@ async def artist_image_search(
         request, "partials/artist_image_candidates.html",
         {
             "artist_id": artist_id,
+            "safe_id": artist_id.replace(":", "_"),
             "results": results,
             "q": search_name,
             "offset": offset,
@@ -3703,6 +3733,7 @@ async def save_track_tags(
     row.genre = genre_val
 
     old_artist_id: str | None = None
+    old_album_id: str | None = row.album_id
     if artist_val != row.artist.name:
         old_artist_id = row.artist_id
         new_artist_id = await _upsert_artist(session, artist_val)
@@ -3728,6 +3759,18 @@ async def save_track_tags(
         track_number=track_num_val, musicbrainz_recording_id=mbid_val, has_cover_art=hca,
     )
     await session.commit()
+
+    # Prune the old album if the edit moved this track's last occupant out of it
+    # (album-only change, where the old-artist block below wouldn't run). Leaving
+    # the empty Album row behind is what inflated the library album count until a
+    # manual Rescan.
+    if old_album_id and old_album_id != row.album_id:
+        remaining_album = (await session.execute(
+            select(func.count(Track.id)).where(Track.album_id == old_album_id)
+        )).scalar_one()
+        if remaining_album == 0:
+            await session.execute(sa_delete(Album).where(Album.id == old_album_id))
+            await session.commit()
 
     # Prune old artist: delete its empty albums first, then delete artist if it
     # now has 0 tracks.  Empty albums must be removed first or the FK prevents
