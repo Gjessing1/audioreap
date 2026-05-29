@@ -213,6 +213,32 @@
     </details>
     {% endif %}
 
+    {# ── Match candidates (Phase 1 observability) ─────────────────────────── #}
+    {% if meta.candidates %}
+    <details style="padding:8px 16px;border-top:1px solid var(--b1)">
+      <summary style="font-size:11px;color:var(--t4);cursor:pointer;user-select:none;letter-spacing:.04em">
+        Match candidates ({{ meta.candidates|length }}) — how this was ranked
+      </summary>
+      <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+        {% for c in meta.candidates %}
+        <div style="display:flex;align-items:baseline;gap:8px;font-size:11px;{% if not loop.first %}opacity:.75{% endif %}">
+          <span style="color:var(--t4);min-width:14px">{{ loop.index }}.</span>
+          <a href="https://musicbrainz.org/recording/{{ c.recording_id }}" target="_blank"
+             style="color:var(--t2);text-decoration:none;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            {{ c.title }} <span style="color:var(--t4)">— {{ c.artist }}</span>
+          </a>
+          {% if loop.first %}<span class="badge badge-done" style="font-size:9px;padding:1px 5px">won</span>{% endif %}
+          {% if c.acoustid_match %}<span class="badge badge-queued" style="font-size:9px;padding:1px 5px" title="AcoustID fingerprint matched this recording">♪</span>{% endif %}
+          <span style="font-family:var(--font-mono);color:var(--accent);white-space:nowrap" title="combined score">{{ "%.2f"|format(c.combined) }}</span>
+          <span style="font-family:var(--font-mono);color:var(--t4);white-space:nowrap" title="text {{ "%.2f"|format(c.text_sim) }}{% if c.query_sim %} · query {{ "%.2f"|format(c.query_sim) }}{% endif %}{% if c.acoustid_match %} · +AcoustID{% endif %}">
+            t{{ "%.2f"|format(c.text_sim) }}{% if c.query_sim %} q{{ "%.2f"|format(c.query_sim) }}{% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+
     <div class="rv-actions">
       {% if staging_exists %}
       <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}" title="Keyboard: a">

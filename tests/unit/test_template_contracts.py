@@ -101,6 +101,7 @@ def _meta() -> dict:
         "quality_score": 0.7,
         "thumbnail_url": None,
         "mb_genres": [],
+        "candidates": [],
         "genre": None,
         "current_title": None,
         "current_artist": None,

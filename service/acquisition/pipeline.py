@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from service.acquisition.states import classify_failure
 from service.config import settings
 from service.core.identity import make_id
-from service.core.models import ResolvedTrackMetadata, TrackCandidate
+from service.core.models import CandidateScore, ResolvedTrackMetadata, TrackCandidate
 from service.core.normalize import clean_for_search, normalize
 from service.db.schema import AcquisitionJobRow
 from service.index.scanner import index_file
@@ -249,6 +249,7 @@ async def run_acquisition(
         isrc: str | None = None
         acoustid_confidence: float | None = None
         mb_match_source: str | None = None
+        candidate_scores: list[CandidateScore] = []
 
         # ── 3b. MB identification ──────────────────────────────────────────────
         # Two paths:
@@ -350,22 +351,34 @@ async def run_acquisition(
                             )
                             _candidates.append((_bonus, _base_sim))
 
-                # Score each candidate with all three signals
+                # Score each candidate with all three signals (pure, testable)
+                from service.metadata.candidates import rank_candidates
+                _ranked = rank_candidates(
+                    _candidates, clean_query=_clean_query, acoustid_mbid=_acoustid_mbid
+                )
+                # Persist the ranked pool (top 5) with component scores for the
+                # review card — Phase 1 observability.
+                candidate_scores = [
+                    CandidateScore(
+                        recording_id=c.recording.recording_id,
+                        title=c.recording.title,
+                        artist=c.recording.artist,
+                        text_sim=c.text_sim,
+                        query_sim=c.query_sim,
+                        acoustid_match=c.acoustid_match,
+                        combined=c.combined,
+                    )
+                    for c in _ranked[:5]
+                ]
+
                 best_rec = None
                 best_combined = 0.0
                 best_text_sim = 0.0
-
-                for _rec, _text_sim in _candidates:
-                    _score = _text_sim
-                    if _clean_query:
-                        _q_sim = _title_sim(_clean_query, f"{_rec.title} {_rec.artist}")
-                        _score += 0.10 * _q_sim
-                    if _acoustid_mbid and _rec.recording_id == _acoustid_mbid:
-                        _score += 0.15
-                    if _score > best_combined:
-                        best_combined = _score
-                        best_text_sim = _text_sim
-                        best_rec = _rec
+                if _ranked:
+                    _top = _ranked[0]
+                    best_rec, best_combined, best_text_sim = (
+                        _top.recording, _top.combined, _top.text_sim
+                    )
 
                 if best_rec is not None and best_combined >= _DEDUP:
                     mb = best_rec
@@ -555,6 +568,7 @@ async def run_acquisition(
             acoustid_confidence=acoustid_confidence,
             text_search_similarity=text_search_similarity,
             mb_match_source=mb_match_source,
+            candidates=candidate_scores,
             is_compilation=is_compilation,
             force_staging_reason=force_staging_reason,
             quality_score=quality_score,

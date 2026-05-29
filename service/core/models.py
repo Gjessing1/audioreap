@@ -136,6 +136,22 @@ class AlbumCandidate(BaseModel):
     tracks: list[TrackCandidate] = []
 
 
+class CandidateScore(BaseModel):
+    """One ranked MB candidate's component scores — stored for review-card observability.
+
+    Mirrors ``metadata.candidates.ScoredCandidate`` but holds only the display fields
+    (no MBRecording object), so it serialises cleanly into resolved_metadata_json.
+    """
+
+    recording_id: str
+    title: str
+    artist: str
+    text_sim: float
+    query_sim: float = 0.0
+    acoustid_match: bool = False
+    combined: float
+
+
 class ResolvedTrackMetadata(BaseModel):
     """Typed metadata handoff between identification (Phase 1) and approval (Phase 2).
 
@@ -179,6 +195,10 @@ class ResolvedTrackMetadata(BaseModel):
     text_search_similarity: float | None = None
     mb_match_source: str | None = None
     mb_genres: list[str] = []
+    # Phase 1 observability: the ranked candidate pool with per-candidate component
+    # scores (text_sim / query_sim / acoustid_match / combined), best-first. Empty
+    # for Path A (locked recording) and when no candidates were found.
+    candidates: list[CandidateScore] = []
 
     # Review / placement state
     is_compilation: bool = False
