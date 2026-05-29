@@ -191,13 +191,28 @@
 
   {# ── Track list (unified: owned + MB-canonical status + missing in one list) #}
   <div style="border-top:1px solid var(--b1);padding:14px 16px">
-    <div class="section-title" style="margin:0 0 10px">Tracks</div>
-    <div id="album-tracks-{{ aid }}"
-         hx-get="/library/albums/{{ album.id }}/tracklist"
-         hx-trigger="load"
-         hx-swap="innerHTML">
-      <span class="muted" style="font-size:12px"><span class="spinner" style="width:10px;height:10px"></span> Loading tracks…</span>
+    <div class="section-title" style="margin:0 0 10px;display:flex;align-items:center;gap:8px">
+      Tracks
+      {% if album.mb_release_group_id or album.musicbrainz_release_id %}
+      <span id="album-mb-spin-{{ aid }}" class="muted" style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0">
+        <span class="spinner" style="width:9px;height:9px"></span> checking MusicBrainz…
+      </span>
+      {% endif %}
     </div>
+    {# Owned tracks render instantly from the DB — no wait on MusicBrainz, and
+       they still show if MB is down. The MB reconciliation (status / missing /
+       canonical order) loads in the background and replaces this list. #}
+    <div id="album-tracks-{{ aid }}">
+      {% with local_only=True %}{% include "partials/album_tracklist.html" %}{% endwith %}
+    </div>
+    {% if album.mb_release_group_id or album.musicbrainz_release_id %}
+    <div hx-get="/library/albums/{{ album.id }}/tracklist"
+         hx-trigger="load"
+         hx-target="#album-tracks-{{ aid }}"
+         hx-swap="innerHTML"
+         hx-on::after-request="var s=document.getElementById('album-mb-spin-{{ aid }}'); if(s) s.remove()"
+         style="display:none"></div>
+    {% endif %}
 
     {# Merge with another album #}
     <div style="margin-top:12px">

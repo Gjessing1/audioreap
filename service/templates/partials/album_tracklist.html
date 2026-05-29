@@ -12,6 +12,23 @@
   {%- endif -%}
 {% endmacro %}
 
+{# Local-only / instant mode: render owned tracks straight from the DB (no MB,
+   no blocking). Used for the immediate render and as the MB-unavailable
+   fallback. Builds plain rows here so callers only need to pass `album`. #}
+{% if local_only is defined and local_only %}
+  {% set _numbered = album.tracks | selectattr('track_number') | sort(attribute='track_number') | list %}
+  {% set _unnumbered = album.tracks | rejectattr('track_number') | list %}
+  {% set rows = [] %}
+  {% for t in (_numbered + _unnumbered) %}
+  {% set _ = rows.append({'status': 'plain', 'number': t.track_number, 'title': t.title, 'track': t}) %}
+  {% endfor %}
+  {% set linked = False %}
+{% endif %}
+
+{% if note %}
+<div style="font-size:11px;color:#e8a000;margin-bottom:8px">{{ note }}</div>
+{% endif %}
+
 {# ── Summary line ──────────────────────────────────────────────────────────── #}
 {% if linked %}
   {% if missing == 0 and elsewhere == 0 and extra == 0 %}

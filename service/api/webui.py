@@ -2185,18 +2185,17 @@ async def album_tracklist(
     )
     linked = bool(album.mb_release_group_id or album.musicbrainz_release_id)
 
-    # ── Unlinked: plain owned list, no MB backbone ────────────────────────────
-    if not linked:
-        rows = [
-            {"status": "plain", "number": t.track_number, "title": t.title, "track": t}
-            for t in local_tracks
-        ]
+    def _local_only(note: str | None = None) -> HTMLResponse:
+        # Owned tracks only — no MB status. Used for unlinked albums and as the
+        # fallback when MusicBrainz is unavailable, so the user's tracks always show.
         return templates.TemplateResponse(
             request, "partials/album_tracklist.html",
-            {"album": album, "rows": rows, "linked": False,
-             "here": len(rows), "total": len(rows),
-             "elsewhere": 0, "missing": 0, "extra": 0},
+            {"album": album, "local_only": True, "note": note},
         )
+
+    # ── Unlinked: plain owned list, no MB backbone ────────────────────────────
+    if not linked:
+        return _local_only()
 
     # ── Linked: reconcile against the MB tracklist ────────────────────────────
     try:
@@ -2211,7 +2210,12 @@ async def album_tracklist(
                 _get_rel_tracks, album.musicbrainz_release_id, settings.cache_dir
             )
     except Exception as exc:
-        return HTMLResponse(f'<p class="muted" style="font-size:12px">MusicBrainz fetch failed: {exc}</p>')
+        # MB down/unreachable — keep showing the owned tracks rather than an error.
+        logger.warning("album_tracklist: MB fetch failed for %s: %s", album_id, exc)
+        return _local_only("MusicBrainz unavailable — showing your tracks only.")
+
+    if not mb_tracks:
+        return _local_only("No MusicBrainz tracklist available — showing your tracks only.")
 
     # Map recording ID → local track, preferring a file-bearing row. Replacements
     # can leave a fileless ghost Track sharing the same recording ID; without this

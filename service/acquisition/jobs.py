@@ -574,6 +574,9 @@ async def acquire_track(
 
 _GC_TERMINAL_STATES = frozenset({"done", "failed", "rejected", "cancelled"})
 _GC_MAX_AGE_DAYS = 7
+# MB cache files untouched this long are pruned — far past the 24h cache TTL, so
+# only entries for albums/searches not seen in weeks are removed.
+_MB_CACHE_MAX_AGE_DAYS = 14
 
 
 async def gc_staging(ctx: dict[str, object]) -> None:
@@ -613,6 +616,28 @@ async def gc_staging(ctx: dict[str, object]) -> None:
             cleared += 1
 
     logger.info("gc_staging: cleared %d staging paths (%d files trashed)", cleared, trashed)
+
+    # Prune stale MusicBrainz cache files. The cache TTL is 24h, so any file not
+    # rewritten in well over that window belongs to something we haven't looked at
+    # in a long time (an album we no longer own, a one-off search, …). Files for
+    # albums you actually open get re-fetched and their mtime refreshed, so they
+    # survive — the cache stays scoped to the live library. ("cleanup others")
+    try:
+        mb_cache = _settings.cache_dir / "musicbrainz"
+        if mb_cache.is_dir():
+            stale_before = (_now() - timedelta(days=_MB_CACHE_MAX_AGE_DAYS)).timestamp()
+            pruned = 0
+            for f in mb_cache.iterdir():
+                try:
+                    if f.is_file() and f.stat().st_mtime < stale_before:
+                        f.unlink()
+                        pruned += 1
+                except OSError:
+                    pass
+            if pruned:
+                logger.info("gc_staging: pruned %d stale MusicBrainz cache files", pruned)
+    except Exception as exc:
+        logger.warning("gc_staging: MB cache prune failed: %s", exc)
 
 
 async def fetch_missing_covers(ctx: dict[str, object]) -> None:
