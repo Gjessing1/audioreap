@@ -116,6 +116,14 @@ async def worker_heartbeat(ctx: dict[str, object]) -> None:
         except Exception as exc:
             logger.warning("periodic stuck-job recovery failed: %s", exc)
 
+        # Advance album jobs whose child tracks have all finished to a terminal
+        # state (done/partial/failed) so they stop showing as "running" forever.
+        try:
+            from service.acquisition.jobs import reconcile_album_jobs
+            await reconcile_album_jobs(ctx)
+        except Exception as exc:
+            logger.warning("periodic album reconcile failed: %s", exc)
+
 
 async def auto_rescan(ctx: dict[str, object]) -> None:
     """Periodic job: trigger a library rescan at the configured interval.

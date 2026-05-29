@@ -408,6 +408,70 @@ _MAX_RETRIES = len(_RETRY_DELAYS)
 # Seconds to space out successive album-track download starts (anti-rate-limit).
 _ALBUM_DOWNLOAD_STAGGER_SECONDS = 6
 
+# A child track job is "terminal" once it can no longer change on its own.
+# needs_review is NOT terminal — it waits on a user decision (approve → done,
+# reject → failed), so an album with tracks still awaiting review is genuinely
+# still in progress.
+_CHILD_TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
+
+
+async def reconcile_album_jobs(ctx: dict[str, object]) -> None:
+    """Periodic job: advance `running` album jobs to a terminal state.
+
+    `acquire_album_from_mb` sets the parent `AlbumAcquisitionJob` to ``running``
+    after queuing child `acquire_track` jobs, but the children finish (or get
+    approved/rejected) independently — nothing ever moved the parent on. Album
+    rows lingered in ``running`` forever, the discography status poll showed
+    "running" indefinitely, and stale rows accumulated.
+
+    Once every child job is terminal, mark the album:
+      - ``done``    — all children placed (or nothing left to acquire)
+      - ``partial`` — at least one placed, at least one failed/cancelled
+      - ``failed``  — nothing placed
+
+    Albums with any child still queued/downloading/needs_review are left as-is.
+    """
+    from sqlalchemy import func as _func, select as _select
+
+    from service.db.schema import AlbumAcquisitionJob as _AlbumJob
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+
+    async with session_factory() as session, session.begin():
+        albums = (await session.execute(
+            _select(_AlbumJob).where(_AlbumJob.state == "running")
+        )).scalars().all()
+
+        for album in albums:
+            counts: dict[str, int] = dict((await session.execute(
+                _select(AcquisitionJobRow.state, _func.count(AcquisitionJobRow.id))
+                .where(AcquisitionJobRow.album_job_id == album.id)
+                .group_by(AcquisitionJobRow.state)
+            )).all())
+            total = sum(counts.values())
+            terminal = sum(c for s, c in counts.items() if s in _CHILD_TERMINAL_STATES)
+
+            # Still in flight (some child queued/downloading/needs_review) — wait.
+            # An album with zero children means every track was already owned at
+            # queue time, so it's complete.
+            if total and terminal < total:
+                continue
+
+            done = counts.get("done", 0)
+            if done == total:  # includes the zero-children "all owned" case
+                new_state = "done"
+            elif done:
+                new_state = "partial"
+            else:
+                new_state = "failed"
+
+            album.state = new_state
+            album.updated_at = _now()
+            logger.info(
+                "Album job %s (%s): all children terminal → %s (%d placed / %d total)",
+                album.id, album.album_title or album.album_ref, new_state, done, total,
+            )
+
 
 async def acquire_track(
     ctx: dict[str, object],
