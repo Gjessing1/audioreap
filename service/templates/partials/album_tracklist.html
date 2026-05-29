@@ -29,6 +29,9 @@
 {# ── The list ──────────────────────────────────────────────────────────────── #}
 <div class="track-list">
   {% for r in rows %}
+  {% if r.status == 'extra' and (loop.previtem is undefined or loop.previtem.status != 'extra') %}
+  <div style="font-size:10px;font-weight:600;color:#e8a000;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;padding-top:8px;border-top:1px dashed var(--b1)">Also in your library · not in MusicBrainz</div>
+  {% endif %}
   {% set t = r.track %}
   {% set safe_id = (t.id | replace(':', '_')) if t else loop.index %}
   <div class="track-row" {% if t %}id="altrack-{{ safe_id }}"{% endif %}
@@ -48,7 +51,7 @@
               hx-get="/library/tracks/{{ t.id }}/edit-card?album_id={{ album.id }}"
               hx-target="#altrack-{{ safe_id }}"
               hx-swap="outerHTML"
-              style="background:none;border:none;padding:0;text-align:left;cursor:pointer;color:var(--t1);font-size:inherit;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}{% if r.status == 'extra' %} <span style="font-size:10px;color:#e8a000">· not in MB list</span>{% endif %}</button>
+              style="background:none;border:none;padding:0;text-align:left;cursor:pointer;color:var(--t1);font-size:inherit;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</button>
       <span class="track-dur" style="font-family:var(--font-mono);font-size:11px;flex-shrink:0">
         {% if t.file and t.file.bitrate_kbps %}{{ t.file.bitrate_kbps }}k{% endif %}
       </span>

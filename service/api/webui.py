@@ -2211,7 +2211,17 @@ async def album_tracklist(
     except Exception as exc:
         return HTMLResponse(f'<p class="muted" style="font-size:12px">MusicBrainz fetch failed: {exc}</p>')
 
-    local_by_rid = {t.musicbrainz_recording_id: t for t in local_tracks if t.musicbrainz_recording_id}
+    # Map recording ID → local track, preferring a file-bearing row. Replacements
+    # can leave a fileless ghost Track sharing the same recording ID; without this
+    # the ghost could win the slot and bump the real (playable) file to "extra".
+    local_by_rid: dict[str, Track] = {}
+    for t in local_tracks:
+        rid = t.musicbrainz_recording_id
+        if not rid:
+            continue
+        cur = local_by_rid.get(rid)
+        if cur is None or (t.file and not cur.file):
+            local_by_rid[rid] = t
     local_rids = set(local_by_rid)
 
     # Recording IDs owned ANYWHERE in the library — those not in this album = "elsewhere"
@@ -2219,6 +2229,8 @@ async def album_tracklist(
     mb_recording_ids = [t.recording_id for t in mb_tracks if t.recording_id]
     all_owned_rids = await _owned_rids(session, mb_recording_ids) if mb_recording_ids else set()
     elsewhere_rids = all_owned_rids - local_rids
+    mb_rid_set = set(mb_recording_ids)
+    mb_titles = [t.title for t in mb_tracks]
 
     rows: list[dict] = []
     matched_ids: set[str] = set()
@@ -2231,10 +2243,11 @@ async def album_tracklist(
             track = local_by_rid[mt.recording_id]
             status = "here"
         else:
-            # Title match against not-yet-matched local tracks (recording ID absent)
-            for lt in local_tracks:
-                if lt.id in matched_ids:
-                    continue
+            # Title match against not-yet-matched local tracks (recording ID absent).
+            # Prefer a file-bearing candidate so a ghost doesn't claim the slot.
+            unmatched = [lt for lt in local_tracks if lt.id not in matched_ids]
+            unmatched.sort(key=lambda lt: lt.file is None)  # file-bearing first
+            for lt in unmatched:
                 if _tsim(mt.title, lt.title) >= 0.80:
                     track, status = lt, "here"
                     break
@@ -2264,13 +2277,20 @@ async def album_tracklist(
             "owner_track_id": owner_track_id,
         })
 
-    # Local tracks not matched to any MB track → "extra" (not in MB list)
+    # Genuinely-extra local tracks: unmatched AND not corresponding to any MB
+    # track by recording ID or title. A duplicate/ghost of an MB track (same rid
+    # or matching title) is NOT "not in MB" — skip it so it isn't mislabeled and
+    # doesn't dump a stray track number at the bottom of the list.
     extra = 0
     for lt in local_tracks:
         if lt.id in matched_ids:
             continue
+        rid_in_mb = bool(lt.musicbrainz_recording_id and lt.musicbrainz_recording_id in mb_rid_set)
+        title_in_mb = any(_tsim(lt.title, mt) >= 0.80 for mt in mb_titles)
+        if rid_in_mb or title_in_mb:
+            continue  # duplicate of an MB track already shown above
         extra += 1
-        rows.append({"status": "extra", "number": lt.track_number, "title": lt.title, "track": lt})
+        rows.append({"status": "extra", "number": None, "title": lt.title, "track": lt})
 
     if not rows:
         return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found.</p>')
