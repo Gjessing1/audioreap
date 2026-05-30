@@ -484,6 +484,80 @@ def write_cover_jpg(album_dir: Path, artwork_bytes: bytes) -> None:
         pass
 
 
+def read_mb_release_id(path: Path) -> str | None:
+    """Read MUSICBRAINZ_ALBUMID from file tags across all container formats."""
+    try:
+        f = MutagenFile(path)
+        if f is None:
+            return None
+        # Vorbis / OGG / FLAC
+        for key in ("musicbrainz_albumid", "MUSICBRAINZ_ALBUMID"):
+            if key in f:
+                v = f[key]
+                if isinstance(v, list):
+                    return str(v[0]) if v else None
+                return str(v) if v else None
+        # ID3 (MP3): TXXX:MusicBrainz Album Id
+        if hasattr(f, "tags") and f.tags:
+            for frame_key in f.tags.keys():
+                if "musicbrainz album id" in frame_key.lower():
+                    frame = f.tags[frame_key]
+                    if hasattr(frame, "text"):
+                        return str(frame.text[0]) if frame.text else None
+        # MP4
+        if "----:com.apple.iTunes:MusicBrainz Album Id" in f:
+            raw = f["----:com.apple.iTunes:MusicBrainz Album Id"]
+            return raw[0].decode() if raw and isinstance(raw[0], bytes) else None
+    except Exception:
+        pass
+    return None
+
+
+def strip_album_version_tags(path: Path) -> bool:
+    """Remove any album-version tags that fold into Navidrome's album PID.
+
+    Navidrome folds a Vorbis ``VERSION`` (and ``albumversion``) tag into the
+    album-version part of the computed PID, so a stray value on a single track
+    splits an otherwise-identical release (navidrome issue #5082). The tagger
+    never writes these, but a source file may carry them in. Returns True if a
+    tag was removed (and the file re-saved).
+    """
+    try:
+        audio = MutagenFile(path)
+        if audio is None or audio.tags is None:
+            return False
+        tags = audio.tags
+        removed = False
+
+        if isinstance(audio, MP4):
+            for key in (
+                "----:com.apple.iTunes:VERSION",
+                "----:com.apple.iTunes:ALBUMVERSION",
+                "----:com.apple.iTunes:MusicBrainz Album Version",
+            ):
+                if key in tags:
+                    del tags[key]
+                    removed = True
+        elif isinstance(tags, ID3):
+            for frame_key in list(tags.keys()):
+                desc = frame_key.split(":", 1)[1].lower() if ":" in frame_key else ""
+                if frame_key.startswith("TXXX:") and desc in ("version", "albumversion"):
+                    del tags[frame_key]
+                    removed = True
+        else:
+            # Vorbis comment: FLAC, OGG, Opus — keys are case-insensitive
+            for key in list(tags.keys()):
+                if key.lower() in ("version", "albumversion"):
+                    del tags[key]
+                    removed = True
+
+        if removed:
+            audio.save()
+        return removed
+    except Exception:
+        return False
+
+
 def compute_replaygain(path: Path) -> float | None:
     """Run ffmpeg ebur128 loudness analysis and return track gain in dB.
 

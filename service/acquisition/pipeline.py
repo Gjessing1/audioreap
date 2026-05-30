@@ -423,7 +423,10 @@ async def run_acquisition(
                 # Score each candidate with all three signals (pure, testable)
                 from service.metadata.candidates import rank_candidates
                 _ranked = rank_candidates(
-                    _candidates, clean_query=_clean_query, acoustid_mbid=_acoustid_mbid
+                    _candidates,
+                    clean_query=_clean_query,
+                    acoustid_mbid=_acoustid_mbid,
+                    clean_artist=clean_for_search(artist) if artist else None,
                 )
                 # Persist the ranked pool (top 5) with component scores for the
                 # review card — Phase 1 observability.
@@ -436,6 +439,8 @@ async def run_acquisition(
                         query_sim=c.query_sim,
                         acoustid_match=c.acoustid_match,
                         combined=c.combined,
+                        artist_sim=c.artist_sim,
+                        artist_penalty=c.artist_penalty,
                     )
                     for c in _ranked[:5]
                 ]

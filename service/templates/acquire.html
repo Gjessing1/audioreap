@@ -91,7 +91,9 @@
     </div>
     {% if not spotify_enabled %}
     <p class="empty" style="margin-top:4px;font-size:12px">
-      Public Spotify playlists require AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET.
+      Spotify import needs AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET, and
+      since the Feb 2026 API change only reads your <em>own</em> playlists. YouTube / YouTube
+      Music playlists import directly.
     </p>
     {% endif %}
   </form>

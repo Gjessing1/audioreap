@@ -8,6 +8,8 @@ import shutil
 from datetime import UTC
 from pathlib import Path
 
+_AUDIO_SUFFIXES = frozenset({".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav"})
+
 
 def atomic_place(src: Path, dest: Path) -> Path:
     """Move src → dest, atomically when possible.
@@ -49,3 +51,25 @@ def safe_trash(path: Path, trash_dir: Path) -> Path:
     except Exception:
         pass
     return dest
+
+
+def trash_empty_album_dir(album_dir: Path, trash_dir: Path) -> None:
+    """If album_dir has no audio files left, trash remaining sidecars and rmdir it.
+
+    Called after tracks move out of a directory so ghost directories (with only
+    cover.jpg) don't cause Navidrome to show phantom albums.
+    """
+    if not album_dir.is_dir():
+        return
+    entries = list(album_dir.iterdir())
+    if any(e.suffix.lower() in _AUDIO_SUFFIXES for e in entries):
+        return
+    for e in entries:
+        try:
+            safe_trash(e, trash_dir)
+        except Exception:
+            pass
+    try:
+        album_dir.rmdir()
+    except OSError:
+        pass

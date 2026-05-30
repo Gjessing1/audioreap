@@ -150,6 +150,8 @@ class CandidateScore(BaseModel):
     query_sim: float = 0.0
     acoustid_match: bool = False
     combined: float
+    artist_sim: float = 1.0
+    artist_penalty: float = 0.0
 
 
 class ResolvedTrackMetadata(BaseModel):

@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from service.metadata.candidates import ACOUSTID_WEIGHT, QUERY_WEIGHT, rank_candidates
+from service.metadata.candidates import (
+    ACOUSTID_WEIGHT,
+    ARTIST_GATE_PENALTY,
+    QUERY_WEIGHT,
+    rank_candidates,
+)
 
 
 @dataclass
@@ -42,3 +47,34 @@ def test_query_signal_contributes_weighted() -> None:
 
 def test_empty_pool() -> None:
     assert rank_candidates([], clean_query=None, acoustid_mbid=None) == []
+
+
+def test_artist_gate_demotes_wrong_artist() -> None:
+    # Same strong title overlap, but the higher-text candidate is a different artist.
+    right = _Rec("r", "Diamonds", "Rihanna")
+    wrong = _Rec("w", "Diamonds", "Karaoke All Stars")
+    cands = [(wrong, 0.86), (right, 0.84)]
+    ranked = rank_candidates(cands, clean_query=None, acoustid_mbid=None, clean_artist="rihanna")
+    assert ranked[0].recording.recording_id == "r"
+    demoted = next(c for c in ranked if c.recording.recording_id == "w")
+    assert demoted.artist_penalty == ARTIST_GATE_PENALTY
+    assert abs(demoted.combined - (0.86 - ARTIST_GATE_PENALTY)) < 1e-9
+
+
+def test_artist_gate_exempts_acoustid_match() -> None:
+    # A fingerprint match must never be penalized for an artist-string mismatch.
+    wrong = _Rec("w", "Diamonds", "Karaoke All Stars")
+    ranked = rank_candidates(
+        [(wrong, 0.80)], clean_query=None, acoustid_mbid="w", clean_artist="rihanna"
+    )
+    assert ranked[0].artist_penalty == 0.0
+    assert ranked[0].acoustid_match is True
+
+
+def test_artist_gate_no_penalty_without_clean_artist() -> None:
+    # Back-compat: omitting clean_artist leaves scores untouched.
+    cands = [(_Rec("a", "X", "Whoever"), 0.7)]
+    ranked = rank_candidates(cands, clean_query=None, acoustid_mbid=None)
+    assert ranked[0].artist_penalty == 0.0
+    assert ranked[0].artist_sim == 1.0
+    assert ranked[0].combined == 0.7

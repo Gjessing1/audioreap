@@ -30,29 +30,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 # requiring every calling endpoint to pass them in context explicitly.
 templates.env.globals["settings"] = settings
 
-_AUDIO_SUFFIXES = frozenset({".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav"})
-
-
-def _trash_empty_album_dir(album_dir: Path, trash_dir: Path) -> None:
-    """If album_dir has no audio files left, trash remaining sidecars and rmdir it.
-
-    Called after a track is deleted so ghost directories (with only cover.jpg)
-    don't cause Navidrome to show phantom albums.
-    """
-    if not album_dir.is_dir():
-        return
-    entries = list(album_dir.iterdir())
-    if any(e.suffix.lower() in _AUDIO_SUFFIXES for e in entries):
-        return
-    for e in entries:
-        try:
-            safe_trash(e, trash_dir)
-        except Exception:
-            pass
-    try:
-        album_dir.rmdir()
-    except OSError:
-        pass
+from service.library.writer import trash_empty_album_dir as _trash_empty_album_dir
 
 _JOBS_COMPLETED_PAGE = 50
 _BROWSE_PAGE = 75
@@ -973,6 +951,9 @@ async def batch_approve(
 
     done_count = 0
     fail_count = 0
+    # Album identities of approved discography-batch tracks — healed for Navidrome
+    # splits once the batch lands (a source-swap or year/MBID drift can fragment it).
+    heal_targets: set[tuple[str, str]] = set()
     for jid in job_ids:
         try:
             dest = await place_approved_track(jid, {}, session, mark_progress=True)
@@ -985,6 +966,16 @@ async def batch_approve(
                         await asyncio.to_thread(write_replaygain, dest, rg)
                 except Exception:
                     pass
+            try:
+                _r = await session.get(AcquisitionJobRow, jid)
+                if _r and _r.album_job_id and _r.resolved_metadata_json:
+                    _m = json.loads(_r.resolved_metadata_json)
+                    _alb = (_m.get("album") or "").strip()
+                    _aa = (_m.get("albumartist") or _m.get("artist") or "").strip()
+                    if _alb and _aa:
+                        heal_targets.add((_alb, _aa))
+            except Exception:
+                pass
             done_count += 1
         except Exception as exc:
             logger.error("Batch approve failed for %s: %s", jid, exc)
@@ -1002,6 +993,24 @@ async def batch_approve(
             except Exception:
                 pass
             fail_count += 1
+
+    # Auto-heal Navidrome album splits for any discography batch that just landed.
+    if heal_targets:
+        from service.library.cohesion import auto_heal_album_splits
+        healed = 0
+        for _alb, _aa in heal_targets:
+            try:
+                healed += await auto_heal_album_splits(
+                    session, _alb, _aa, settings.music_dir / ".trash", settings.music_dir
+                )
+            except Exception as exc:
+                logger.warning("Auto-heal failed for %r / %r: %s", _alb, _aa, exc)
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
+        if healed:
+            await _do_scans()
 
     return templates.TemplateResponse(
         request, "partials/job_list.html", await _job_list_ctx(session)
@@ -5162,12 +5171,19 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
         r.raise_for_status()
         pl_title = str(r.json().get("name") or pl_title)
 
+        # /tracks is deprecated in favour of /items (Spotify Web API, Feb 2026);
+        # both return the same item shape. Fall back to /tracks on 404.
         next_url: str | None = (
-            f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+            f"https://api.spotify.com/v1/playlists/{playlist_id}/items"
             "?fields=items(track(name,artists,album,duration_ms,type)),next&limit=50"
         )
+        _tried_legacy = False
         while next_url:
             r = await client.get(next_url)
+            if r.status_code == 404 and not _tried_legacy and "/items" in next_url:
+                _tried_legacy = True
+                next_url = next_url.replace("/items", "/tracks", 1)
+                continue
             r.raise_for_status()
             data = r.json()
             items.extend(data.get("items") or [])
@@ -5198,6 +5214,18 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
             duration_seconds=duration_s,
             raw_metadata={},
         ))
+
+    # As of the Feb 2026 Spotify Web API change, a playlist returns its track
+    # `items` only to the authenticated *owner*; for anyone else (including a
+    # client-credentials app, which has no user) it returns metadata only — an
+    # empty item list. Surface that plainly instead of importing zero tracks.
+    if not candidates:
+        raise ValueError(
+            "Spotify returned no tracks. Since the Feb 2026 Web API change, only a "
+            "playlist's owner can read its tracks via the API — public/other-user "
+            "playlists return metadata only. Paste a YouTube/YouTube Music playlist "
+            "URL instead, or recreate the playlist on your own Spotify account."
+        )
 
     return pl_title, "spotify", candidates
 
@@ -5675,32 +5703,7 @@ async def discography_view(
     )
 
 
-def _read_mb_release_id(path: Path) -> str | None:
-    """Read MUSICBRAINZ_ALBUMID from file tags using mutagen."""
-    try:
-        import mutagen
-        f = mutagen.File(path)
-        if f is None:
-            return None
-        # Vorbis / OGG / FLAC
-        for key in ("musicbrainz_albumid", "MUSICBRAINZ_ALBUMID"):
-            if key in f:
-                v = f[key]
-                return str(v[0]) if isinstance(v, list) and v else str(v) if v else None
-        # ID3 (MP3): TXXX:MusicBrainz Album Id
-        if hasattr(f, "tags") and f.tags:
-            for frame_key in f.tags.keys():
-                if "musicbrainz album id" in frame_key.lower():
-                    frame = f.tags[frame_key]
-                    if hasattr(frame, "text"):
-                        return str(frame.text[0]) if frame.text else None
-        # MP4
-        if "----:com.apple.iTunes:MusicBrainz Album Id" in f:
-            raw = f["----:com.apple.iTunes:MusicBrainz Album Id"]
-            return raw[0].decode() if raw and isinstance(raw[0], bytes) else None
-    except Exception:
-        pass
-    return None
+from service.library.tagger import read_mb_release_id as _read_mb_release_id
 
 
 # ── Library Health / Management ───────────────────────────────────────────
@@ -6213,150 +6216,17 @@ async def merge_album(
 ) -> HTMLResponse:
     """Move source album files into canonical album folder and reassign all DB records.
 
-    Deliberately does NOT call index_file() — that would re-read file tags and
-    associate tracks with a new album based on the source's tags instead of the
-    canonical. Instead we update TrackFile.path and Track.album_id directly.
+    Thin route over :func:`service.library.cohesion.merge_albums`, which does the
+    filesystem move + tag normalization + DB merge. Returns the refreshed album list.
     """
-    from service.library.writer import atomic_place as _atomic_place
     from sqlalchemy.orm import joinedload as _jl
 
-    canonical = (await session.execute(
-        select(Album)
-        .options(_jl(Album.tracks).joinedload(Track.file))
-        .where(Album.id == canonical_id)
-    )).unique().scalar_one_or_none()
-    source = (await session.execute(
-        select(Album)
-        .options(_jl(Album.tracks).joinedload(Track.file))
-        .where(Album.id == source_id)
-    )).unique().scalar_one_or_none()
+    from service.library.cohesion import merge_albums as _merge_albums
 
-    if canonical is None or source is None:
-        raise HTTPException(404)
-
-    # Determine the canonical album directory from any file that exists on disk
-    canonical_dir: Path | None = None
-    for t in canonical.tracks:
-        if t.file and Path(t.file.path).exists():
-            canonical_dir = Path(t.file.path).parent
-            break
-    if canonical_dir is None:
-        # Canonical has no files yet — use the layout function to compute the expected dir
-        from service.library.layout import track_path as _track_path
-        canonical_dir = _track_path(
-            settings.music_dir,
-            artist=canonical.artist.name if canonical.artist else "Unknown",
-            album=canonical.title,
-            year=canonical.year,
-            track_number=None, disc_number=None,
-            title="placeholder", ext="flac",
-            albumartist=canonical.artist.name if canonical.artist else None,
-        ).parent
-        canonical_dir.mkdir(parents=True, exist_ok=True)
-
-    moved = 0
-    already_there = 0
-    collisions = 0
-
-    # Collect source dirs BEFORE mutating track.file.path — the loop below
-    # updates those paths in-memory, so collecting after would yield canonical_dir.
-    src_dirs: set[Path] = set()
-    for track in source.tracks:
-        if track.file:
-            d = Path(track.file.path).parent
-            if d != canonical_dir:
-                src_dirs.add(d)
-
-    for track in source.tracks:
-        if not track.file:
-            # Reassign album even if no file
-            track.album_id = canonical_id
-            continue
-
-        src = Path(track.file.path)
-        dst = canonical_dir / src.name
-
-        if src == dst:
-            # Files are already in canonical dir — just reassign album in DB
-            already_there += 1
-            track.album_id = canonical_id
-            continue
-
-        if not src.exists():
-            # Stale DB record — update path to where it should be, reassign album
-            track.file.path = str(dst)
-            track.album_id = canonical_id
-            continue
-
-        if dst.exists():
-            # Name collision — reassign album, don't move the file
-            collisions += 1
-            logger.info("Merge: name collision at %s — keeping source %s, reassigning album", dst, src)
-            track.album_id = canonical_id
-            continue
-
-        try:
-            _atomic_place(src, dst)
-            # Update TrackFile path in DB to reflect new location
-            track.file.path = str(dst)
-            track.album_id = canonical_id
-            moved += 1
-        except Exception as exc:
-            logger.warning("Merge: failed to move %s → %s: %s", src, dst, exc)
-
-    # Clean up source dirs: trash any remaining sidecars (cover.jpg etc.) and rmdir.
-    for src_dir in src_dirs:
-        try:
-            _trash_empty_album_dir(src_dir, settings.music_dir / ".trash")
-        except Exception:
-            pass
-
-    # Normalize album/albumartist/year/MUSICBRAINZ_ALBUMID on all merged (source)
-    # tracks so Navidrome groups them into a single album.
-    # File paths in track.file.path are already updated to canonical_dir above.
-    canonical_release_id: str | None = canonical.musicbrainz_release_id
-    if not canonical_release_id:
-        for t in canonical.tracks:
-            if t.file:
-                fp = Path(t.file.path)
-                if fp.exists():
-                    canonical_release_id = _read_mb_release_id(fp)
-                    if canonical_release_id:
-                        break
-
-    from service.library.tagger import write_tags as _write_tags_merge
-    canonical_artist_name = canonical.artist.name if canonical.artist else "Unknown"
-    for track in source.tracks:
-        if track.file:
-            fpath = Path(track.file.path)
-            if fpath.exists():
-                try:
-                    await asyncio.to_thread(
-                        _write_tags_merge, fpath,
-                        album=canonical.title,
-                        albumartist=canonical_artist_name,
-                        year=canonical.year,
-                        mb_release_id=canonical_release_id,
-                    )
-                    logger.info("Merge: normalized tags on %s", fpath.name)
-                except Exception as exc:
-                    logger.warning("Merge: tag update failed for %s: %s", fpath.name, exc)
-
-    # Persist the release ID on the canonical album row if not already set
-    if canonical_release_id and not canonical.musicbrainz_release_id:
-        canonical.musicbrainz_release_id = canonical_release_id
-
-    # Delete the source Album row — all its tracks have been reassigned.
-    # We flush first to commit the album_id updates, then expunge source from the
-    # session and use raw SQL to delete it.  If we called session.delete(source)
-    # while the ORM still sees its tracks collection, SQLAlchemy would auto-NULL
-    # every track's album_id (nullable FK, no cascade), undoing our reassignments.
-    await session.flush()
-    session.expunge(source)
-    from sqlalchemy import delete as _sa_delete
-    await session.execute(_sa_delete(Album).where(Album.id == source_id))
-
-    await session.commit()
+    await _merge_albums(
+        session, canonical_id, source_id,
+        settings.music_dir / ".trash", settings.music_dir,
+    )
 
     await _do_scans()
 

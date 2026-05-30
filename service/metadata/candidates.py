@@ -17,13 +17,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from service.search.matcher import title_similarity
+from service.search.matcher import artist_similarity, title_similarity
 
 if TYPE_CHECKING:
     from service.metadata.musicbrainz import MBRecording
 
 QUERY_WEIGHT = 0.10
 ACOUSTID_WEIGHT = 0.15
+
+# Artist gate: when the user's intended artist is clearly different from a
+# candidate's artist, hard-demote that candidate so a high title overlap can't
+# carry a wrong-artist recording over the 0.85 acceptance threshold. Mirrors the
+# discography YT ranking (`yt_search_best`). Applied as a penalty only — a good
+# (or unknown) artist match contributes 0, so correct matches are untouched.
+ARTIST_GATE_SIM = 0.34
+ARTIST_GATE_PENALTY = 0.25
 
 
 @dataclass
@@ -35,6 +43,8 @@ class ScoredCandidate:
     query_sim: float          # user-query intent contribution (pre-weight)
     acoustid_match: bool      # True when this candidate is the AcoustID fingerprint hit
     combined: float           # final score actually used for ranking
+    artist_sim: float = 1.0   # queried artist vs candidate artist (1.0 = not gated)
+    artist_penalty: float = 0.0  # demotion applied for a clearly-different artist
 
 
 def rank_candidates(
@@ -42,12 +52,15 @@ def rank_candidates(
     *,
     clean_query: str | None,
     acoustid_mbid: str | None,
+    clean_artist: str | None = None,
 ) -> list[ScoredCandidate]:
     """Score every (recording, text_sim) pair and return them ranked best-first.
 
     ``candidates`` is the pool from ``get_recording_candidates`` (already including
     any AcoustID-only bonus recording the caller appended). ``clean_query`` is the
-    cleaned user search string, or None to skip the query signal.
+    cleaned user search string, or None to skip the query signal. ``clean_artist``
+    is the cleaned intended artist used for the wrong-artist gate; a fingerprint
+    (AcoustID) match is exempt from the gate since it's strong audio evidence.
     """
     scored: list[ScoredCandidate] = []
     for rec, text_sim in candidates:
@@ -55,13 +68,28 @@ def rank_candidates(
         if clean_query:
             query_sim = title_similarity(clean_query, f"{rec.title} {rec.artist}")
         acoustid_match = bool(acoustid_mbid and rec.recording_id == acoustid_mbid)
-        combined = text_sim + QUERY_WEIGHT * query_sim + (ACOUSTID_WEIGHT if acoustid_match else 0.0)
+
+        artist_sim = 1.0
+        artist_penalty = 0.0
+        if clean_artist and rec.artist:
+            artist_sim = artist_similarity(clean_artist, rec.artist)
+            if artist_sim < ARTIST_GATE_SIM and not acoustid_match:
+                artist_penalty = ARTIST_GATE_PENALTY
+
+        combined = (
+            text_sim
+            + QUERY_WEIGHT * query_sim
+            + (ACOUSTID_WEIGHT if acoustid_match else 0.0)
+            - artist_penalty
+        )
         scored.append(ScoredCandidate(
             recording=rec,
             text_sim=text_sim,
             query_sim=query_sim,
             acoustid_match=acoustid_match,
             combined=combined,
+            artist_sim=artist_sim,
+            artist_penalty=artist_penalty,
         ))
     scored.sort(key=lambda c: c.combined, reverse=True)
     return scored
