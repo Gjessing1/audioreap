@@ -489,6 +489,7 @@ async def acquire_track(
     from arq import create_pool
     from arq.connections import RedisSettings
 
+    from service.acquisition.ratelimit import YtdlpRateGate
     from service.config import settings as _settings
 
     session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
@@ -522,41 +523,63 @@ async def acquire_track(
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
 
-    async with session_factory() as session, session.begin():
-        await run_acquisition(
-            job_id=job_id,
-            provider=provider,
-            provider_ref=provider_ref,
-            candidate=candidate,
-            tmp_acquire_dir=Path(tmp_acquire_dir),
-            session=session,
-            on_progress=on_progress,
-        )
-
-    # Auto-retry on transient failures
-    retry_attempt: int | None = None
-    delay_seconds: int = 0
-    async with session_factory() as session, session.begin():
-        row = await session.get(AcquisitionJobRow, job_id)
-        if row is None or row.state != "failed" or row.failure_class != "transient":
-            return
-        if row.retry_count >= _MAX_RETRIES:
-            logger.warning("Job %s: max retries reached (%d), leaving as failed", job_id, row.retry_count)
-            return
-
-        delay_seconds = _RETRY_DELAYS[row.retry_count]
-        row.retry_count += 1
-        retry_attempt = row.retry_count
-        row.state = "queued"
-        row.error = f"Transient failure — retry {retry_attempt}/{_MAX_RETRIES} in {delay_seconds}s"
-        row.updated_at = _now()
-
-    if retry_attempt is None:
-        return
-
-    logger.info("Job %s: transient failure, scheduling retry %d/%d in %ds", job_id, retry_attempt, _MAX_RETRIES, delay_seconds)
+    # One Redis pool for the rate gate and the retry re-enqueue (closed in finally).
     redis = await create_pool(RedisSettings.from_dsn(_settings.redis_url))
+    gate = YtdlpRateGate(redis, _settings)
     try:
+        # ── Rate gate: pace yt-dlp downloads into a slow, steady stream ─────────
+        # Reserve this job's slot and, if it isn't due yet, park it in a visible
+        # "waiting" state with a live countdown so the user sees pacing/back-off
+        # rather than a stuck job. Returns immediately when the slot is due now.
+        if _settings.ytdlp_rate_limit_enabled and provider_name == "ytdlp":
+            cancelled = await _await_rate_slot(session_factory, gate, job_id)
+            if cancelled:
+                return
+
+        async with session_factory() as session, session.begin():
+            await run_acquisition(
+                job_id=job_id,
+                provider=provider,
+                provider_ref=provider_ref,
+                candidate=candidate,
+                tmp_acquire_dir=Path(tmp_acquire_dir),
+                session=session,
+                on_progress=on_progress,
+            )
+
+        # ── Feed the outcome back to the gate (adaptive pacing) ────────────────
+        if _settings.ytdlp_rate_limit_enabled and provider_name == "ytdlp":
+            async with session_factory() as s:
+                r = await s.get(AcquisitionJobRow, job_id)
+                final_state = r.state if r else None
+                final_err = (r.error or "") if r else ""
+            if final_state == "failed" and _is_rate_limited(final_err):
+                await gate.penalize()
+            elif final_state in ("needs_review", "done"):
+                await gate.reward()
+
+        # ── Auto-retry on transient failures ───────────────────────────────────
+        retry_attempt: int | None = None
+        delay_seconds: int = 0
+        async with session_factory() as session, session.begin():
+            row = await session.get(AcquisitionJobRow, job_id)
+            if row is None or row.state != "failed" or row.failure_class != "transient":
+                return
+            if row.retry_count >= _MAX_RETRIES:
+                logger.warning("Job %s: max retries reached (%d), leaving as failed", job_id, row.retry_count)
+                return
+
+            delay_seconds = _RETRY_DELAYS[row.retry_count]
+            row.retry_count += 1
+            retry_attempt = row.retry_count
+            row.state = "queued"
+            row.error = f"Transient failure — retry {retry_attempt}/{_MAX_RETRIES} in {delay_seconds}s"
+            row.updated_at = _now()
+
+        if retry_attempt is None:
+            return
+
+        logger.info("Job %s: transient failure, scheduling retry %d/%d in %ds", job_id, retry_attempt, _MAX_RETRIES, delay_seconds)
         await redis.enqueue_job(
             "acquire_track",
             job_id=job_id,
@@ -570,6 +593,46 @@ async def acquire_track(
         )
     finally:
         await redis.aclose()
+
+
+def _is_rate_limited(message: str) -> bool:
+    m = (message or "").lower()
+    return "429" in m or "too many" in m or "rate limit" in m
+
+
+async def _await_rate_slot(
+    session_factory: "async_sessionmaker[AsyncSession]",
+    gate: "object",
+    job_id: str,
+) -> bool:
+    """Wait until this job's reserved download slot is due.
+
+    While waiting, the job sits in a "waiting" state whose message counts down so
+    the UI shows pacing/back-off instead of a frozen job. Returns True if the job
+    was cancelled mid-wait (caller should abort), False when the slot is due.
+    """
+    import math
+    import time
+
+    start, is_cooldown = await gate.reserve()  # type: ignore[attr-defined]
+    while True:
+        remaining = start - time.time()
+        if remaining <= 1.0:
+            return False
+        eta = math.ceil(remaining)
+        if is_cooldown:
+            msg = f"⏳ Paused after a YouTube rate-limit (429) — resuming in ~{eta}s"
+        else:
+            msg = f"⏳ Pacing downloads to stay under YouTube's rate limit — starting in ~{eta}s"
+        async with session_factory() as s, s.begin():
+            r = await s.get(AcquisitionJobRow, job_id)
+            if r is None or r.state == "cancelled":
+                return True
+            r.state = "waiting"
+            r.error = msg
+            r.updated_at = _now()
+        # Re-render cadence ≈ the job card's 3s self-poll, so the countdown ticks.
+        await asyncio.sleep(min(remaining - 1.0, 3.0))
 
 
 _GC_TERMINAL_STATES = frozenset({"done", "failed", "rejected", "cancelled"})

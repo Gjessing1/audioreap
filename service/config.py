@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     # Acquisition preferences
     prefer_explicit: bool = True  # Rank explicit versions above clean when searching
 
+    # yt-dlp rate limiting — pace downloads to a slow, steady stream that stays
+    # *under* YouTube's rate limit rather than bursting into a 429. Adaptive: the
+    # interval grows after a 429 and relaxes back toward the minimum on success.
+    ytdlp_rate_limit_enabled: bool = True
+    ytdlp_min_download_interval_seconds: float = 5.0   # steady spacing between download starts
+    ytdlp_max_download_interval_seconds: float = 45.0  # cap the interval may back off to
+    ytdlp_rate_cooldown_seconds: float = 120.0         # hard pause after a 429 is seen
+
     # Auto-rescan interval (0 = disabled)
     rescan_interval_minutes: int = 0
 

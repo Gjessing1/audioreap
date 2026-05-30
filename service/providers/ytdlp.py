@@ -136,6 +136,10 @@ class YtdlpProvider(Provider):
             "format": "bestaudio/best",
             "outtmpl": str(dest_dir / "%(id)s.%(ext)s"),
             "progress_hooks": [_progress_hook],
+            # Space out the HTTP requests within a single extraction a touch so a
+            # fragmented download doesn't hammer YouTube and trip a 429. The
+            # cross-job pacing lives in the worker's rate gate; this is local.
+            "sleep_interval_requests": 1,
         }
 
         def _run() -> object:

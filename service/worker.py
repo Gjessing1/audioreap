@@ -185,5 +185,9 @@ class WorkerSettings:
         cron(auto_rescan, minute=None, second=30),      # every minute (offset from heartbeat)
     ]
     max_jobs = settings.worker_concurrency
+    # A download job may now park in the rate gate's "waiting" state (up to a
+    # ~120s 429 cooldown) before the download itself runs, so the arq default of
+    # 300s would prematurely abort a paced job. Give jobs ample headroom.
+    job_timeout = 1800
     on_startup = startup
     on_shutdown = shutdown

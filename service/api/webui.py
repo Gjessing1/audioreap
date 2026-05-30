@@ -219,7 +219,7 @@ async def _acquire_ctx(request: Request, q: str, active_section: str, session: A
             select(PlaylistImport).order_by(PlaylistImport.created_at.desc()).limit(10)
         )
     ).scalars().all()
-    _ACTIVE = ("queued", "downloading", "processing", "enriching", "tagging", "importing")
+    _ACTIVE = ("queued", "waiting", "downloading", "processing", "enriching", "tagging", "importing")
     import_states: dict[str, str] = {}
     if rows:
         active_counts = (await session.execute(
@@ -1194,7 +1194,7 @@ async def jobs_bulk_action(
                 row.failure_class = "permanent"
                 row.error = "Rejected (bulk)"
                 row.staging_path = None
-            elif action == "cancel" and row.state in ("queued", "downloading", "processing", "tagging", "importing"):
+            elif action == "cancel" and row.state in ("queued", "waiting", "downloading", "processing", "tagging", "importing"):
                 try:
                     from arq import create_pool
                     from arq.connections import RedisSettings

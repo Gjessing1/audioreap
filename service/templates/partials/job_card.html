@@ -2,6 +2,7 @@
   'done':         'badge-done',
   'failed':       'badge-fail',
   'queued':       'badge-queued',
+  'waiting':      'badge-queued',
   'cancelled':    'badge-fail',
   'needs_review': 'badge-review',
 }.get(job.state, 'badge-busy') %}
@@ -29,7 +30,7 @@
     <div class="card-title">{{ job.track_ref.title }}</div>
     <div class="card-sub">{{ job.track_ref.artist }}<span class="muted"> · {{ job.id[:8] }}</span></div>
     {% if job.error %}
-    <div class="card-error {% if job.state != 'needs_review' %}card-error--danger{% endif %}"
+    <div class="card-error {% if job.state == 'failed' %}card-error--danger{% endif %}"
          title="{{ job.error }}"
          style="cursor:help">
       {{ job.error[:140] }}{% if job.error|length > 140 %}…{% endif %}
@@ -48,6 +49,8 @@
     {% else %}
     <span class="badge badge-review" title="Probable match — below the verified threshold, confirm metadata">≈ probable</span>
     {% endif %}
+    {% elif job.state == 'waiting' %}
+    <span class="badge badge-queued" title="{{ job.error or 'Pacing downloads to avoid YouTube rate limits' }}"><span class="spinner" style="width:10px;height:10px;margin-right:4px"></span>waiting</span>
     {% else %}
     <span class="badge {{ state_badge }}">{{ job.state.replace('_',' ') }}</span>
     {% endif %}
@@ -75,7 +78,7 @@
             hx-swap="outerHTML">Retry</button>
     {% endif %}
 
-    {% if job.state in ('queued','downloading','processing','tagging','importing') %}
+    {% if job.state in ('queued','waiting','downloading','processing','tagging','importing') %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/cancel/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
