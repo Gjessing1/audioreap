@@ -211,6 +211,26 @@ document.addEventListener("keydown", function(e) {
   }
 });
 
+/* ── Pause the job-list poll while reviewing ─────────────────────────────────
+ * #job-list refreshes every 12s with an innerHTML swap. If a review card is
+ * expanded (or the user is typing in a field inside the list), that swap wipes
+ * the card and discards in-progress edits. Cancel the *poll* (only the request
+ * originating from #job-list itself) in those cases; the manual Refresh button
+ * and per-card status polls have a different originating element and still run.
+ * Active jobs keep updating because each active card self-polls /jobs/status.
+ */
+document.body.addEventListener('htmx:beforeRequest', function(e) {
+  const elt = e.detail && e.detail.elt;
+  if (!elt || elt.id !== 'job-list') return;
+  const list = document.getElementById('job-list');
+  if (!list) return;
+  const reviewing = list.querySelector('.card-review');
+  const active = document.activeElement;
+  const editing = active && list.contains(active) &&
+    /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
+  if (reviewing || editing) e.preventDefault();
+});
+
 /* ── HTMX global error handler ───────────────────────────────────────────── */
 document.addEventListener("htmx:responseError", function(e) {
   const status = e.detail.xhr.status;
@@ -234,13 +254,26 @@ window.toggleDiscoType = function(artistMbid, type, currentTypes) {
 };
 
 /* ── Discography text search (client-side filter within loaded releases) ─── */
+var _discoFilter = '';
 window.filterDiscoReleases = function(q) {
-  var lower = q.toLowerCase();
+  _discoFilter = q || '';
+  var lower = _discoFilter.toLowerCase();
   document.querySelectorAll('#disco-detail [data-disco-title]').forEach(function(el) {
     var title = (el.getAttribute('data-disco-title') || '').toLowerCase();
     el.style.display = (!lower || title.indexOf(lower) !== -1) ? '' : 'none';
   });
 };
+
+/* Toggling a release-type chip reloads #disco-detail, which re-renders the
+ * "Filter releases…" box empty. Restore the in-flight text filter and re-apply
+ * it once the new content settles so the user's filter survives the chip click. */
+document.body.addEventListener('htmx:afterSettle', function(e) {
+  if (!_discoFilter) return;
+  if (!e.target || (e.target.id !== 'disco-detail' && !e.target.querySelector('#disco-search'))) return;
+  var box = document.getElementById('disco-search');
+  if (box) box.value = _discoFilter;
+  window.filterDiscoReleases(_discoFilter);
+});
 
 /* ── Persisted <details> (open state survives HTMX poll swaps) ───────────────
  * Any <details data-persist-key="..."> remembers its open/closed state in

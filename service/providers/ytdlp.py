@@ -354,11 +354,15 @@ def yt_search_best(
 ) -> tuple[str, float]:
     """Search for the best-matching studio version on YouTube (Music).
 
-    Scores up to n_candidates results by title similarity, duration proximity,
-    and explicit/live signals. Returns (url, score). Score < 0.35 = no match.
+    Scores up to n_candidates results by title similarity, artist similarity,
+    duration proximity, and explicit/live signals. Returns (url, score).
+    Score < 0.35 = no match.
     """
     import yt_dlp
-    from service.search.matcher import title_similarity as _tsim
+    from service.search.matcher import (
+        artist_similarity as _asim,
+        title_similarity as _tsim,
+    )
 
     query = f"{artist} {title}"
     prefix = f"ytmsearch{n_candidates}" if prefer_ytm else f"ytsearch{n_candidates}"
@@ -394,11 +398,22 @@ def yt_search_best(
         # The cleaned "track" field often drops the "(Explicit)"/"(Clean)" suffix,
         # so scan the full raw title for the explicit/clean signal as well.
         vid_full_title = str(entry.get("title") or vid_title)  # type: ignore[union-attr]
+        # YouTube Music sets a dedicated "artist"; regular uploads only have the
+        # channel/uploader. Either way, comparing it to the wanted artist guards
+        # against the common failure of a perfect title from the wrong artist
+        # (covers, karaoke channels, "<Artist> - Topic" of a different act).
+        vid_artist = str(
+            entry.get("artist") or entry.get("uploader") or entry.get("channel") or ""
+        )  # type: ignore[union-attr]
         vid_dur = entry.get("duration")  # type: ignore[union-attr]
         vid_id = entry.get("id") or ""  # type: ignore[union-attr]
         url = str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")  # type: ignore[union-attr]
 
         t_sim = _tsim(title, vid_title)
+        # Channel names carry "- Topic", "VEVO", "Official" noise; matcher normalize
+        # strips most of it. A blank candidate artist scores neutral, not zero, so
+        # we don't punish sources that simply don't expose an artist field.
+        a_sim = _asim(artist, vid_artist) if vid_artist else 0.5
 
         dur_score = 0.5
         if duration_seconds and vid_dur:
@@ -412,7 +427,7 @@ def yt_search_best(
             elif delta > 90:
                 dur_score = 0.1
 
-        score = t_sim * 0.65 + dur_score * 0.25
+        score = t_sim * 0.50 + a_sim * 0.25 + dur_score * 0.20
 
         age_limit = int(entry.get("age_limit") or 0)  # type: ignore[union-attr]
         exp = explicit_score(vid_full_title, age_limit if age_limit >= 18 else None)
@@ -427,7 +442,9 @@ def yt_search_best(
                 score += 0.15 if exp < 0 else -0.18
 
         if looks_like_live(vid_title) and not looks_like_live(title):
-            score -= 0.30
+            # Live/concert uploads were still surfacing too often over the studio
+            # cut; a heavier penalty pushes them below a near-tied studio version.
+            score -= 0.45
 
         if score > best_score:
             best_score = score

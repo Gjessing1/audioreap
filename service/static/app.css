@@ -415,6 +415,24 @@ input::placeholder { color: var(--t4); }
   vertical-align: middle;
 }
 
+/* Global busy feedback: any button that fires an htmx request dims and grows an
+ * inline spinner for the request's duration, so slow actions (retry, review,
+ * cancel, filters) always read as "working". Buttons that already ship their own
+ * .htmx-indicator are skipped so they don't get two spinners. */
+.btn.htmx-request { opacity: .65; cursor: wait; }
+.btn.htmx-request:not(:has(.htmx-indicator))::after {
+  content: "";
+  display: inline-block;
+  width: 11px; height: 11px;
+  margin-left: 7px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.65s linear infinite;
+  vertical-align: middle;
+  opacity: .8;
+}
+
 /* ── Search ──────────────────────────────────────────────────────────────── */
 .search-bar {
   display: flex;
