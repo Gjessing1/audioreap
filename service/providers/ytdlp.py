@@ -429,6 +429,15 @@ def yt_search_best(
 
         score = t_sim * 0.50 + a_sim * 0.25 + dur_score * 0.20
 
+        # Hard guard against the classic failure: a perfect title from the wrong
+        # act (covers, karaoke, tributes, a different artist's "- Topic" channel).
+        # When the candidate exposes an artist and it clearly disagrees with the
+        # wanted one, push it well below any neutral / correct-artist source so it
+        # can't win on title alone. Only applies when we actually have an artist to
+        # compare — blank-artist sources stay at their neutral 0.5.
+        if vid_artist and a_sim < 0.34:
+            score -= 0.25
+
         age_limit = int(entry.get("age_limit") or 0)  # type: ignore[union-attr]
         exp = explicit_score(vid_full_title, age_limit if age_limit >= 18 else None)
         if exp != 0:
