@@ -119,6 +119,16 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     ctx["safe_review_count"] = len(safe_ids)
     ctx["has_active_jobs"] = bool(active_rows)
 
+    # At-a-glance queue summary chips (in-progress states only).
+    from collections import Counter as _Counter
+    _sc = _Counter(r.state for r in active_rows)
+    ctx["status_counts"] = {
+        "downloading": _sc.get("downloading", 0),
+        "working": sum(_sc.get(s, 0) for s in ("processing", "enriching", "tagging", "importing")),
+        "waiting": _sc.get("waiting", 0),
+        "queued": _sc.get("queued", 0),
+    }
+
     # Album batches whose child track jobs don't exist yet (worker still fetching
     # the MB tracklist) would otherwise be invisible on /jobs. Surface a ghost
     # placeholder so the user can see the album query is working. Once any child
@@ -297,7 +307,9 @@ def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
             active.append(j)
     return {
         "review": review,
-        "active": active,
+        # Keyed "active_jobs" (not "active") so it doesn't shadow the nav-highlight
+        # key when jobs_page renders {"active": "jobs", **ctx}.
+        "active_jobs": active,
         "completed": completed,
         "completed_has_more": False,
         "completed_next_offset": 0,
@@ -549,7 +561,13 @@ async def job_status_partial(
     ctx: dict[str, object] = {"job": _job_to_model(row)}
     if row.state == "needs_review":
         ctx["confidence"], _ = _classify_review_confidence(row)
-    return templates.TemplateResponse(request, "partials/job_card.html", ctx)
+    resp = templates.TemplateResponse(request, "partials/job_card.html", ctx)
+    # Only active jobs self-poll this endpoint, so a non-active state here means the
+    # job just transitioned. Tell the page to re-group it into the correct section
+    # (Needs Review / Completed) immediately instead of waiting for the 12s poll.
+    if row.state in ("needs_review", *_COMPLETED_STATES):
+        resp.headers["HX-Trigger"] = "jobsChanged"
+    return resp
 
 
 @router.post("/jobs/retry/{job_id}", response_class=HTMLResponse)
@@ -619,13 +637,17 @@ async def cancel_job(
 
     row.state = "cancelled"
     row.error = "Cancelled by user"
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     await session.flush()
     await session.commit()
 
-    return templates.TemplateResponse(
+    # The card was self-polling from the Active section; tell the page to
+    # re-group so it drops into Completed instead of lingering up top.
+    resp = templates.TemplateResponse(
         request, "partials/job_card.html", {"job": _job_to_model(row)}
     )
+    resp.headers["HX-Trigger"] = "jobsChanged"
+    return resp
 
 
 @router.get("/nav/review-count", response_class=HTMLResponse)
@@ -5138,11 +5160,16 @@ async def acquire_playlist(
 
 
 async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandidate]]:
-    """Resolve a Spotify playlist via the Spotify API (credential-based or anonymous).
+    """Resolve a Spotify playlist to track candidates.
 
-    When AUDIOREAP_SPOTIFY_CLIENT_ID is set, uses the official client-credentials
-    OAuth flow. Otherwise, falls back to Spotify's anonymous web-player token so
-    that public playlists can be imported without any API key.
+    Two paths:
+    - **No credentials (default):** scrape the public embed widget's
+      ``__NEXT_DATA__`` tracklist — no API key, works for public and editorial
+      playlists (capped at the ~50 tracks the embed renders).
+    - **Credentialed** (AUDIOREAP_SPOTIFY_CLIENT_ID set): official Web API
+      client-credentials flow, with full pagination. Since the Feb 2026 API
+      change this returns track ``items`` only for playlists the app/user owns;
+      other playlists yield metadata only.
     """
     import re as _re
 
@@ -5151,10 +5178,10 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
         raise ValueError("Could not extract Spotify playlist ID from URL")
     playlist_id = match.group(1)
 
-    if settings.spotify_client_id:
-        token = await _spotify_client_token()
-    else:
-        token = await _spotify_anonymous_token()
+    if not settings.spotify_client_id:
+        return await _resolve_spotify_playlist_embed(playlist_id)
+
+    token = await _spotify_client_token()
 
     import httpx
     async with httpx.AsyncClient(
@@ -5215,32 +5242,111 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
             raw_metadata={},
         ))
 
-    # As of the Feb 2026 Spotify Web API change, a playlist returns its track
-    # `items` only to the authenticated *owner*; for anyone else (including a
-    # client-credentials app, which has no user) it returns metadata only — an
-    # empty item list. Surface that plainly instead of importing zero tracks.
+    # With credentials, an empty item list means the Feb 2026 restriction kicked
+    # in (the app doesn't own this playlist). Fall back to the keyless embed
+    # scrape, which still returns public/editorial tracklists.
     if not candidates:
-        raise ValueError(
-            "Spotify returned no tracks. Since the Feb 2026 Web API change, only a "
-            "playlist's owner can read its tracks via the API — public/other-user "
-            "playlists return metadata only. Paste a YouTube/YouTube Music playlist "
-            "URL instead, or recreate the playlist on your own Spotify account."
+        logger.info(
+            "Spotify API returned no items for %s (not owned by app) — "
+            "falling back to embed scrape", playlist_id,
         )
+        return await _resolve_spotify_playlist_embed(playlist_id)
 
     return pl_title, "spotify", candidates
 
 
-async def _spotify_anonymous_token() -> str:
-    """Spotify blocked anonymous server-side API access entirely in 2024.
+async def _resolve_spotify_playlist_embed(
+    playlist_id: str,
+) -> tuple[str, str, list[TrackCandidate]]:
+    """No-API-key path: parse the public embed widget's ``__NEXT_DATA__`` JSON.
 
-    This function now always raises with a clear message directing the user to
-    configure Spotify API credentials via the admin config panel.
+    ``open.spotify.com/embed/playlist/{id}`` server-renders the tracklist
+    (title, artist, duration) in a ``__NEXT_DATA__`` script tag readable without
+    auth — it even covers editorial playlists the Web API now blocks. Limited to
+    the tracks the embed renders (~50), which is fine for typical user playlists.
+    YouTube source resolution is deferred to acquisition (``ytsearch1:`` ref) so
+    the preview stays fast.
     """
-    raise ValueError(
-        "Spotify requires API credentials for server-side playlist import. "
-        "Go to Settings → Config and set AUDIOREAP_SPOTIFY_CLIENT_ID and "
-        "AUDIOREAP_SPOTIFY_CLIENT_SECRET (free at developer.spotify.com/dashboard)."
+    import json as _json
+    import re as _re
+
+    import httpx
+
+    embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+    async with httpx.AsyncClient(
+        timeout=30.0, follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; audioreap/0.1)"},
+    ) as client:
+        r = await client.get(embed_url)
+        r.raise_for_status()
+        html = r.text
+
+    m = _re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+        html, _re.S,
     )
+    if not m:
+        raise ValueError(
+            "Could not read this Spotify playlist without API credentials "
+            "(embed layout may have changed). Set AUDIOREAP_SPOTIFY_CLIENT_ID + "
+            "AUDIOREAP_SPOTIFY_CLIENT_SECRET, or paste a YouTube playlist URL."
+        )
+    data = _json.loads(m.group(1))
+
+    def _find(obj: object, key: str) -> object | None:
+        """Depth-first search for the first value under ``key`` anywhere in the tree."""
+        if isinstance(obj, dict):
+            if key in obj:
+                return obj[key]
+            for v in obj.values():
+                found = _find(v, key)
+                if found is not None:
+                    return found
+        elif isinstance(obj, list):
+            for v in obj:
+                found = _find(v, key)
+                if found is not None:
+                    return found
+        return None
+
+    entity = _find(data, "entity")
+    pl_title = "Spotify Playlist"
+    if isinstance(entity, dict):
+        pl_title = str(entity.get("name") or entity.get("title") or pl_title)
+
+    track_list = _find(data, "trackList")
+    candidates: list[TrackCandidate] = []
+    if isinstance(track_list, list):
+        for t in track_list:
+            if not isinstance(t, dict):
+                continue
+            title = str(t.get("title") or "").strip()
+            if not title:
+                continue
+            artist = str(t.get("subtitle") or "").strip()
+            dur_ms = t.get("duration")
+            duration_s = (
+                int(dur_ms) // 1000
+                if isinstance(dur_ms, (int, float)) and dur_ms else None
+            )
+            search_q = f"{artist} {title}".strip()
+            candidates.append(TrackCandidate(
+                provider="ytdlp",
+                provider_ref=f"ytsearch1:{search_q}",
+                title=title,
+                artist=artist or "Unknown",
+                album=None,
+                duration_seconds=duration_s,
+                raw_metadata={},
+            ))
+
+    if not candidates:
+        raise ValueError(
+            "Spotify returned no tracks for this playlist (it may be private or "
+            "empty). Set AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET "
+            "to import your own private playlists, or paste a YouTube playlist URL."
+        )
+    return pl_title, "spotify", candidates
 
 
 async def _spotify_client_token() -> str:

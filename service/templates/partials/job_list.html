@@ -1,9 +1,18 @@
-{% if not review and not active and not completed and not album_placeholders %}
+{% if not review and not active_jobs and not completed and not album_placeholders %}
 <div class="empty-state">
   <p>No jobs yet — search for music and hit <strong>Get</strong>.</p>
 </div>
 
 {% else %}
+
+{% if status_counts and (status_counts.downloading or status_counts.working or status_counts.waiting or status_counts.queued) %}
+<div class="job-summary">
+  {% if status_counts.downloading %}<span class="job-summary-chip job-summary-chip--active">▶ {{ status_counts.downloading }} downloading</span>{% endif %}
+  {% if status_counts.working %}<span class="job-summary-chip job-summary-chip--active">⚙ {{ status_counts.working }} processing</span>{% endif %}
+  {% if status_counts.waiting %}<span class="job-summary-chip">⏳ {{ status_counts.waiting }} waiting</span>{% endif %}
+  {% if status_counts.queued %}<span class="job-summary-chip">• {{ status_counts.queued }} queued</span>{% endif %}
+</div>
+{% endif %}
 
 {% if album_placeholders %}
 <div class="job-section">
@@ -100,7 +109,7 @@
 </div>
 {% endif %}
 
-{% if active %}
+{% if active_jobs %}
 <div class="section-title {% if review %}section-title--spaced{% endif %}">
   Active
   <button class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:11px"
@@ -114,7 +123,7 @@
   </button>
 </div>
 <div class="job-section">
-  {% for job in active %}
+  {% for job in active_jobs %}
   {% include "partials/job_card.html" %}
   {% endfor %}
 </div>
@@ -122,7 +131,7 @@
 
 {% if completed %}
 {% set failed_count = completed | selectattr('state', 'eq', 'failed') | list | length %}
-<div class="section-title {% if review or active %}section-title--spaced{% endif %}">
+<div class="section-title {% if review or active_jobs %}section-title--spaced{% endif %}">
   Completed
   {% if failed_count %}
   <button class="btn btn-sm btn-ghost" style="margin-left:8px;font-size:11px"

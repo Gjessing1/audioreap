@@ -30,5 +30,30 @@
       htmx.process(el);
     }
   });
+
+  /* Event-driven regroup: an active card's status poll fires `jobsChanged` the
+   * moment it transitions to needs_review/done/failed/cancelled. Refresh the
+   * whole list once (debounced) so the card lands in the right section and the
+   * counts/badges update immediately — no waiting for the 12s poll. Skip while a
+   * review card is open or a field in the list is focused, to avoid clobbering
+   * in-progress edits (same guard as the periodic poll). Re-arms the poll if it
+   * had been stopped, since fresh active work may have appeared. */
+  var _regroupTimer = null;
+  document.body.addEventListener('jobsChanged', function() {
+    if (_regroupTimer) return;
+    _regroupTimer = setTimeout(function() {
+      _regroupTimer = null;
+      var list = document.getElementById('job-list');
+      if (!list) return;
+      if (list.querySelector('.card-review')) return;
+      var a = document.activeElement;
+      if (a && list.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      if (!list.getAttribute('hx-trigger')) {
+        list.setAttribute('hx-trigger', 'every 12s');
+        htmx.process(list);
+      }
+      htmx.ajax('GET', '/jobs/list', { target: '#job-list', swap: 'innerHTML' });
+    }, 400);
+  });
 </script>
 {% endblock %}

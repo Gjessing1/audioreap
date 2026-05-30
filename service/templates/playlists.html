@@ -21,10 +21,9 @@
     </button>
   </div>
   <p class="empty" style="margin-top:4px;font-size:12px">
-    YouTube / YouTube Music playlists import directly. Spotify: since the Feb 2026
-    API change, only your <em>own</em> playlists are importable (set
-    AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET) — public/other-user
-    playlists return metadata only.
+    YouTube / YouTube Music and public Spotify playlists import without any key
+    (Spotify reads the public embed, ~50 tracks max). Set AUDIOREAP_SPOTIFY_CLIENT_ID
+    + AUDIOREAP_SPOTIFY_CLIENT_SECRET to import your own private playlists in full.
   </p>
 </form>
 
