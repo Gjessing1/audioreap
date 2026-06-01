@@ -159,7 +159,7 @@ async def auto_rescan(ctx: dict[str, object]) -> None:
     was more recent than the configured interval.
     """
     import redis.asyncio as aioredis
-    from service.index.scanner import scan_library
+    from service.index.scanner import scan
     from service.navidrome.client import trigger_scan
 
     interval = settings.rescan_interval_minutes
@@ -187,10 +187,10 @@ async def auto_rescan(ctx: dict[str, object]) -> None:
 
     try:
         async with session_factory() as session:
-            await scan_library(session, settings.music_dir)
+            await scan(session, settings.music_dir)
         logger.info("auto_rescan: library scan complete")
     except Exception as exc:
-        logger.warning("auto_rescan: scan_library failed: %s", exc)
+        logger.warning("auto_rescan: scan failed: %s", exc)
 
     try:
         await trigger_scan(settings.navidrome_url, settings.navidrome_user, settings.navidrome_password)

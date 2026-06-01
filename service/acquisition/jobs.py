@@ -742,10 +742,10 @@ async def fix_all_album_tags(ctx: dict[str, object]) -> None:
 
     # One scan + Navidrome sync at the end so the rewritten tags surface.
     try:
-        from service.index.scanner import scan_library
+        from service.index.scanner import scan
         from service.navidrome.client import trigger_scan
         async with session_factory() as session:
-            await scan_library(session, _settings.music_dir)
+            await scan(session, _settings.music_dir)
         await trigger_scan(
             _settings.navidrome_url, _settings.navidrome_user, _settings.navidrome_password
         )
