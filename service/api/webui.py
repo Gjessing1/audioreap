@@ -5387,7 +5387,7 @@ def _yt_search_best(
     artist: str,
     title: str,
     duration_seconds: int | None = None,
-    n_candidates: int = 5,
+    n_candidates: int = 10,
     prefer_ytm: bool = True,
 ) -> tuple[str, float]:
     return _yt_search_best_shared(

@@ -333,7 +333,7 @@ async def acquire_album_from_mb(
                 artist_name,
                 t.title,
                 t.duration_seconds,
-                5,
+                10,
                 True,
                 prefer_explicit,
             )

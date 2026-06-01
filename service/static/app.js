@@ -142,6 +142,17 @@ window.selectAllReview = function() {
   _updateBatchCount();
 };
 
+/* Select every track checkbox within a single album batch group. */
+window.selectAlbumChecks = function(groupId) {
+  const group = document.getElementById(groupId);
+  if (!group) return;
+  group.querySelectorAll('.job-check').forEach(cb => {
+    cb.checked = true;
+    _selectedJobs.add(cb.value);
+  });
+  _updateBatchCount();
+};
+
 /* Reset after HTMX swaps */
 document.body.addEventListener('htmx:afterSwap', () => {
   // Restore selection a poll-driven innerHTML swap would otherwise have wiped,

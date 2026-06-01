@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     ytdlp_max_download_interval_seconds: float = 45.0  # cap the interval may back off to
     ytdlp_rate_cooldown_seconds: float = 120.0         # hard pause after a 429 is seen
 
+    # Optional YouTube auth — only needed if logged-out 429s persist (the adaptive
+    # gate normally keeps us under the limit without it). These make yt-dlp's
+    # requests look authenticated. All blank by default = anonymous access.
+    ytdlp_cookies_file: str = ""     # path to a Netscape cookies.txt mounted into the container
+    ytdlp_player_client: str = ""    # yt-dlp youtube player_client, comma-sep (e.g. "web_safari,web")
+    ytdlp_po_token: str = ""         # yt-dlp youtube po_token(s), comma-sep (e.g. "web.gvs+XXXX")
+
     # Auto-rescan interval (0 = disabled)
     rescan_interval_minutes: int = 0
 

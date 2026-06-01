@@ -29,11 +29,38 @@ _DEFAULT_SEARCH_LIMIT = 5
 _SEARCH_PREFIX = "ytsearch"
 
 
+def _youtube_auth_opts() -> dict[str, object]:
+    """Optional yt-dlp auth so requests look logged-in (cookies / PO-token).
+
+    All blank by default → anonymous access (the adaptive rate gate normally keeps
+    us under the limit without credentials). Set the env vars only if logged-out
+    429s persist. Returns {} when nothing is configured.
+    """
+    from service.config import settings
+
+    opts: dict[str, object] = {}
+    cookies = (getattr(settings, "ytdlp_cookies_file", "") or "").strip()
+    if cookies and Path(cookies).is_file():
+        opts["cookiefile"] = cookies
+
+    yt_args: dict[str, list[str]] = {}
+    clients = [c.strip() for c in (getattr(settings, "ytdlp_player_client", "") or "").split(",") if c.strip()]
+    if clients:
+        yt_args["player_client"] = clients
+    tokens = [t.strip() for t in (getattr(settings, "ytdlp_po_token", "") or "").split(",") if t.strip()]
+    if tokens:
+        yt_args["po_token"] = tokens
+    if yt_args:
+        opts["extractor_args"] = {"youtube": yt_args}
+    return opts
+
+
 def _ydl_opts_base() -> dict[str, object]:
     return {
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": False,
+        **_youtube_auth_opts(),
     }
 
 
@@ -330,6 +357,10 @@ _CLEAN_RE = re.compile(
     r"\b(clean|radio edit|radio version|censored|edited|family friendly|no swearing)\b",
     re.IGNORECASE,
 )
+# Channels that reliably host the official studio audio: the auto-generated
+# "<Artist> - Topic" channels (YouTube Music's official audio), VEVO, and labelled
+# "Official" artist channels. A match is a strong signal we have the right source.
+_OFFICIAL_CHANNEL_RE = re.compile(r"(-\s*topic$|vevo|\bofficial\b)", re.IGNORECASE)
 
 def explicit_score(title: str, age_limit: int | None = None) -> int:
     """Return +1 for explicit, -1 for clean/radio-edit, 0 otherwise.
@@ -352,15 +383,19 @@ def yt_search_best(
     artist: str,
     title: str,
     duration_seconds: int | None = None,
-    n_candidates: int = 5,
+    n_candidates: int = 10,
     prefer_ytm: bool = True,
     prefer_explicit: bool = True,
 ) -> tuple[str, float]:
     """Search for the best-matching studio version on YouTube (Music).
 
     Scores up to n_candidates results by title similarity, artist similarity,
-    duration proximity, and explicit/live signals. Returns (url, score).
-    Score < 0.35 = no match.
+    duration proximity, official-channel and explicit/live signals. Returns
+    (url, score). Score < 0.35 = no match.
+
+    Retrieval breadth matters more than score precision here: a wrong pick is
+    usually a *missing* correct candidate, so we pull a wide pool (default 10) and
+    let the channel/duration signals surface the official audio.
     """
     import yt_dlp
     from service.search.matcher import (
@@ -370,7 +405,7 @@ def yt_search_best(
 
     query = f"{artist} {title}"
     prefix = f"ytmsearch{n_candidates}" if prefer_ytm else f"ytsearch{n_candidates}"
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_youtube_auth_opts()}
 
     entries: list[object] = []
     try:
@@ -409,6 +444,10 @@ def yt_search_best(
         vid_artist = str(
             entry.get("artist") or entry.get("uploader") or entry.get("channel") or ""
         )  # type: ignore[union-attr]
+        # Keep the raw channel/uploader separate from vid_artist: when YouTube Music
+        # sets a clean "artist" field the "- Topic"/VEVO suffix is lost, but it's
+        # exactly that suffix that flags official-audio channels.
+        vid_channel = str(entry.get("channel") or entry.get("uploader") or "")  # type: ignore[union-attr]
         vid_dur = entry.get("duration")  # type: ignore[union-attr]
         vid_id = entry.get("id") or ""  # type: ignore[union-attr]
         url = str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")  # type: ignore[union-attr]
@@ -420,6 +459,7 @@ def yt_search_best(
         a_sim = _asim(artist, vid_artist) if vid_artist else 0.5
 
         dur_score = 0.5
+        gross_dur_mismatch = False
         if duration_seconds and vid_dur:
             delta = abs(duration_seconds - int(vid_dur))
             if delta <= 5:
@@ -430,8 +470,22 @@ def yt_search_best(
                 dur_score = 0.6
             elif delta > 90:
                 dur_score = 0.1
+            # A source whose length is grossly off the locked MB recording is almost
+            # never the same cut (wrong song, extended/sped edit, full-album upload,
+            # mislabelled video). Flag it for a decisive penalty below.
+            if delta > 75:
+                gross_dur_mismatch = True
 
         score = t_sim * 0.50 + a_sim * 0.25 + dur_score * 0.20
+
+        # Prefer official audio: the auto-generated "- Topic" channel, VEVO, or a
+        # labelled official artist channel. Modest bonus so it tips near-ties toward
+        # the canonical studio source without overriding a clear title/artist win.
+        if vid_channel and _OFFICIAL_CHANNEL_RE.search(vid_channel):
+            score += 0.12
+
+        if gross_dur_mismatch:
+            score -= 0.35
 
         # Hard guard against the classic failure: a perfect title from the wrong
         # act (covers, karaoke, tributes, a different artist's "- Topic" channel).

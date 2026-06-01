@@ -5,6 +5,31 @@
 
 {% else %}
 
+{% if review %}
+<div class="batch-bar batch-bar--sticky hidden" id="batch-toolbar">
+  <span id="batch-count-label">0 selected</span>
+  <button class="btn btn-sm btn-success"
+          hx-post="/jobs/batch-approve"
+          hx-include=".job-check:checked"
+          hx-target="#job-list"
+          hx-swap="innerHTML"
+          hx-confirm="Approve all selected tracks with their current metadata?">
+    Approve
+  </button>
+  <button class="btn btn-sm btn-ghost"
+          hx-post="/jobs/bulk-action"
+          hx-include=".job-check:checked"
+          hx-vals='{"action":"reject"}'
+          hx-target="#job-list"
+          hx-swap="innerHTML"
+          hx-confirm="Reject and trash all selected staged files?">
+    Reject
+  </button>
+  <button class="btn btn-sm btn-ghost" onclick="selectAllReview()">All</button>
+  <button class="btn btn-sm btn-ghost" onclick="clearJobChecks()">None</button>
+</div>
+{% endif %}
+
 {% if status_counts and (status_counts.downloading or status_counts.working or status_counts.waiting or status_counts.queued) %}
 <div class="job-summary">
   {% if status_counts.downloading %}<span class="job-summary-chip job-summary-chip--active">▶ {{ status_counts.downloading }} downloading</span>{% endif %}
@@ -42,28 +67,6 @@
     <button type="submit" class="btn btn-sm btn-success" title="Approve all AcoustID-verified tracks with no warnings">✓ Approve {{ safe_review_count }} verified</button>
   </form>
   {% endif %}
-  <div class="batch-bar hidden" id="batch-toolbar">
-    <span id="batch-count-label">0 selected</span>
-    <button class="btn btn-sm btn-success"
-            hx-post="/jobs/batch-approve"
-            hx-include=".job-check:checked"
-            hx-target="#job-list"
-            hx-swap="innerHTML"
-            hx-confirm="Approve all selected tracks with their current metadata?">
-      Approve
-    </button>
-    <button class="btn btn-sm btn-ghost"
-            hx-post="/jobs/bulk-action"
-            hx-include=".job-check:checked"
-            hx-vals='{"action":"reject"}'
-            hx-target="#job-list"
-            hx-swap="innerHTML"
-            hx-confirm="Reject and trash all selected staged files?">
-      Reject
-    </button>
-    <button class="btn btn-sm btn-ghost" onclick="selectAllReview()">All</button>
-    <button class="btn btn-sm btn-ghost" onclick="clearJobChecks()">None</button>
-  </div>
 </div>
 <div class="job-section">
   {% for group in review_groups %}
@@ -78,6 +81,9 @@
       <span class="album-batch-stats muted">{{ group.total_count }} track{{ 's' if group.total_count != 1 }}
         {%- if group.flagged_count %} · <span style="color:var(--warn)">{{ group.flagged_count }} flagged</span>{% endif -%}
       </span>
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="selectAlbumChecks('album-group-{{ group.album_job_id[:8] }}')"
+              title="Select all tracks in this album">Select all</button>
       {% if group.clean_count > 0 %}
       <form style="display:contents"
             hx-post="/jobs/batch-approve"

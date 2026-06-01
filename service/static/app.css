@@ -856,6 +856,19 @@ input::placeholder { color: var(--t4); }
   margin-bottom: 8px;
 }
 
+/* Selection toolbar pinned just below the sticky main nav (52px tall) so the
+ * Approve/Reject actions stay reachable while scrolling a long review queue.
+ * Needs a solid background — --primary-dim is translucent and would let the
+ * scrolling list bleed through. */
+.batch-bar--sticky {
+  position: sticky;
+  top: 52px;
+  z-index: 90;
+  background: #1F1B39;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.batch-bar--sticky #batch-count-label { font-weight: 600; margin-right: 4px; }
+
 /* ── Library browse ──────────────────────────────────────────────────────── */
 .browse-list { display: flex; flex-direction: column; }
 
