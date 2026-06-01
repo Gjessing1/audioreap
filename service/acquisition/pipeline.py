@@ -501,9 +501,18 @@ async def run_acquisition(
                 mb_artist_id = mb.artist_id  # type: ignore[union-attr]
                 mb_artist_sort = mb.artist_sort  # type: ignore[union-attr]
                 mb_original_year = mb.original_year  # type: ignore[union-attr]
-                # Keep candidate's release_group_id as fallback so album-locked jobs
-                # never lose the RG ID when MB returns an incomplete result.
-                mb_release_group_id = mb.release_group_id or mb_release_group_id  # type: ignore[union-attr]
+                # Album-locked downloads: the release group was chosen in Discover
+                # (acquire_album_from_mb seeds candidate.mb_release_group_id from the
+                # release group the user picked). It is authoritative for the whole
+                # album — a single recording can belong to many release groups
+                # (single / compilation / album), so a per-recording MB lookup must
+                # NOT be allowed to redefine which album these tracks belong to.
+                # For standalone jobs, keep candidate's RG only as a fallback when MB
+                # omits it.
+                if candidate_album_locked and candidate.mb_release_group_id:
+                    mb_release_group_id = candidate.mb_release_group_id
+                else:
+                    mb_release_group_id = mb.release_group_id or mb_release_group_id  # type: ignore[union-attr]
                 # Phase 5 AcoustID boundary: a fingerprint match may pick the right
                 # RECORDING but must not redefine the album's release group when we
                 # hold a strong local cohesion signal — re-anchor to the owned RG.

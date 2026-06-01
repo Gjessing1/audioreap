@@ -201,6 +201,64 @@ async def test_approve_links_album_when_duration_diverges(
     )
 
 
+async def test_album_locked_pins_discover_release_group(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """An album-locked download keeps the release group chosen in Discover, even if the
+    per-recording MB lookup resolves to a different one.
+
+    A single recording can belong to many release groups (single / compilation / album),
+    so the per-track lookup must not redefine which album the batch belongs to — the
+    Discover release group (candidate.mb_release_group_id) is authoritative.
+    """
+    from service.config import settings
+    from service.db.schema import Album
+    from service.metadata.musicbrainz import MBRecording
+
+    provider = FakeProvider(FIXTURE_AUDIO)
+    candidate = TrackCandidate(
+        provider="fake", provider_ref="fake-001",
+        title="Test Track One", artist="Fake Artist",
+        album="Fake Album", year=2020, track_number=1, duration_seconds=1,
+        mb_recording_id="rec-1111", mb_release_id="rel-discover",
+        mb_release_group_id="rg-discover", album_locked=True,
+    )
+    music_dir = tmp_path / "music"
+
+    # The recording lookup resolves to a DIFFERENT release group (e.g. a single).
+    wrong_rg = MBRecording(
+        recording_id="rec-1111", title="Test Track One", artist="Fake Artist",
+        album="Some Single", year=2019, track_number=1, score=1.0,
+        release_id="rel-single", release_group_id="rg-single",
+    )
+
+    async with db() as s, s.begin():
+        job_id = await create_job(s, provider_name="fake",
+                                  provider_ref="fake-001", candidate=candidate)
+
+    with patch("service.metadata.musicbrainz.get_recording_by_id", return_value=wrong_rg):
+        async with db() as s, s.begin():
+            await run_acquisition(
+                job_id=job_id, provider=provider, provider_ref="fake-001",
+                candidate=candidate, tmp_acquire_dir=tmp_path / "tmp",
+                session=s, scan_trigger=AsyncMock(),
+            )
+
+    with patch.object(settings, "music_dir", music_dir):
+        async with db() as s, s.begin():
+            await place_approved_track(job_id, {}, s, scan_trigger=AsyncMock())
+
+    async with db() as s:
+        track = (await s.execute(select(Track))).scalars().first()
+        assert track is not None and track.album_id is not None
+        album = await s.get(Album, track.album_id)
+
+    assert album is not None
+    assert album.mb_release_group_id == "rg-discover", (
+        f"expected Discover RG to win, got {album.mb_release_group_id!r}"
+    )
+
+
 # ── Failure path ───────────────────────────────────────────────────────────
 
 async def test_tag_write_failure_aborts_approval(
