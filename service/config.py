@@ -25,6 +25,11 @@ class Settings(BaseSettings):
 
     # Worker
     worker_concurrency: int = 2
+    # arq queue poll interval (seconds). arq busy-polls Redis for due jobs every
+    # poll_delay; the default 0.5s is ~2 zrangebyscore/sec forever and dominates
+    # idle Redis CPU. Downloads are not latency-sensitive to sub-second pickup, so
+    # a longer delay trades a little job-start latency for much lower idle load.
+    worker_poll_delay_seconds: float = 2.0
 
     # Auth (optional — leave empty to rely on a reverse proxy for auth)
     ui_username: str = ""

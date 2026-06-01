@@ -187,7 +187,12 @@ async def auto_rescan(ctx: dict[str, object]) -> None:
 
     try:
         async with session_factory() as session:
-            await scan(session, settings.music_dir)
+            # Incremental: skip files whose path+mtime are unchanged so we don't
+            # re-read tags (mutagen open+parse) for the entire library on every
+            # tick — the point of the periodic rescan is to pick up newly-added
+            # or changed files cheaply. External deletions are reconciled by a
+            # full scan (manual, or the daily fix-tags sweep), not here.
+            await scan(session, settings.music_dir, incremental=True)
         logger.info("auto_rescan: library scan complete")
     except Exception as exc:
         logger.warning("auto_rescan: scan failed: %s", exc)
@@ -213,6 +218,10 @@ class WorkerSettings:
         cron(auto_rescan, minute=None, second=30),      # every minute (offset from heartbeat)
     ]
     max_jobs = settings.worker_concurrency
+    # Slow the queue poller down from arq's 0.5s default to cut constant idle
+    # Redis load (the zrangebyscore busy-poll). Job pickup latency rises to at
+    # most this many seconds, which is irrelevant for downloads.
+    poll_delay = settings.worker_poll_delay_seconds
     # A download job may now park in the rate gate's "waiting" state (up to a
     # ~120s 429 cooldown) before the download itself runs, so the arq default of
     # 300s would prematurely abort a paced job. Give jobs ample headroom.
