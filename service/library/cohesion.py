@@ -26,6 +26,72 @@ def _artist_id(name: str) -> str:
     return f"artist:{digest}"
 
 
+async def apply_album_tags(album: object) -> int:
+    """Rewrite album / albumartist / year / canonical MUSICBRAINZ_ALBUMID on every
+    track file of ``album`` so Navidrome groups them into one album (fixes splits).
+
+    This is the "Fix file tags" operation — shared by the per-album button and the
+    optional daily sweep. Reads ``album.title/year/artist`` and the joined
+    ``tracks[].file`` (load those before calling). Returns the number of files
+    retagged. Does **not** commit — the caller owns the session/transaction.
+    """
+    import asyncio
+    from collections import Counter
+
+    import mutagen
+
+    from service.library.tagger import write_tags as _write_tags
+
+    title_val = album.title  # type: ignore[attr-defined]
+    year_val = album.year  # type: ignore[attr-defined]
+    albumartist_val = album.artist.name if album.artist else "Unknown"  # type: ignore[attr-defined]
+
+    # Canonical MUSICBRAINZ_ALBUMID: prefer the DB value, else the majority across the
+    # files — an inconsistent album ID is itself a cause of Navidrome splits.
+    canonical_mb_release_id = album.musicbrainz_release_id  # type: ignore[attr-defined]
+    if not canonical_mb_release_id:
+        mb_ids: list[str] = []
+        for track in album.tracks:  # type: ignore[attr-defined]
+            if track.file:
+                fp = Path(track.file.path)
+                if fp.exists():
+                    try:
+                        raw = await asyncio.to_thread(mutagen.File, fp)
+                        if raw and raw.tags:
+                            for key in ("musicbrainz_albumid", "TXXX:MusicBrainz Album Id",
+                                        "----:com.apple.iTunes:MusicBrainz Album Id"):
+                                v = raw.tags.get(key)
+                                if v:
+                                    val_str = v[0] if isinstance(v, list) else str(v)
+                                    if hasattr(val_str, "text"):
+                                        val_str = str(val_str.text[0]) if val_str.text else ""
+                                    if val_str:
+                                        mb_ids.append(str(val_str).strip())
+                                    break
+                    except Exception:
+                        pass
+        if mb_ids:
+            canonical_mb_release_id = Counter(mb_ids).most_common(1)[0][0]
+
+    count = 0
+    for track in album.tracks:  # type: ignore[attr-defined]
+        if track.file:
+            fp = Path(track.file.path)
+            if fp.exists():
+                try:
+                    await asyncio.to_thread(
+                        _write_tags, fp,
+                        album=title_val,
+                        albumartist=albumartist_val,
+                        year=year_val,
+                        mb_release_id=canonical_mb_release_id,
+                    )
+                    count += 1
+                except Exception as exc:
+                    logger.warning("apply_album_tags: write failed for %s: %s", fp, exc)
+    return count
+
+
 async def find_canonical_album(
     session: AsyncSession,
     album: str | None,

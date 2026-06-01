@@ -193,14 +193,15 @@ async def auto_rescan(ctx: dict[str, object]) -> None:
 
 from arq.cron import cron  # noqa: E402
 
-from service.acquisition.jobs import acquire_album, acquire_album_from_mb, acquire_track, enrich_track, fetch_missing_covers, gc_staging  # noqa: E402
+from service.acquisition.jobs import acquire_album, acquire_album_from_mb, acquire_track, enrich_track, fetch_missing_covers, fix_all_album_tags, gc_staging  # noqa: E402
 
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track, gc_staging, fetch_missing_covers, worker_heartbeat, auto_rescan]
+    functions = [acquire_track, acquire_album, acquire_album_from_mb, enrich_track, gc_staging, fetch_missing_covers, fix_all_album_tags, worker_heartbeat, auto_rescan]
     cron_jobs = [
         cron(gc_staging, hour=3, minute=0),
+        cron(fix_all_album_tags, hour=4, minute=0),     # daily; no-op unless auto_fix_tags_enabled
         cron(worker_heartbeat, minute=None, second=0),  # every minute
         cron(auto_rescan, minute=None, second=30),      # every minute (offset from heartbeat)
     ]

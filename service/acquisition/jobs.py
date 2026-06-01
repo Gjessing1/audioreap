@@ -703,6 +703,56 @@ async def gc_staging(ctx: dict[str, object]) -> None:
         logger.warning("gc_staging: MB cache prune failed: %s", exc)
 
 
+async def fix_all_album_tags(ctx: dict[str, object]) -> None:
+    """Optional daily sweep: re-apply canonical album tags to every album so Navidrome
+    keeps each one as a single entry (the per-album "Fix file tags" action, run for the
+    whole library). Opt-in via the ``auto_fix_tags_enabled`` setting — a no-op when off.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import joinedload as _jl
+
+    from service.config import load_config_overrides, settings as _settings
+    from service.db.schema import Album as _Album, Track as _Track
+    from service.library.cohesion import apply_album_tags
+
+    # Re-read runtime overrides so a UI toggle takes effect without a worker restart.
+    load_config_overrides()
+    if not _settings.auto_fix_tags_enabled:
+        return
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+    total_albums = 0
+    total_files = 0
+    async with session_factory() as session:
+        albums = (await session.execute(
+            _select(_Album).options(
+                _jl(_Album.artist), _jl(_Album.tracks).joinedload(_Track.file)
+            )
+        )).unique().scalars().all()
+        for album in albums:
+            try:
+                total_files += await apply_album_tags(album)
+                album.updated_at = _now()
+                total_albums += 1
+            except Exception as exc:
+                logger.warning("fix_all_album_tags: album %s failed: %s", album.id, exc)
+        await session.commit()
+
+    logger.info("fix_all_album_tags: retagged %d files across %d albums", total_files, total_albums)
+
+    # One scan + Navidrome sync at the end so the rewritten tags surface.
+    try:
+        from service.index.scanner import scan_library
+        from service.navidrome.client import trigger_scan
+        async with session_factory() as session:
+            await scan_library(session, _settings.music_dir)
+        await trigger_scan(
+            _settings.navidrome_url, _settings.navidrome_user, _settings.navidrome_password
+        )
+    except Exception as exc:
+        logger.warning("fix_all_album_tags: post-scan failed: %s", exc)
+
+
 async def fetch_missing_covers(ctx: dict[str, object]) -> None:
     """arq job: fetch cover art from CAA for every album that has a MB release ID but no cover."""
     from pathlib import Path

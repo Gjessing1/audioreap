@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # Auto-rescan interval (0 = disabled)
     rescan_interval_minutes: int = 0
 
+    # Daily "fix file tags" sweep: rewrite album/albumartist/year + canonical
+    # MUSICBRAINZ_ALBUMID across every album so Navidrome doesn't fragment them.
+    # Opt-in; runs once a day (see worker cron). Off by default.
+    auto_fix_tags_enabled: bool = False
+
     # Algorithm versions — increment to trigger migrations
     id_algorithm_version: int = 1
     normalize_version: int = 1
@@ -86,6 +91,7 @@ CONFIG_EDITABLE_KEYS = (
     "prefer_explicit",
     "worker_concurrency",
     "rescan_interval_minutes",
+    "auto_fix_tags_enabled",
 )
 
 

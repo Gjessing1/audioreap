@@ -81,6 +81,17 @@
     </div>
   </div>
 
+  <div class="rv-field rv-field--full">
+    <label class="rv-label">Daily "fix file tags" sweep</label>
+    <select class="rv-input" name="auto_fix_tags_enabled">
+      <option value="false" {% if not current.auto_fix_tags_enabled %}selected{% endif %}>Off (default)</option>
+      <option value="true" {% if current.auto_fix_tags_enabled %}selected{% endif %}>On — run daily for all albums</option>
+    </select>
+    <div style="font-size:11px;color:var(--t3);margin-top:4px">
+      Once a day (≈04:00), rewrite album / albumartist / year and the canonical MusicBrainz album ID on every album's files — the per-album "Fix file tags" action applied library-wide, to keep Navidrome from splitting albums — then rescans. Takes effect without a restart.
+    </div>
+  </div>
+
   <div>
     <button type="submit" class="btn btn-lg">Save overrides</button>
   </div>

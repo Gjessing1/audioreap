@@ -2089,7 +2089,7 @@ async def album_update_meta(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy.orm import joinedload as _jl
-    from service.library.tagger import write_tags as _write_tags
+    from service.library.cohesion import apply_album_tags
 
     album = (await session.execute(
         select(Album)
@@ -2099,65 +2099,12 @@ async def album_update_meta(
     if album is None:
         raise HTTPException(404)
 
-    title_val = title.strip() or album.title
-    year_val: int | None = int(year) if year.strip().isdigit() else album.year
-
-    # Update DB
-    album.title = title_val
-    album.year = year_val
+    # Update DB, then rewrite album/albumartist/year + canonical MB album ID on every
+    # track file so Navidrome groups them as one album.
+    album.title = title.strip() or album.title
+    album.year = int(year) if year.strip().isdigit() else album.year
     album.updated_at = datetime.now(UTC).replace(tzinfo=None)
-
-    # Write album/albumartist/year to all track files so Navidrome groups them
-    # into a single album entry.
-    albumartist_val = album.artist.name if album.artist else "Unknown"
-
-    # Determine canonical MUSICBRAINZ_ALBUMID: prefer DB value, else majority from files.
-    # Inconsistent MB album IDs cause Navidrome to split the album.
-    canonical_mb_release_id: str | None = album.musicbrainz_release_id
-    if not canonical_mb_release_id:
-        from collections import Counter
-        from service.library.tagger import read_tags as _read_tags
-        mb_ids: list[str] = []
-        for track in album.tracks:
-            if track.file:
-                fp = Path(track.file.path)
-                if fp.exists():
-                    try:
-                        tagged = await asyncio.to_thread(_read_tags, fp)
-                        # read_tags doesn't return mb_release_id directly; read raw tag
-                        import mutagen
-                        raw = mutagen.File(fp)
-                        if raw and raw.tags:
-                            _tags = raw.tags
-                            for key in ("musicbrainz_albumid", "TXXX:MusicBrainz Album Id",
-                                        "----:com.apple.iTunes:MusicBrainz Album Id"):
-                                v = _tags.get(key)
-                                if v:
-                                    val_str = v[0] if isinstance(v, list) else str(v)
-                                    if hasattr(val_str, 'text'):
-                                        val_str = str(val_str.text[0]) if val_str.text else ""
-                                    if val_str:
-                                        mb_ids.append(str(val_str).strip())
-                                    break
-                    except Exception:
-                        pass
-        if mb_ids:
-            canonical_mb_release_id = Counter(mb_ids).most_common(1)[0][0]
-
-    for track in album.tracks:
-        if track.file:
-            fp = Path(track.file.path)
-            if fp.exists():
-                try:
-                    await asyncio.to_thread(
-                        _write_tags, fp,
-                        album=title_val,
-                        albumartist=albumartist_val,
-                        year=year_val,
-                        mb_release_id=canonical_mb_release_id,
-                    )
-                except Exception as exc:
-                    logger.warning("album update-meta tag write failed: %s", exc)
+    await apply_album_tags(album)
 
     await session.commit()
     await _do_scans()
