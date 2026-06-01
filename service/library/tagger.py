@@ -69,6 +69,7 @@ class TaggedFile:
     artist_sort: str | None = None
     mb_artist_id: str | None = None
     mb_recording_id: str | None = None
+    mb_release_id: str | None = None
 
 
 def _parse_tracknum(value: str | None) -> int | None:
@@ -187,6 +188,7 @@ def read_tags(path: Path) -> TaggedFile | None:
     artist_sort: str | None = None
     mb_artist_id: str | None = None
     mb_recording_id: str | None = None
+    mb_release_id: str | None = None
 
     if isinstance(audio, MP4):
         # note: MP4 check must come before ID3 check
@@ -211,6 +213,10 @@ def read_tags(path: Path) -> TaggedFile | None:
         if mb_rid_raw and isinstance(mb_rid_raw, list) and mb_rid_raw:
             val = mb_rid_raw[0]
             mb_recording_id = val.decode() if isinstance(val, bytes) else str(val)
+        mb_relid_raw = tags.get("----:com.apple.iTunes:MusicBrainz Album Id") if tags else None
+        if mb_relid_raw and isinstance(mb_relid_raw, list) and mb_relid_raw:
+            val = mb_relid_raw[0]
+            mb_release_id = val.decode() if isinstance(val, bytes) else str(val)
 
     elif isinstance(tags, ID3):
         # MP3, WAV, AIFF — all have ID3-based tags regardless of audio FileType
@@ -225,6 +231,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         artist_sort = _id3_str(tags, "TSOP")
         mb_artist_id = _id3_str(tags, "TXXX:MusicBrainz Artist Id")
         mb_recording_id = _id3_str(tags, "TXXX:MusicBrainz Track Id")
+        mb_release_id = _id3_str(tags, "TXXX:MusicBrainz Album Id")
 
     else:
         # Vorbis comment: FLAC, OGG Vorbis, Opus
@@ -239,6 +246,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         artist_sort = _vorbis_str(tags, "artistsort")
         mb_artist_id = _vorbis_str(tags, "musicbrainz_artistid")
         mb_recording_id = _vorbis_str(tags, "musicbrainz_trackid")
+        mb_release_id = _vorbis_str(tags, "musicbrainz_albumid")
 
     cover = _check_cover_art(audio, tags)
 
@@ -261,6 +269,7 @@ def read_tags(path: Path) -> TaggedFile | None:
         artist_sort=artist_sort,
         mb_artist_id=mb_artist_id,
         mb_recording_id=mb_recording_id,
+        mb_release_id=mb_release_id,
     )
 
 

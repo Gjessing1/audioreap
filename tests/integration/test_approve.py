@@ -140,6 +140,67 @@ async def test_approve_applies_overrides(
     assert tags.genre == "Electronic"
 
 
+async def test_approve_links_album_when_duration_diverges(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """Regression: an album-locked track whose candidate duration differs from the
+    real file duration must still get its MB release / release-group IDs stamped on
+    the Album row.
+
+    The bug: place_approved_track recomputed the track ID with the candidate-side
+    duration, which landed in a different duration bucket than index_file() (which
+    keys on the placed file's actual duration). The lookup returned None, so the
+    album-row MB linking was silently skipped and the album showed as "unlinked",
+    forcing a manual MB link — exactly what discography batches hit.
+    """
+    from service.config import settings
+    from service.db.schema import Album
+
+    provider = FakeProvider(FIXTURE_AUDIO)
+    # duration_seconds=300 deliberately diverges from the ~1s fixture file so the
+    # candidate-side ID and the real-file ID fall in different duration buckets.
+    candidate = TrackCandidate(
+        provider="fake", provider_ref="fake-001",
+        title="Test Track One", artist="Fake Artist",
+        album="Fake Album", year=2020, track_number=1, duration_seconds=300,
+        mb_recording_id="rec-1111", mb_release_id="rel-2222",
+        mb_release_group_id="rg-3333", album_locked=True,
+    )
+    tmp_acquire = tmp_path / "tmp"
+    music_dir = tmp_path / "music"
+
+    async with db() as s, s.begin():
+        job_id = await create_job(s, provider_name="fake",
+                                  provider_ref="fake-001", candidate=candidate)
+
+    # Keep the locked candidate IDs by making the MB lookup a no-op (offline-safe).
+    with patch("service.metadata.musicbrainz.get_recording_by_id", return_value=None):
+        async with db() as s, s.begin():
+            await run_acquisition(
+                job_id=job_id, provider=provider, provider_ref="fake-001",
+                candidate=candidate, tmp_acquire_dir=tmp_acquire,
+                session=s, scan_trigger=AsyncMock(),
+            )
+
+    with patch.object(settings, "music_dir", music_dir):
+        async with db() as s, s.begin():
+            await place_approved_track(job_id, {}, s, scan_trigger=AsyncMock())
+
+    async with db() as s:
+        track = (await s.execute(select(Track))).scalars().first()
+        assert track is not None
+        assert track.album_id is not None, "track was not linked to an album"
+        album = await s.get(Album, track.album_id)
+
+    assert album is not None
+    assert album.mb_release_group_id == "rg-3333", (
+        "Album release-group ID not stamped — album would show as unlinked"
+    )
+    assert album.musicbrainz_release_id == "rel-2222", (
+        "Album release ID not stamped — Navidrome album split risk"
+    )
+
+
 # ── Failure path ───────────────────────────────────────────────────────────
 
 async def test_tag_write_failure_aborts_approval(

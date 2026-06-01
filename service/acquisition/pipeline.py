@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from service.acquisition.states import classify_failure
@@ -917,6 +918,14 @@ async def place_approved_track(
     # Everything (index + track-row updates) lives inside begin_nested() so any flush
     # failure only rolls back the savepoint — the outer transaction stays clean and the
     # job-state update below always succeeds.
+    #
+    # Fallback identity only — the authoritative ID comes from index_file() below,
+    # computed from the placed file's *actual* tags. Recomputing make_id() here with
+    # the candidate-side duration can land in a different duration bucket than the
+    # real file, yielding a hash: ID that no row matches → track_row is None → the
+    # album's MB release/release-group IDs never get stored (Navidrome album shows as
+    # "unlinked", forcing a manual MB link). Discography batches hit this routinely
+    # because their candidate duration is the MB tracklist value, not the download.
     hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
     try:
         async with session.begin_nested():
@@ -933,7 +942,9 @@ async def place_approved_track(
                 for tombstone in tombstones:
                     await session.delete(tombstone)
                     await session.flush()
-            await index_file(session, dest)
+            indexed_track_id = await index_file(session, dest)
+            if indexed_track_id:
+                hash_track_id = indexed_track_id
             hca = await asyncio.to_thread(has_cover_art, dest)
             # Eager-load the file relationship: async SQLAlchemy can't lazy-load it
             # synchronously when accessed below (greenlet_spawn error otherwise).

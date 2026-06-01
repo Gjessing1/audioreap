@@ -95,6 +95,7 @@ async def _upsert_album(
     year: int | None,
     artist_name: str,
     mb_release_group_id: str | None = None,
+    mb_release_id: str | None = None,
 ) -> str:
     alid = _album_id(artist_name, title, year)
     row = await session.get(Album, alid)
@@ -105,13 +106,23 @@ async def _upsert_album(
             year=year,
             artist_id=artist_id,
             mb_release_group_id=mb_release_group_id,
+            musicbrainz_release_id=mb_release_id,
             created_at=_now(),
             updated_at=_now(),
         )
         session.add(row)
-    elif mb_release_group_id and not row.mb_release_group_id:
-        row.mb_release_group_id = mb_release_group_id
-        row.updated_at = _now()
+    else:
+        # Backfill MB IDs from the file's tags when the DB column is still NULL —
+        # same authority rule as Track.musicbrainz_recording_id: file tags are the
+        # source of truth, the scanner only fills gaps and never overwrites. This
+        # heals albums whose MB linkage was written to files but never reached the
+        # Album row (e.g. discography batches placed before the track-ID fix).
+        if mb_release_group_id and not row.mb_release_group_id:
+            row.mb_release_group_id = mb_release_group_id
+            row.updated_at = _now()
+        if mb_release_id and not row.musicbrainz_release_id:
+            row.musicbrainz_release_id = mb_release_id
+            row.updated_at = _now()
     return alid
 
 
@@ -153,20 +164,33 @@ async def _upsert_track_file(
 
 
 async def index_file(session: AsyncSession, path: Path) -> str:
-    """Index a single newly-placed file. Convenience wrapper for the pipeline."""
-    return await _process_file(session, path, incremental=False)
+    """Index a single newly-placed file and return its track ID.
+
+    Convenience wrapper for the pipeline. The returned ID is the *actual* row
+    identity computed from the placed file's tags — callers must use it to look
+    the track up rather than recomputing make_id() with candidate-side values,
+    which can diverge (e.g. a duration that crosses the bucket boundary) and
+    leave the row unreachable. Returns "" if the file could not be indexed.
+    """
+    _status, track_id = await _process_file(session, path, incremental=False)
+    return track_id
 
 
 async def _process_file(
     session: AsyncSession,
     path: Path,
     incremental: bool,
-) -> str:
-    """Process a single audio file. Returns 'added'|'updated'|'skipped'|'error'."""
+) -> tuple[str, str]:
+    """Process a single audio file.
+
+    Returns (status, track_id) where status is 'added'|'updated'|'skipped'|'error'.
+    track_id is "" when the file was not indexed (error, or skipped before the ID
+    was computed).
+    """
     try:
         stat = path.stat()
     except OSError:
-        return "error"
+        return ("error", "")
 
     file_mtime = stat.st_mtime
 
@@ -176,11 +200,11 @@ async def _process_file(
         )
         existing = result.scalar_one_or_none()
         if existing is not None and existing.file_mtime == file_mtime:
-            return "skipped"
+            return ("skipped", existing.track_id or "")
 
     tagged = read_tags(path)
     if tagged is None:
-        return "error"
+        return ("error", "")
 
     # A sidecar cover.jpg in the same directory counts as cover art for the
     # "no cover" filter (Navidrome uses it for the whole album).
@@ -197,7 +221,7 @@ async def _process_file(
         )).scalars().first()
         if tombstone is not None and tombstone.prevent_reimport:
             logger.debug("Skipping prevent_reimport recording %s (%s)", tagged.mb_recording_id, path)
-            return "skipped"
+            return ("skipped", "")
 
     artist_name = tagged.albumartist or tagged.artist or "Unknown Artist"
     title = tagged.title or path.stem
@@ -207,7 +231,10 @@ async def _process_file(
 
     album_id: str | None = None
     if album_title:
-        album_id = await _upsert_album(session, artist_id, album_title, tagged.year, artist_name)
+        album_id = await _upsert_album(
+            session, artist_id, album_title, tagged.year, artist_name,
+            mb_release_id=tagged.mb_release_id,
+        )
 
     track_id = make_id(
         artist=tagged.artist or artist_name,
@@ -270,8 +297,8 @@ async def _process_file(
 
     is_new_or_updated = await _upsert_track_file(session, tagged, track_id, file_mtime)
     if not is_new_or_updated:
-        return "skipped"
-    return "added" if track_is_new else "updated"
+        return ("skipped", track_id)
+    return ("added" if track_is_new else "updated", track_id)
 
 
 async def _collect_known_paths(session: AsyncSession) -> set[str]:
@@ -300,7 +327,7 @@ async def scan(
 
     async def flush() -> None:
         for p in batch:
-            status = await _process_file(session, p, incremental)
+            status, _ = await _process_file(session, p, incremental)
             if status == "added":
                 result.added += 1
             elif status == "updated":

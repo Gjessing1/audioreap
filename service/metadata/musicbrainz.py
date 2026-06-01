@@ -791,7 +791,7 @@ def get_release_group_tracks(
                 _save_cache(cache_dir, key_rg, raw_rg)
         except Exception as exc:
             logger.warning("MB release group fetch failed for %s: %s", release_group_id, exc)
-            return "Unknown Album", None, []
+            return "Unknown Album", None, None, []
 
     rg_data = raw_rg.get("release-group") or {}
     if not isinstance(rg_data, dict):
