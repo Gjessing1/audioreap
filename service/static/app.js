@@ -111,12 +111,10 @@ function _updateBatchCount() {
   const label   = document.getElementById('batch-count-label');
   if (!toolbar) return;
   const checked = document.querySelectorAll('.job-check:checked').length;
-  if (checked > 0) {
-    toolbar.classList.remove('hidden');
-    label.textContent = checked + ' selected';
-  } else {
-    toolbar.classList.add('hidden');
-  }
+  // Toolbar stays pinned at all times (even with nothing selected); only the
+  // count label changes. The Approve/Reject buttons no-op on an empty selection.
+  toolbar.classList.remove('hidden');
+  label.textContent = checked + ' selected';
 }
 
 /* Event delegation — no inline handlers needed, works after HTMX swaps */
