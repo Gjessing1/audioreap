@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from arq.connections import RedisSettings
 from sqlalchemy import and_, or_, select
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from service.config import settings
 from service.db.schema import AcquisitionJobRow
@@ -80,9 +80,16 @@ async def startup(ctx: dict[str, object]) -> None:
 
     logger.info("yt-dlp version: %s", yt_dlp.version.__version__)
 
-    engine = create_async_engine(settings.db_url)
+    # Reuse the engine configured in service.db.session — it installs WAL +
+    # PRAGMA busy_timeout=30000 via a connect listener and connect_args timeout.
+    # A bare create_async_engine(settings.db_url) here would fall back to SQLite's
+    # ~5s default busy timeout, so the every-3s rate-gate countdown write in
+    # _await_rate_slot loses the write lock under contention and raises
+    # "database is locked", failing the whole download job before it ever runs.
+    from service.db.session import AsyncSessionLocal, engine
+
     ctx["engine"] = engine
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    session_factory = AsyncSessionLocal
     ctx["session_factory"] = session_factory
     ctx["providers"] = {cls.name: cls() for cls in all_providers()}
     ctx["music_dir"] = str(settings.music_dir)
