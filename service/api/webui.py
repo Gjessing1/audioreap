@@ -2905,20 +2905,39 @@ async def merge_artist(
     for album in source.albums:
         album.artist_id = canonical_id
 
-    # Reassign tracks and collect files to retag; plan path moves but don't update DB yet
-    src_dir = settings.music_dir / source_name
-    dst_dir = settings.music_dir / canonical_name
+    # Reassign tracks and collect files to retag; plan path moves but don't update DB yet.
+    # Compute each destination with the canonical library layout (track_path) so files
+    # filed under the album-artist dir, /music/Singles/<artist>/, AND /music/Compilations/
+    # all relocate to the merged artist. The old prefix check only handled
+    # /music/<source_name>/, which stranded singles & comps (e.g. a duet single left in
+    # /music/Singles/<collab>/ surfacing as "[Unknown Album]" under the merged artist).
+    from service.library.layout import track_path as _track_path
+
+    albums_by_id = {alb.id: alb for alb in source.albums}
     files_to_retag: list[Path] = []
     planned_moves: list[tuple[Path, Path, "TrackFile"]] = []  # (old, new, orm_row)
     for track in source.tracks:
         track.artist_id = canonical_id
-        if track.file:
-            fp = Path(track.file.path)
-            if fp.exists():
-                files_to_retag.append(fp)
-                if src_dir != dst_dir and str(fp).startswith(str(src_dir) + "/"):
-                    new_fp = dst_dir / fp.relative_to(src_dir)
-                    planned_moves.append((fp, new_fp, track.file))
+        if not track.file:
+            continue
+        fp = Path(track.file.path)
+        if not fp.exists():
+            continue
+        files_to_retag.append(fp)
+        alb = albums_by_id.get(track.album_id) if track.album_id else None
+        new_fp = _track_path(
+            settings.music_dir,
+            artist=canonical_name,
+            album=(alb.title if alb else None),
+            year=(alb.year if alb else None),
+            track_number=track.track_number,
+            disc_number=track.disc_number,
+            title=track.title,
+            ext=fp.suffix,
+            albumartist=canonical_name,
+        )
+        if new_fp != fp:
+            planned_moves.append((fp, new_fp, track.file))
 
     # Flush reassignments before deleting source (otherwise FK violations)
     await session.flush()
@@ -2933,10 +2952,12 @@ async def merge_artist(
         except Exception as exc:
             logger.warning("merge_artist: tag write failed for %s: %s", fp, exc)
 
-    # Move files from source artist dir to canonical artist dir; update DB paths only
-    # for successfully moved files so the DB stays consistent with the filesystem.
+    # Move files to their canonical location; update DB paths only for files that
+    # actually moved so the DB stays consistent with the filesystem. Remember each
+    # source dir → dest dir so we can carry sidecars and prune emptied source dirs.
     import shutil as _shutil
     paths_updated = False
+    dir_moves: dict[Path, Path] = {}
     for old_fp, new_fp, tf_row in planned_moves:
         try:
             new_fp.parent.mkdir(parents=True, exist_ok=True)
@@ -2944,27 +2965,29 @@ async def merge_artist(
                 _shutil.move(str(old_fp), str(new_fp))
             tf_row.path = str(new_fp)
             paths_updated = True
+            if old_fp.parent != new_fp.parent:
+                dir_moves.setdefault(old_fp.parent, new_fp.parent)
         except Exception as exc:
             logger.warning("merge_artist: could not move %s → %s: %s", old_fp, new_fp, exc)
 
-    # Move any remaining non-audio sidecars (cover.jpg, artist.jpg, etc.)
-    if src_dir.exists() and src_dir != dst_dir:
+    # Carry over sidecars (cover.jpg, artist.jpg, …) from each emptied source dir,
+    # then prune now-empty source directories upward (stops at /music).
+    music_root = settings.music_dir
+    for old_dir, new_dir in dir_moves.items():
         try:
-            for item in sorted(src_dir.rglob("*")):
-                if item.is_file():
-                    dest_item = dst_dir / item.relative_to(src_dir)
-                    dest_item.parent.mkdir(parents=True, exist_ok=True)
-                    if not dest_item.exists():
-                        _shutil.move(str(item), str(dest_item))
-            for d in sorted(src_dir.rglob("*"), reverse=True):
-                if d.is_dir():
-                    try:
-                        d.rmdir()
-                    except OSError:
-                        pass
-            src_dir.rmdir()
+            if old_dir.exists():
+                for item in sorted(old_dir.iterdir()):
+                    if item.is_file():
+                        dest_item = new_dir / item.name
+                        dest_item.parent.mkdir(parents=True, exist_ok=True)
+                        if not dest_item.exists():
+                            _shutil.move(str(item), str(dest_item))
+            d = old_dir
+            while d != music_root and d.exists() and not any(d.iterdir()):
+                d.rmdir()
+                d = d.parent
         except Exception as exc:
-            logger.warning("merge_artist: source dir cleanup failed: %s", exc)
+            logger.warning("merge_artist: source dir cleanup failed for %s: %s", old_dir, exc)
 
     if paths_updated:
         await session.commit()
