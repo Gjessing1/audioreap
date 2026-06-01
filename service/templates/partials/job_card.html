@@ -29,7 +29,10 @@
   <div class="card-info">
     <div class="card-title">{{ job.track_ref.title }}</div>
     <div class="card-sub">{{ job.track_ref.artist }}<span class="muted"> · {{ job.id[:8] }}</span></div>
-    {% if job.error %}
+    {# needs_review flag reasons are surfaced by the flag-detail row in job_list.html,
+       so suppress the card-error here for review jobs to avoid showing the same
+       fingerprint/artist mismatch twice. #}
+    {% if job.error and job.state != 'needs_review' %}
     <div class="card-error {% if job.state == 'failed' %}card-error--danger{% endif %}"
          title="{{ job.error }}"
          style="cursor:help">

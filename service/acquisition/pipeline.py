@@ -693,8 +693,10 @@ async def run_acquisition(
             row.state = "needs_review"
             row.staging_path = str(staging_dest)
             row.resolved_metadata_json = resolved_metadata.model_dump_json()
-            if force_staging_reason:
-                row.error = force_staging_reason
+            # Always (re)assign — None clears any stale "⏳ Pacing downloads…"
+            # back-off message left on the row by the rate gate, so a completed
+            # review card doesn't keep showing a countdown that already elapsed.
+            row.error = force_staging_reason
             row.updated_at = datetime.now(UTC).replace(tzinfo=None)
             await session.flush()
 
