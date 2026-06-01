@@ -839,6 +839,16 @@ async def _review_card_ctx(
             parts = [p for p in [album_job.album_artist, album_job.album_title] if p]
             album_batch_label = " — ".join(parts) if parts else row.album_job_id[:8]
 
+    # Link to the actual media the audio came from so the user can validate the
+    # pick at a glance (catches wrong-artist auto-picks). Prefer the canonical URL
+    # captured at fetch time; fall back to provider_ref when it's already a real URL
+    # (ghost/legacy rows) but never expose a bare `ytsearch1:` query.
+    source_url = (meta.get("source_url") or "").strip()
+    if not source_url:
+        pr = (row.provider_ref or "").strip()
+        if pr.startswith(("http://", "https://")):
+            source_url = pr
+
     force_reason = meta.get("force_staging_reason") or ""
     show_src_panel = not is_enrichment and (
         (staging_exists and "title mismatch" in force_reason.lower())
@@ -858,6 +868,7 @@ async def _review_card_ctx(
         "show_multi_artists": show_multi_artists,
         "show_mb_search": show_mb_search,
         "show_src_panel": show_src_panel,
+        "source_url": source_url,
         "artist_names": artist_names,
         "album_names": album_names,
         "candidate_track_number": candidate_track_number,

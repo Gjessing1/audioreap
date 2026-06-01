@@ -662,6 +662,7 @@ async def run_acquisition(
             ext=ext,
             source_codec=fetch_result.codec,
             source_bitrate_kbps=fetch_result.bitrate_kbps,
+            source_url=fetch_result.source_url,
             mb_recording_id=mb_recording_id,
             mb_release_id=mb_release_id,
             mb_release_group_id=mb_release_group_id,

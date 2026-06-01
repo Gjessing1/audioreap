@@ -29,6 +29,11 @@
         <a href="https://musicbrainz.org/recording/{{ meta.mb_recording_id }}"
            target="_blank" class="badge badge-queued" style="text-decoration:none">↗ MB</a>
         {% endif %}
+        {% if source_url %}
+        <a href="{{ source_url }}"
+           target="_blank" rel="noopener" class="badge badge-busy"
+           style="text-decoration:none" title="Open the source this audio was fetched from — check it's the right artist/version">▶ Source</a>
+        {% endif %}
         {% if not staging_exists %}
         <span class="badge badge-fail">File missing</span>
         {% elif meta.force_staging_reason and not is_enrichment %}

@@ -55,6 +55,31 @@ def _youtube_auth_opts() -> dict[str, object]:
     return opts
 
 
+def _canonical_source_url(info: object, provider_ref: str) -> str | None:
+    """Best canonical media URL for the thing yt-dlp actually downloaded.
+
+    ``info`` is a single-video dict for a direct-URL ref, or a search/playlist
+    wrapper with ``entries`` for a ``ytsearch1:`` ref (album batches). Dig into the
+    first real entry so album tracks get a clickable watch URL instead of the bare
+    search expression. Returns None if nothing usable is found.
+    """
+    node = info if isinstance(info, dict) else {}
+    entries = node.get("entries") if isinstance(node, dict) else None
+    if entries:
+        node = next((e for e in entries if e), node)
+    if isinstance(node, dict):
+        url = node.get("webpage_url") or node.get("original_url") or node.get("url")
+        if url:
+            return str(url)
+        vid = node.get("id")
+        if vid:
+            return f"https://www.youtube.com/watch?v={vid}"
+    # Fall back to the ref only when it's already a real URL, never a search query.
+    if provider_ref and not provider_ref.startswith(("ytsearch", "ytmsearch")):
+        return provider_ref
+    return None
+
+
 def _ydl_opts_base() -> dict[str, object]:
     return {
         "quiet": True,
@@ -199,7 +224,7 @@ class YtdlpProvider(Provider):
             file_path=file_path,
             provider=self.name,
             provider_ref=provider_ref,
-            source_url=provider_ref,
+            source_url=_canonical_source_url(info, provider_ref),
             codec=codec,
             container=container,
             bitrate_kbps=int(bitrate) if bitrate else None,

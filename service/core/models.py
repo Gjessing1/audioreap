@@ -185,6 +185,10 @@ class ResolvedTrackMetadata(BaseModel):
     # Source audio
     source_codec: str | None = None
     source_bitrate_kbps: int | None = None
+    # Canonical URL of the actual media the audio was fetched from (e.g. the
+    # resolved YouTube watch URL, not the `ytsearch1:` query). Surfaced in the
+    # review card so the user can open the source and validate the pick fast.
+    source_url: str | None = None
 
     # MusicBrainz / AcoustID identification
     mb_recording_id: str | None = None

@@ -139,6 +139,7 @@ def _review_ctx(**overrides: Any) -> dict:
         "show_multi_artists": False,
         "show_mb_search": False,
         "show_src_panel": False,
+        "source_url": "https://www.youtube.com/watch?v=test",
         "artist_names": ["Test Artist"],
         "album_names": ["Test Album"],
         "candidate_track_number": None,
