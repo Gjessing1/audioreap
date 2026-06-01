@@ -3,7 +3,7 @@ import shutil
 from datetime import datetime, timedelta
 
 from arq.connections import RedisSettings
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from service.config import settings
@@ -13,23 +13,43 @@ logger = logging.getLogger(__name__)
 
 _STUCK_STATES = frozenset({"queued", "downloading", "processing", "tagging", "importing"})
 _STUCK_CUTOFF_MINUTES = 15
+# A "waiting" job is parked in the rate gate (_await_rate_slot), which rewrites its
+# countdown to the DB every ~3s while a worker is actually sleeping on it. So a
+# "waiting" row whose updated_at has gone stale is an orphan: the worker that owned
+# it restarted/died mid-park (e.g. a deploy), leaving a frozen "starting in ~5s"
+# card that nothing else clears. Recover these on a much shorter clock than the
+# generic stuck states — there is no legitimate reason for a live wait to stop
+# heartbeating for minutes, even across the 120s back-off cooldown.
+_WAITING_CUTOFF_MINUTES = 3
 
 
 async def _recover_stuck_jobs(session_factory: async_sessionmaker) -> None:  # type: ignore[type-arg]
-    cutoff = datetime.utcnow() - timedelta(minutes=_STUCK_CUTOFF_MINUTES)
+    now = datetime.utcnow()
+    stuck_cutoff = now - timedelta(minutes=_STUCK_CUTOFF_MINUTES)
+    waiting_cutoff = now - timedelta(minutes=_WAITING_CUTOFF_MINUTES)
     async with session_factory() as session, session.begin():
         rows = (await session.execute(
             select(AcquisitionJobRow).where(
-                AcquisitionJobRow.state.in_(list(_STUCK_STATES)),
-                AcquisitionJobRow.updated_at < cutoff,
+                or_(
+                    and_(
+                        AcquisitionJobRow.state.in_(list(_STUCK_STATES)),
+                        AcquisitionJobRow.updated_at < stuck_cutoff,
+                    ),
+                    and_(
+                        AcquisitionJobRow.state == "waiting",
+                        AcquisitionJobRow.updated_at < waiting_cutoff,
+                    ),
+                )
             )
         )).scalars().all()
         for row in rows:
-            logger.warning("Resetting stuck job %s (was %s, idle since %s)", row.id, row.state, row.updated_at)
+            was_state = row.state
+            cutoff_min = _WAITING_CUTOFF_MINUTES if was_state == "waiting" else _STUCK_CUTOFF_MINUTES
+            logger.warning("Resetting stuck job %s (was %s, idle since %s)", row.id, was_state, row.updated_at)
             row.state = "failed"
             row.failure_class = "transient"
-            row.error = f"Stuck in '{row.state}' for >{_STUCK_CUTOFF_MINUTES}m — reset at worker startup"
-            row.updated_at = datetime.utcnow()
+            row.error = f"Stuck in '{was_state}' for >{cutoff_min}m — reset by worker recovery"
+            row.updated_at = now
 
 
 def _cleanup_tmp(tmp_dir: str) -> None:
