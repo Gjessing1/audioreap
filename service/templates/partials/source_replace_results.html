@@ -26,14 +26,19 @@
         {{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}{% endif %}
         {% if c.abr %}
         <span style="color:{% if c.abr >= 200 %}var(--success){% elif c.abr >= 128 %}var(--t3){% else %}var(--danger){% endif %};margin-left:4px">
-          {{ c.acodec or '' }} {{ c.abr }}k
+          {{ c.abr }}k
         </span>
         {% endif %}
+        {% if c.is_official %}<span class="badge badge-done" style="font-size:9px;padding:1px 5px;margin-left:4px" title="Official audio channel — Topic / VEVO / Official">official</span>{% endif %}
+        {% if c.score is not none %}<span style="font-family:var(--font-mono);color:var(--accent);margin-left:4px" title="source match score (same scorer the auto-picker used)">{{ '%.2f'|format(c.score) }}</span>{% endif %}
       </div>
     </div>
     <div class="card-actions">
       <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
       <a href="{{ c.provider_ref|e }}" target="_blank" class="btn btn-sm btn-ghost" title="Open on YouTube" style="font-size:11px;height:30px;padding:0 8px">↗</a>
+      {% if c.is_current %}
+      <span class="badge badge-done" style="font-size:11px" title="The source currently staged for this job">✓ used</span>
+      {% else %}
       {# Two-step confirm #}
       <span id="src-use-{{ job_id }}-{{ loop.index }}">
         <button type="button" class="btn btn-sm btn-ghost" style="height:30px;font-size:12px"
@@ -50,7 +55,6 @@
               hx-indicator="#src-confirm-ind-{{ job_id }}-{{ loop.index }}"
               style="display:contents">
           <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
-          <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
           <button type="submit" class="btn btn-sm rv-approve" style="height:28px;font-size:12px">
             Confirm
             <span id="src-confirm-ind-{{ job_id }}-{{ loop.index }}" class="htmx-indicator"><span class="spinner"></span></span>
@@ -62,6 +66,7 @@
           Cancel
         </button>
       </span>
+      {% endif %}
     </div>
   </div>
   {% endfor %}

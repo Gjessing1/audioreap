@@ -1799,45 +1799,64 @@ async def job_search_source(
     q: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Search YouTube for an alternative source to replace the staged file."""
-    candidates: list[dict[str, object]] = []
-    if q.strip():
-        try:
-            from service.core.models import SearchQuery
-            from service.providers import get as get_provider
-            import service.providers.ytdlp  # noqa
-            provider = get_provider("ytdlp")()
-            async for c in provider.search(SearchQuery(q=q.strip(), limit=8)):
-                abr = c.raw_metadata.get("abr") or c.raw_metadata.get("tbr")
-                acodec = c.raw_metadata.get("acodec") or c.raw_metadata.get("ext")
-                candidates.append({
-                    "title": c.title, "artist": c.artist,
-                    "duration_seconds": c.duration_seconds,
-                    "provider_ref": c.provider_ref,
-                    "thumbnail_url": c.thumbnail_url,
-                    "candidate_json": c.model_dump_json(),
-                    "abr": int(abr) if abr else None,
-                    "acodec": str(acodec) if acodec else None,
-                })
-        except Exception as exc:
-            logger.warning("Source search failed: %s", exc)
+    """Ranked YouTube source pool for the review card's "Different source" panel.
 
-    # Pass current source quality so the template can show what we have now
-    source_codec: str | None = None
-    source_bitrate_kbps: int | None = None
+    Auto-loads (no ``q``) with the track's own artist/title when the panel opens, or
+    re-searches with a free-text ``q``. Either way the results are scored and sorted
+    with the same logic the auto-picker used (`yt_search_ranked`), so the user can
+    validate or swap the pick and see what the model had to choose from.
+    """
     row = await session.get(AcquisitionJobRow, job_id)
-    if row and row.resolved_metadata_json:
+    if row is None:
+        raise HTTPException(404)
+
+    meta: dict = {}
+    if row.resolved_metadata_json:
         try:
-            _meta = json.loads(row.resolved_metadata_json)
-            source_codec = _meta.get("source_codec")
-            source_bitrate_kbps = _meta.get("source_bitrate_kbps")
+            meta = json.loads(row.resolved_metadata_json)
+        except Exception:
+            meta = {}
+
+    # What we *want* (drives scoring); fall back to the original candidate.
+    want_artist = (meta.get("artist") or "").strip()
+    want_title = (meta.get("title") or "").strip()
+    want_dur = meta.get("duration_seconds")
+    if not want_title and row.candidate_json:
+        try:
+            from service.core.models import TrackCandidate as _TC
+            cand = _TC.model_validate_json(row.candidate_json)
+            want_artist = want_artist or (cand.artist or "")
+            want_title = want_title or (cand.title or "")
+            want_dur = want_dur or cand.duration_seconds
         except Exception:
             pass
+
+    # The source currently in use — mark it so it isn't offered as a "swap to".
+    current_url = (meta.get("source_url") or "").strip()
+    if not current_url:
+        pr = (row.provider_ref or "").strip()
+        if pr.startswith(("http://", "https://")):
+            current_url = pr
+
+    query = q.strip() or f"{want_artist} {want_title}".strip()
+    candidates: list[dict] = []
+    if query:
+        try:
+            from service.providers.ytdlp import yt_search_ranked
+            candidates = await asyncio.to_thread(
+                yt_search_ranked, want_artist, want_title, want_dur,
+                query=query, prefer_explicit=settings.prefer_explicit,
+            )
+        except Exception as exc:
+            logger.warning("Source search failed: %s", exc)
+    for c in candidates:
+        c["is_current"] = bool(current_url) and c.get("provider_ref") == current_url
 
     return templates.TemplateResponse(
         request, "partials/source_replace_results.html",
         {"candidates": candidates, "q": q, "job_id": job_id,
-         "source_codec": source_codec, "source_bitrate_kbps": source_bitrate_kbps},
+         "source_codec": meta.get("source_codec"),
+         "source_bitrate_kbps": meta.get("source_bitrate_kbps")},
     )
 
 

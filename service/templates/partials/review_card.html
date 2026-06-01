@@ -350,7 +350,13 @@
         Search <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
     </form>
-    <div id="src-results-{{ job_id }}"></div>
+    {# Auto-load the ranked pool the first time the panel is revealed (lazy: one
+       search, only when opened) — no q means the endpoint uses the track's own
+       artist/title. The manual box above re-searches with a custom query. #}
+    <div id="src-results-{{ job_id }}"
+         hx-get="/jobs/{{ job_id }}/search-source"
+         hx-trigger="intersect once"
+         hx-swap="innerHTML"></div>
   </div>
   {% endif %}
 
