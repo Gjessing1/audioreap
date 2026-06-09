@@ -384,8 +384,59 @@ _CLEAN_RE = re.compile(
 )
 # Channels that reliably host the official studio audio: the auto-generated
 # "<Artist> - Topic" channels (YouTube Music's official audio), VEVO, and labelled
-# "Official" artist channels. A match is a strong signal we have the right source.
+# "Official" artist channels. A match is a strong signal we have the right source —
+# but only when the channel belongs to the *wanted* artist (see score_yt_candidate).
 _OFFICIAL_CHANNEL_RE = re.compile(r"(-\s*topic$|vevo|\bofficial\b)", re.IGNORECASE)
+
+# Branding suffixes on official channels: "Adele - Topic" → "Adele",
+# "AdeleVEVO" → "Adele", "Queen Official" → "Queen". Stripped before artist
+# comparison — flat search entries never carry a clean `artist` field, so the
+# channel name is the only artist evidence and the suffix would otherwise drag
+# similarity below the wrong-artist guard for the artist's own channel.
+_CHANNEL_SUFFIX_RES = [
+    re.compile(r"\s*-\s*topic\s*$", re.IGNORECASE),
+    re.compile(r"\s*vevo\s*$", re.IGNORECASE),
+    re.compile(r"\s+official\s*$", re.IGNORECASE),
+    re.compile(r"\s+music\s*$", re.IGNORECASE),
+]
+
+# Version mutations endemic to YouTube that are never the studio cut we want:
+# sped up / slowed+reverb / nightcore / 8D / bass boosted / hour loops / remixes /
+# full-album rips. Penalised only when the *wanted* title doesn't ask for them.
+_UNWANTED_VERSION_RE = re.compile(
+    r"\b(?:sped[\s-]*up|slowed(?:\s*(?:\+|and|&|n)?\s*reverb)?|night\s*core|nightcore|"
+    r"8d(?:\s+audio)?|bass\s*boost(?:ed)?|reverb(?:ed)?|remix(?:ed)?|mashup|"
+    r"full\s+album|(?:\d+|one)\s+hours?(?:\s+loop)?|loop(?:ed)?|"
+    r"extended\s+(?:mix|version|edit)|pitch(?:ed)?\s*(?:up|down)|chipmunks?)\b",
+    re.IGNORECASE,
+)
+
+
+_BRACKETED_RE = re.compile(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]")
+
+
+def _debracketed(title: str) -> str:
+    """Title with all bracketed segments removed.
+
+    MB recording titles are bare ("Derezzed") while YouTube titles carry
+    decorations ("Derezzed (From TRON: Legacy)") that wreck token-set similarity.
+    Safe to ignore for *scoring* because the version-mutation signals
+    (live/remix/nightcore/…) are detected on the full title separately.
+    """
+    return _BRACKETED_RE.sub("", title).strip()
+
+
+def _channel_artist(channel: str) -> str:
+    """Channel name with official-channel branding suffixes stripped.
+
+    Best-effort artist evidence for flat search entries, where the channel/uploader
+    is all we get ("Adele - Topic", "AdeleVEVO", "Queen Official").
+    """
+    result = channel
+    for pat in _CHANNEL_SUFFIX_RES:
+        result = pat.sub("", result)
+    result = result.strip()
+    return result or channel
 
 def explicit_score(title: str, age_limit: int | None = None) -> int:
     """Return +1 for explicit, -1 for clean/radio-edit, 0 otherwise.
@@ -404,28 +455,49 @@ def explicit_score(title: str, age_limit: int | None = None) -> int:
     return 0
 
 
-def _yt_search_entries(query: str, n_candidates: int, prefer_ytm: bool) -> list[dict]:
-    """Run a flat YouTube (Music) search and return the raw entry dicts.
+def _yt_search_entries(query: str, n_candidates: int) -> list[dict]:
+    """Run a flat YouTube search and return the raw entry dicts.
 
-    Tries YouTube Music first when preferred (official audio, clean artist/track
-    fields) and falls back to plain YouTube if it yields nothing. Shared by
-    yt_search_best and yt_search_ranked so both see the same pool.
+    Plain ``ytsearch`` is the primary pool: its flat entries carry the signals the
+    scorer needs (channel, duration, view count). Shared by yt_search_best and
+    yt_search_ranked so both see the same pool.
     """
     import yt_dlp
 
     opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_youtube_auth_opts()}
-    prefixes = [f"ytmsearch{n_candidates}"] if prefer_ytm else []
-    prefixes.append(f"ytsearch{n_candidates}")
-    for prefix in prefixes:
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"{prefix}:{query}", download=False)
-            entries = [e for e in ((info or {}).get("entries") or []) if e]
-            if entries:
-                return entries
-        except Exception:
-            continue
-    return []
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{n_candidates}:{query}", download=False)
+        return [e for e in ((info or {}).get("entries") or []) if e]
+    except Exception:
+        return []
+
+
+def _yt_music_search_entries(query: str, n_candidates: int) -> list[dict]:
+    """Flat YouTube Music search via the music.youtube.com search URL.
+
+    yt-dlp has **no** ``ytmsearch`` prefix — only the search-URL extractor reaches
+    the YTM index. Its flat entries are signal-poor (title + id only: no channel,
+    duration, or artist), so this pool is a *rescue* supplement when plain search
+    scores badly, never a replacement. Non-video results (channels, playlists) are
+    filtered out by the 11-char video-id shape.
+    """
+    import urllib.parse
+
+    import yt_dlp
+
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_youtube_auth_opts()}
+    url = f"https://music.youtube.com/search?q={urllib.parse.quote(query)}"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        entries = [
+            e for e in ((info or {}).get("entries") or [])
+            if e and e.get("title") and len(str(e.get("id") or "")) == 11
+        ]
+        return entries[:n_candidates]
+    except Exception:
+        return []
 
 
 def score_yt_candidate(
@@ -449,23 +521,40 @@ def score_yt_candidate(
 
     vid_title = str(entry.get("track") or entry.get("title") or "")
     # The cleaned "track" field often drops the "(Explicit)"/"(Clean)" suffix, so scan
-    # the full raw title for the explicit/clean signal as well.
+    # the full raw title for the explicit/clean/live/version signals as well.
     vid_full_title = str(entry.get("title") or vid_title)
-    # YouTube Music sets a dedicated "artist"; regular uploads only have the
-    # channel/uploader. Comparing it to the wanted artist guards against the common
-    # failure of a perfect title from the wrong artist (covers, karaoke, a different
-    # act's "- Topic" channel).
-    vid_artist = str(entry.get("artist") or entry.get("uploader") or entry.get("channel") or "")
-    # Keep the raw channel/uploader separate from vid_artist: when YouTube Music sets a
-    # clean "artist" the "- Topic"/VEVO suffix is lost, but that suffix is exactly what
-    # flags official-audio channels.
+    # YouTube Music sets a dedicated "artist" on full extraction; flat search entries
+    # (the only thing the pickers see) never do — there the channel/uploader is the
+    # only artist evidence, with its branding suffix stripped ("Adele - Topic" → "Adele").
+    explicit_artist = str(entry.get("artist") or "")
     vid_channel = str(entry.get("channel") or entry.get("uploader") or "")
+    channel_artist = _channel_artist(vid_channel) if vid_channel else ""
     vid_dur = entry.get("duration")
 
-    t_sim = _tsim(title, vid_title)
-    # A blank candidate artist scores neutral, not zero, so we don't punish sources
-    # that simply don't expose an artist field.
-    a_sim = _asim(artist, vid_artist) if vid_artist else 0.5
+    # Two readings of the candidate: (title-as-is, channel/explicit artist) and — for
+    # the pervasive "Artist - Title" upload convention — (after-dash title, dash artist).
+    # Score both and keep the stronger pair, so "Adele - Hello" from "Adele - Topic"
+    # reads as title="Hello", artist="Adele" instead of a diluted token soup.
+    readings = [(vid_title, explicit_artist or channel_artist)]
+    if not explicit_artist and " - " in vid_title:
+        dash_artist, dash_title = vid_title.split(" - ", 1)
+        readings.append((dash_title.strip(), dash_artist.strip()))
+
+    t_sim = a_sim = 0.0
+    best_core = -1.0
+    has_artist_evidence = False
+    for cand_title, cand_artist in readings:
+        t = _tsim(title, cand_title)
+        stripped = _debracketed(cand_title)
+        if stripped and stripped != cand_title:
+            t = max(t, _tsim(title, stripped))
+        # A blank candidate artist scores neutral, not zero, so we don't punish
+        # sources that simply don't expose an artist field.
+        a = _asim(artist, cand_artist) if cand_artist else 0.5
+        core = t * 0.50 + a * 0.25
+        if core > best_core:
+            best_core, t_sim, a_sim = core, t, a
+            has_artist_evidence = bool(cand_artist)
 
     dur_score = 0.5
     gross_dur_mismatch = False
@@ -477,21 +566,25 @@ def score_yt_candidate(
             dur_score = 0.8
         elif delta <= 30:
             dur_score = 0.6
-        elif delta > 90:
+        elif delta <= 75:
+            dur_score = 0.4
+        else:
+            # A source grossly off the locked MB recording's length is almost never
+            # the same cut (wrong song, extended/sped edit, full-album upload).
             dur_score = 0.1
-        # A source grossly off the locked MB recording's length is almost never the
-        # same cut (wrong song, extended/sped edit, full-album upload, mislabel).
-        if delta > 75:
             gross_dur_mismatch = True
 
     score = t_sim * 0.50 + a_sim * 0.25 + dur_score * 0.20
 
-    # Prefer official audio: "- Topic" / VEVO / labelled official artist channel. Modest
-    # bonus so it tips near-ties toward the canonical source without overriding a clear
-    # title/artist win.
+    # Prefer official audio: "- Topic" / VEVO / labelled official artist channel — but
+    # only when it's the *wanted* artist's channel. Another act's Topic/VEVO channel
+    # (covers, karaoke factories) must not inherit the bonus.
     is_official = bool(vid_channel and _OFFICIAL_CHANNEL_RE.search(vid_channel))
     if is_official:
-        score += 0.12
+        if channel_artist and _asim(artist, channel_artist) >= 0.5:
+            score += 0.12
+        else:
+            is_official = False
 
     if gross_dur_mismatch:
         score -= 0.35
@@ -499,7 +592,7 @@ def score_yt_candidate(
     # Hard guard against a perfect title from the wrong act: when the candidate exposes
     # an artist and it clearly disagrees, push it below any neutral/correct-artist
     # source so it can't win on title alone.
-    if vid_artist and a_sim < 0.34:
+    if has_artist_evidence and a_sim < 0.34:
         score -= 0.25
 
     age_limit = int(entry.get("age_limit") or 0)
@@ -512,9 +605,14 @@ def score_yt_candidate(
         else:
             score += 0.15 if exp < 0 else -0.18
 
-    if looks_like_live(vid_title) and not looks_like_live(title):
+    if looks_like_live(vid_full_title) and not looks_like_live(title):
         # Live/concert uploads surface too often over the studio cut; a heavy penalty
         # pushes them below a near-tied studio version.
+        score -= 0.45
+
+    if _UNWANTED_VERSION_RE.search(vid_full_title) and not _UNWANTED_VERSION_RE.search(title):
+        # Sped-up / nightcore / remix / full-album mutations of the right song: same
+        # class of wrong-source as live uploads, same decisive penalty.
         score -= 0.45
 
     return score, is_official
@@ -523,6 +621,12 @@ def score_yt_candidate(
 def _entry_url(entry: dict) -> str:
     vid_id = entry.get("id") or ""
     return str(entry.get("url") or f"https://www.youtube.com/watch?v={vid_id}")
+
+
+# Below this best-score, the plain-search pool is considered weak enough to be worth
+# a second search against the YouTube Music index (signal-poor entries cap out around
+# 0.73, so they can only ever win as a rescue, never override a confident pick).
+_YTM_RESCUE_SCORE = 0.60
 
 
 def yt_search_best(
@@ -540,20 +644,32 @@ def yt_search_best(
 
     Retrieval breadth matters more than score precision here: a wrong pick is usually a
     *missing* correct candidate, so we pull a wide pool (default 10) and let the
-    channel/duration signals surface the official audio.
+    channel/duration signals surface the official audio. When the plain-search pool
+    scores badly (< _YTM_RESCUE_SCORE) and prefer_ytm is set, the YouTube Music index
+    is searched as a rescue pool — its top "song" results are usually the canonical
+    studio audio even when plain search drowns in reuploads.
     """
     query = f"{artist} {title}"
-    entries = _yt_search_entries(query, n_candidates, prefer_ytm)
-    if not entries:
-        return f"ytsearch1:{query}", 0.0
+    entries = _yt_search_entries(query, n_candidates)
 
     best_url = ""
     best_score = -1.0
+    seen_ids: set[str] = set()
     for entry in entries:
+        seen_ids.add(str(entry.get("id") or ""))
         score, _ = score_yt_candidate(entry, artist, title, duration_seconds, prefer_explicit)
         if score > best_score:
             best_score = score
             best_url = _entry_url(entry)
+
+    if prefer_ytm and best_score < _YTM_RESCUE_SCORE:
+        for entry in _yt_music_search_entries(query, n_candidates):
+            if str(entry.get("id") or "") in seen_ids:
+                continue
+            score, _ = score_yt_candidate(entry, artist, title, duration_seconds, prefer_explicit)
+            if score > best_score:
+                best_score = score
+                best_url = _entry_url(entry)
 
     return best_url or f"ytsearch1:{query}", max(best_score, 0.0)
 
@@ -570,14 +686,22 @@ def yt_search_ranked(
 ) -> list[dict]:
     """Ranked YouTube candidate pool (best-first) for the review "Different source" panel.
 
-    Same retrieval + scoring as `yt_search_best`, but returns every candidate with its
-    score and signals so the user sees — and can swap to — exactly what the auto-picker
-    weighed. ``query`` overrides the search terms (a free-text box) while scoring still
-    happens against the wanted (artist, title, duration). Returns a list of dicts keyed
-    for ``source_replace_results.html`` (``provider_ref`` = the swap target URL).
+    Same scoring as `yt_search_best`, but returns every candidate with its score and
+    signals so the user sees — and can swap to — exactly what the auto-picker weighed.
+    Retrieval is a superset: the YouTube Music pool (which the picker only fetches as
+    a rescue) is always merged in here, since a human is choosing. ``query`` overrides
+    the search terms (a free-text box) while scoring still happens against the wanted
+    (artist, title, duration). Returns a list of dicts keyed for
+    ``source_replace_results.html`` (``provider_ref`` = the swap target URL).
     """
     q = (query or f"{artist} {title}").strip()
-    entries = _yt_search_entries(q, n_candidates, prefer_ytm)
+    entries = _yt_search_entries(q, n_candidates)
+    if prefer_ytm:
+        seen_ids = {str(e.get("id") or "") for e in entries}
+        entries += [
+            e for e in _yt_music_search_entries(q, n_candidates)
+            if str(e.get("id") or "") not in seen_ids
+        ]
     results: list[dict] = []
     for entry in entries:
         score, is_official = score_yt_candidate(
