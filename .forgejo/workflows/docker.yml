@@ -1,0 +1,58 @@
+# Forgejo Actions equivalent of .github/workflows/docker.yml.
+# Builds the api and worker images and pushes them to Forgejo's container
+# registry. The deployment host then `docker compose pull`s
+# git.gjessing.io/gjessing1/audioreap/{api,worker} and restarts.
+#
+# Runner specifics (host-Docker-socket model, see torrential docs/forgejo.md):
+# - `runs-on: docker` -> catthehacker/ubuntu:act-latest; build/push run against
+#   the HOST daemon through the mounted socket.
+# - Pushes go to localhost:3000 (Forgejo's host-published HTTP port) because
+#   Caddy 413s large layer uploads via git.gjessing.io. Registry storage is
+#   hostname-agnostic, so the images are pulled as git.gjessing.io/... as usual.
+# - Auth is a PAT with write:package stored as the REGISTRY_TOKEN repo secret;
+#   the automatic GITHUB_TOKEN only gets package *read* on this instance.
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  # Public name — what deployments pull (HTTPS via Caddy).
+  IMAGE: git.gjessing.io/gjessing1/audioreap
+  # Push name — straight to Forgejo's host-published port, avoiding Caddy.
+  PUSH_IMAGE: localhost:3000/gjessing1/audioreap
+
+jobs:
+  build-and-push:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      # Written directly instead of `docker login`: login pings the registry
+      # from the job container (where localhost:3000 is unreachable), but the
+      # push runs on the host daemon (where it works).
+      - name: Registry auth
+        run: |
+          mkdir -p ~/.docker
+          auth=$(printf 'gjessing1:%s' "${{ secrets.REGISTRY_TOKEN }}" | base64 -w0)
+          printf '{"auths":{"localhost:3000":{"auth":"%s"}}}' "$auth" > ~/.docker/config.json
+
+      - name: Build images
+        run: |
+          SHA_TAG="${GITHUB_SHA::7}"
+          for target in api worker; do
+            docker build --target $target \
+              -t "$IMAGE/$target:latest" -t "$IMAGE/$target:$SHA_TAG" \
+              -t "$PUSH_IMAGE/$target:latest" -t "$PUSH_IMAGE/$target:$SHA_TAG" .
+          done
+
+      - name: Push images
+        run: |
+          SHA_TAG="${GITHUB_SHA::7}"
+          for target in api worker; do
+            docker push "$PUSH_IMAGE/$target:latest"
+            docker push "$PUSH_IMAGE/$target:$SHA_TAG"
+          done
