@@ -1,0 +1,57 @@
+<div class="card card-review" id="job-{{ job_id }}" data-state="failed">
+
+  {# ── Header ─────────────────────────────────────────────────────────── #}
+  <div class="rv-header">
+    <div class="rv-art rv-art--lg">
+      <div style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:22px">♪</div>
+    </div>
+    <div class="rv-info">
+      <div class="rv-badges">
+        <span class="badge badge-fail">failed</span>
+        {% if source_url %}
+        <a href="{{ source_url }}" target="_blank" rel="noopener" class="badge badge-busy"
+           style="text-decoration:none" title="Open the source that failed">▶ Source</a>
+        {% endif %}
+      </div>
+      <div class="rv-source" style="font-weight:600">{{ want_title }}</div>
+      <div class="rv-source">{{ want_artist }}</div>
+    </div>
+  </div>
+
+  {# ── Failure reason ─────────────────────────────────────────────────── #}
+  {% if error %}
+  <div class="rv-alert rv-alert--error">
+    <div style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Download failed</div>
+    <div>{{ error }}</div>
+    <div style="font-size:12px;margin-top:6px;color:var(--t3)">The original source is unusable. Pick a different YouTube version below, or paste a URL — the track's metadata is kept, only the audio source changes.</div>
+  </div>
+  {% endif %}
+
+  {# ── Source replacement panel (auto-opens, reuses the review flow) ───── #}
+  <div id="src-panel-{{ job_id }}" class="mb-panel">
+    <div style="font-size:11px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Find a different YouTube version</div>
+    <form class="mb-search-row"
+          hx-get="/jobs/{{ job_id }}/search-source"
+          hx-target="#src-results-{{ job_id }}"
+          hx-trigger="submit">
+      <input class="rv-input" name="q" type="text"
+             value="{{ (want_artist or '') ~ ' ' ~ (want_title or '') }}"
+             placeholder="Search YouTube…" autocomplete="off">
+      <button type="submit" class="btn btn-sm btn-ghost">
+        Search <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+    </form>
+    <div id="src-results-{{ job_id }}"
+         hx-get="/jobs/{{ job_id }}/search-source"
+         hx-trigger="load"
+         hx-swap="innerHTML"></div>
+  </div>
+
+  {# ── Footer actions ─────────────────────────────────────────────────── #}
+  <div class="rv-actions" style="padding:10px 14px">
+    <button type="button" class="btn btn-sm btn-ghost"
+            hx-get="/jobs/status/{{ job_id }}"
+            hx-target="#job-{{ job_id }}"
+            hx-swap="outerHTML">← Back</button>
+  </div>
+</div>

@@ -168,6 +168,22 @@ def test_job_card_failed() -> None:
     j.error = "Some error occurred"
     html = _render("partials/job_card.html", {"job": j})
     assert "failed" in html
+    # Failed jobs expose the manual source-replacement entry point.
+    assert "/fix-source" in html
+
+
+def test_failed_source_card() -> None:
+    html = _render("partials/failed_source_card.html", {
+        "job_id": "abc12345",
+        "want_artist": "Daft Punk",
+        "want_title": "Derezzed",
+        "source_url": "https://youtube.com/watch?v=dead",
+        "error": "Video unavailable",
+    })
+    assert "Daft Punk" in html
+    assert "Derezzed" in html
+    assert "Video unavailable" in html
+    assert "/jobs/abc12345/search-source" in html
 
 
 def test_review_card_minimal() -> None:

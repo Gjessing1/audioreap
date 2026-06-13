@@ -1,11 +1,11 @@
-const CACHE = "audioreap-shell-v2";
+const CACHE = "audioreap-shell-v3";
 const SHELL = [
   "/",
   "/static/app.css",
   "/static/app.js",
   "/static/htmx.min.js",
   "/static/manifest.webmanifest",
-  "/static/icon-192.png",
+  "/static/icons/icon.svg",
 ];
 
 self.addEventListener("install", (e) => {

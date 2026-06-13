@@ -1936,6 +1936,55 @@ async def replace_job_source(
     )
 
 
+@router.get("/jobs/{job_id}/fix-source", response_class=HTMLResponse)
+async def fix_failed_source(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Manual intervention for a permanently failed job.
+
+    A job that resolved to a dead/unavailable video will fail every retry against
+    the same ``provider_ref``. This exposes the same source-replacement panel the
+    review card uses, so the user can swap to a different YouTube version (or paste
+    a URL) without losing the track's locked metadata. The panel POSTs to the
+    existing ``/jobs/{id}/replace-source`` endpoint, which re-queues the download.
+    """
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise HTTPException(404)
+
+    meta: dict = {}
+    if row.resolved_metadata_json:
+        try:
+            meta = json.loads(row.resolved_metadata_json)
+        except Exception:
+            meta = {}
+
+    want_artist = (meta.get("artist") or "").strip()
+    want_title = (meta.get("title") or "").strip()
+    if row.candidate_json:
+        try:
+            from service.core.models import TrackCandidate as _TC
+            cand = _TC.model_validate_json(row.candidate_json)
+            want_artist = want_artist or (cand.artist or "")
+            want_title = want_title or (cand.title or "")
+        except Exception:
+            pass
+
+    source_url = (meta.get("source_url") or "").strip()
+    if not source_url:
+        pr = (row.provider_ref or "").strip()
+        if pr.startswith(("http://", "https://")):
+            source_url = pr
+
+    return templates.TemplateResponse(
+        request, "partials/failed_source_card.html",
+        {"job_id": job_id, "want_artist": want_artist, "want_title": want_title,
+         "source_url": source_url, "error": row.error},
+    )
+
+
 @router.get("/library/albums", response_class=HTMLResponse)
 async def library_albums_page(
     request: Request,

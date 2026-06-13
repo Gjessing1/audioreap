@@ -81,6 +81,14 @@
             hx-swap="outerHTML">Retry</button>
     {% endif %}
 
+    {% if job.state == 'failed' %}
+    <button class="btn btn-sm btn-ghost"
+            hx-get="/jobs/{{ job.id }}/fix-source"
+            hx-target="#job-{{ job.id }}"
+            hx-swap="outerHTML"
+            title="Swap to a different YouTube source — the original failed; metadata is kept">Different source</button>
+    {% endif %}
+
     {% if job.state in ('queued','waiting','downloading','processing','tagging','importing') %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/cancel/{{ job.id }}"
