@@ -3,19 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#7c3aed">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0A0C12" media="(prefers-color-scheme: dark)">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icons/icon.svg">
+  <!-- Apply saved theme before first paint to avoid a flash of the wrong mode -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('ar-theme');
+        if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="/static/app.css">
   <title>{% block title %}audioreap{% endblock %}</title>
 </head>
 <body>
 <nav id="main-nav">
   <a href="/acquire" class="brand">audioreap</a>
+  <button class="theme-btn" id="theme-btn" type="button" aria-label="Toggle theme" title="Theme">◐</button>
   <button class="nav-toggle" id="nav-toggle" aria-label="Menu" aria-expanded="false">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
       <line x1="1" y1="4" x2="15" y2="4"/>
@@ -58,6 +69,23 @@
   links.querySelectorAll('a').forEach(a =>
     a.addEventListener('click', () => nav.classList.remove('nav-open'))
   );
+
+  // Theme toggle: cycle auto → dark → light → auto. "auto" follows the OS.
+  (function () {
+    const KEY   = 'ar-theme';
+    const CYCLE = { auto: 'dark', dark: 'light', light: 'auto' };
+    const ICONS = { auto: '◐', dark: '☾', light: '☀' };
+    const btn   = document.getElementById('theme-btn');
+    const get   = () => localStorage.getItem(KEY) || 'auto';
+    function apply(theme) {
+      if (theme === 'auto') delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = theme;
+      try { localStorage.setItem(KEY, theme); } catch (e) {}
+      if (btn) { btn.textContent = ICONS[theme]; btn.title = 'Theme: ' + theme; }
+    }
+    apply(get());
+    if (btn) btn.addEventListener('click', () => apply(CYCLE[get()]));
+  })();
 </script>
 </body>
 </html>

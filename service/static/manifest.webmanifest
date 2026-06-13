@@ -4,8 +4,8 @@
   "description": "Music acquisition console for Navidrome",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f1117",
-  "theme_color": "#7c3aed",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
   "icons": [
     {
       "src": "/static/icons/icon.svg",
