@@ -11,6 +11,7 @@ modified by this module.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,15 @@ _GET_URL = "https://lrclib.net/api/get"
 _SEARCH_URL = "https://lrclib.net/api/search"
 # LRCLIB asks clients to identify themselves with a descriptive User-Agent.
 _USER_AGENT = "audioreap (https://github.com/Gjessing1/audioreap)"
+
+# Backoff for transient failures (rate limits / server errors / network blips).
+_MAX_RETRIES = 3            # attempts after the first try
+_BACKOFF_BASE = 1.0         # seconds; doubles each retry (1s, 2s, 4s)
+_BACKOFF_CAP = 30.0         # never wait longer than this between attempts
+
+
+class _TransientError(Exception):
+    """A retryable LRCLIB failure — must NOT be cached as a definitive miss."""
 
 
 @dataclass
@@ -50,6 +60,46 @@ def has_lyrics_sidecar(audio_path: Path) -> bool:
         return p.exists() and p.stat().st_size > 0
     except OSError:
         return False
+
+
+def _retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
+    """Honour a ``Retry-After`` header if present, else exponential backoff."""
+    ra = resp.headers.get("Retry-After")
+    if ra:
+        try:
+            return min(float(ra), _BACKOFF_CAP)
+        except ValueError:
+            pass  # HTTP-date form — fall through to exponential backoff
+    return min(_BACKOFF_BASE * (2 ** attempt), _BACKOFF_CAP)
+
+
+async def _get_json(client: httpx.AsyncClient, url: str, params: dict) -> object | None:
+    """GET with backoff on transient failures.
+
+    Returns the parsed JSON on 200, ``None`` on a definitive negative (404 / other
+    4xx), and raises ``_TransientError`` when every retry is exhausted on a
+    retryable condition (429, 5xx, timeout, connection error). The caller uses the
+    exception to avoid caching a false miss.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = await client.get(url, params=params)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            delay = min(_BACKOFF_BASE * (2 ** attempt), _BACKOFF_CAP)
+        else:
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code == 429 or resp.status_code >= 500:
+                last_exc = _TransientError(f"HTTP {resp.status_code}")
+                delay = _retry_after_seconds(resp, attempt)
+            else:
+                return None  # 404 and other 4xx — a real "not found"
+        if attempt < _MAX_RETRIES:
+            logger.debug("LRCLIB transient (%s); retry %d in %.1fs", last_exc, attempt + 1, delay)
+            await asyncio.sleep(delay)
+    raise _TransientError(str(last_exc) if last_exc else "exhausted retries")
 
 
 def _parse(payload: dict) -> LyricsResult | None:
@@ -111,19 +161,25 @@ async def fetch_lyrics(
                 params["album_name"] = album
             if duration_seconds:
                 params["duration"] = str(int(duration_seconds))
-            resp = await client.get(_GET_URL, params=params)
-            if resp.status_code == 200:
-                result = _parse(resp.json())
+            payload = await _get_json(client, _GET_URL, params)
+            if isinstance(payload, dict):
+                result = _parse(payload)
 
             if result is None:
                 # Looser search — first result that actually carries lyrics.
                 sp = {"track_name": title, "artist_name": artist}
-                sresp = await client.get(_SEARCH_URL, params=sp)
-                if sresp.status_code == 200:
-                    for rec in sresp.json() or []:
+                hits = await _get_json(client, _SEARCH_URL, sp)
+                if isinstance(hits, list):
+                    for rec in hits:
                         result = _parse(rec)
                         if result is not None:
                             break
+    except _TransientError as exc:
+        # Rate-limited / server-side / network failure after retries — return None
+        # WITHOUT caching, so this track is retried on the next backfill run rather
+        # than being poisoned as a permanent miss.
+        logger.debug("LRCLIB transient failure for %r — %r: %s", artist, title, exc)
+        return None
     except Exception as exc:
         logger.debug("LRCLIB fetch failed for %r — %r: %s", artist, title, exc)
         return None
