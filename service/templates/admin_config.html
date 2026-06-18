@@ -58,6 +58,17 @@
   </div>
 
   <div class="rv-field rv-field--full">
+    <label class="rv-label">Fetch lyrics (LRCLIB)</label>
+    <select class="rv-input" name="lyrics_enabled">
+      <option value="true" {% if current.lyrics_enabled %}selected{% endif %}>On (default)</option>
+      <option value="false" {% if not current.lyrics_enabled %}selected{% endif %}>Off</option>
+    </select>
+    <div style="font-size:11px;color:var(--t3);margin-top:4px">
+      On approval, fetch synced/plain lyrics from LRCLIB (free, no key) and write a .lrc sidecar next to the track. Navidrome serves these to any Subsonic client. Audio tags are never modified.
+    </div>
+  </div>
+
+  <div class="rv-field rv-field--full">
     <label class="rv-label">Worker concurrency
       <span style="font-weight:400;color:var(--t4)">(default 2)</span>
     </label>

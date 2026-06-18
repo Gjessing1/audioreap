@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # Acquisition preferences
     prefer_explicit: bool = True  # Rank explicit versions above clean when searching
 
+    # Lyrics — fetch synced/plain lyrics from LRCLIB (free, no key) and write a
+    # .lrc sidecar next to each track on approval. Navidrome reads these natively.
+    lyrics_enabled: bool = True
+
     # yt-dlp rate limiting — pace downloads to a slow, steady stream that stays
     # *under* YouTube's rate limit rather than bursting into a 429. Adaptive: the
     # interval grows after a 429 and relaxes back toward the minimum on success.
@@ -94,6 +98,7 @@ CONFIG_EDITABLE_KEYS = (
     "staging_quality_threshold",
     "min_bitrate_kbps",
     "prefer_explicit",
+    "lyrics_enabled",
     "worker_concurrency",
     "rescan_interval_minutes",
     "auto_fix_tags_enabled",

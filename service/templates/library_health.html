@@ -92,6 +92,23 @@
 </p>
 <div id="covers-result"></div>
 
+<div class="section-title" style="margin-top:24px">Missing lyrics
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-post="/library/health/fetch-missing-lyrics"
+          hx-target="#lyrics-result"
+          hx-swap="innerHTML"
+          hx-indicator="#lyrics-spinner">
+    Fetch all
+    <span id="lyrics-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Fetch synced (or plain) lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a>
+  for every track without a .lrc sidecar. Saves a .lrc file alongside each track — does not modify audio
+  file tags. Navidrome serves these to any Subsonic client (Symfonium, etc.). Runs in the background.
+</p>
+<div id="lyrics-result"></div>
+
 <div class="section-title" style="margin-top:24px">Tracks without MB ID
   <button class="btn btn-ghost btn-sm" style="margin-left:8px"
           hx-get="/library/health/no-mbid"

@@ -923,6 +923,32 @@ async def place_approved_track(
             logger.debug("Approve: artwork embed failed: %s", exc)
         write_cover_jpg(dest.parent, artwork_bytes)
 
+    # Fetch lyrics from LRCLIB and write a .lrc sidecar (best-effort). Navidrome
+    # reads these natively; audio tags are left untouched.
+    if settings.lyrics_enabled:
+        try:
+            from service.metadata.lyrics import (
+                has_lyrics_sidecar,
+                fetch_lyrics,
+                write_lrc_sidecar,
+            )
+            if not has_lyrics_sidecar(dest):
+                lyrics = await fetch_lyrics(
+                    artist=artist,
+                    title=title,
+                    album=album,
+                    duration_seconds=duration_seconds,
+                    cache_dir=settings.cache_dir,
+                )
+                if lyrics is not None and lyrics.best:
+                    await asyncio.to_thread(write_lrc_sidecar, dest, lyrics.best)
+                    logger.info(
+                        "Approve: wrote %s lyrics for %s",
+                        "synced" if lyrics.synced else "plain", dest.name,
+                    )
+        except Exception as exc:
+            logger.debug("Approve: lyrics fetch failed: %s", exc)
+
     # Index in DB using a savepoint so failures don't roll back the outer transaction.
     # Everything (index + track-row updates) lives inside begin_nested() so any flush
     # failure only rolls back the savepoint — the outer transaction stays clean and the

@@ -6535,6 +6535,23 @@ async def fetch_missing_covers(request: Request, session: AsyncSession = Depends
     return HTMLResponse('<span class="badge-ok">Cover art fetch queued — check back in a few minutes</span>')
 
 
+# ── Bulk lyrics fetch ─────────────────────────────────────────────────────────
+
+
+@router.post("/library/health/fetch-missing-lyrics", response_class=HTMLResponse)
+async def fetch_missing_lyrics(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Enqueue a background arq job to fetch LRCLIB lyrics for tracks missing them."""
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job("fetch_missing_lyrics")
+        await redis.aclose()
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
+    return HTMLResponse('<span class="badge-ok">Lyrics fetch queued — runs in the background (large libraries take a while)</span>')
+
+
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 

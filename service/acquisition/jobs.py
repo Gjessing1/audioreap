@@ -821,3 +821,67 @@ async def fetch_missing_covers(ctx: dict[str, object]) -> None:
             logger.debug("fetch_missing_covers: %s failed: %s", album.title, exc)
 
     logger.info("fetch_missing_covers: fetched=%d skipped=%d", fetched, skipped)
+
+
+async def fetch_missing_lyrics(ctx: dict[str, object]) -> None:
+    """arq job: fetch lyrics from LRCLIB for every track missing a .lrc sidecar.
+
+    Writes a synced (or plain) .lrc next to each audio file — Navidrome serves
+    these over the Subsonic API. Audio file tags are never modified. Skips files
+    that already have a sidecar. Paces requests to stay polite to LRCLIB.
+    """
+    from pathlib import Path
+
+    from service.config import settings as _s
+    from service.db.schema import Track as _Track, TrackFile as _TF
+    from service.metadata.lyrics import (
+        fetch_lyrics as _fetch_lyrics,
+        has_lyrics_sidecar as _has_sidecar,
+        write_lrc_sidecar as _write_lrc,
+    )
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import joinedload as _jl
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+
+    async with session_factory() as session:
+        tracks = (await session.execute(
+            _select(_Track)
+            .join(_Track.file)
+            .options(_jl(_Track.artist), _jl(_Track.file))
+        )).unique().scalars().all()
+
+    fetched = 0
+    skipped = 0
+    missed = 0
+    for track in tracks:
+        if not track.file:
+            continue
+        path = Path(track.file.path)
+        if not path.exists():
+            continue
+        if _has_sidecar(path):
+            skipped += 1
+            continue
+        artist = track.artist.name if track.artist else None
+        try:
+            lyrics = await _fetch_lyrics(
+                artist=artist,
+                title=track.title,
+                duration_seconds=track.duration_seconds,
+                cache_dir=_s.cache_dir,
+            )
+        except Exception as exc:
+            logger.debug("fetch_missing_lyrics: %s failed: %s", track.title, exc)
+            lyrics = None
+        if lyrics is not None and lyrics.best:
+            if await asyncio.to_thread(_write_lrc, path, lyrics.best):
+                fetched += 1
+        else:
+            missed += 1
+        # Be polite to LRCLIB — a steady trickle, not a burst.
+        await asyncio.sleep(0.3)
+
+    logger.info(
+        "fetch_missing_lyrics: fetched=%d skipped=%d no-match=%d", fetched, skipped, missed
+    )
