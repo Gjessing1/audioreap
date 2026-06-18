@@ -6552,6 +6552,42 @@ async def fetch_missing_lyrics(request: Request, session: AsyncSession = Depends
     return HTMLResponse('<span class="badge-ok">Lyrics fetch queued — runs in the background (large libraries take a while)</span>')
 
 
+@router.post("/library/health/reset-lyrics-misses", response_class=HTMLResponse)
+async def reset_lyrics_misses(request: Request) -> HTMLResponse:
+    """Delete cached LRCLIB miss markers so previously-missed tracks are retried.
+
+    A miss marker (``\\x00MISS``) is written when LRCLIB has no lyrics for a track,
+    so the next backfill skips re-hitting the API. Clearing them forces a fresh
+    lookup — useful after LRCLIB gains new lyrics, or to recover from any markers
+    written before transient errors were excluded from caching. Real lyric files
+    are left untouched.
+    """
+    from pathlib import Path
+
+    lyrics_cache = settings.cache_dir / "lyrics"
+    cleared = 0
+    try:
+        def _purge() -> int:
+            n = 0
+            if not lyrics_cache.is_dir():
+                return 0
+            for p in lyrics_cache.glob("*.lrc"):
+                try:
+                    if p.read_text(encoding="utf-8") == "\x00MISS":
+                        p.unlink()
+                        n += 1
+                except OSError:
+                    continue
+            return n
+        cleared = await asyncio.to_thread(_purge)
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">Reset failed: {exc}</span>')
+    return HTMLResponse(
+        f'<span class="badge-ok">Cleared {cleared} cached miss marker'
+        f'{"" if cleared == 1 else "s"} — run “Fetch all” to retry those tracks</span>'
+    )
+
+
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 
