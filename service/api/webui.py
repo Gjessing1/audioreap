@@ -6552,6 +6552,20 @@ async def fetch_missing_lyrics(request: Request, session: AsyncSession = Depends
     return HTMLResponse('<span class="badge-ok">Lyrics fetch queued — runs in the background (large libraries take a while)</span>')
 
 
+@router.post("/library/health/upgrade-plain-lyrics", response_class=HTMLResponse)
+async def upgrade_plain_lyrics(request: Request) -> HTMLResponse:
+    """Enqueue a job that upgrades plain-text .lrc sidecars to synced when LRCLIB has one."""
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        await redis.enqueue_job("fetch_missing_lyrics", upgrade_plain=True)
+        await redis.aclose()
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
+    return HTMLResponse('<span class="badge-ok">Synced-lyrics upgrade queued — re-checks plain tracks in the background</span>')
+
+
 @router.post("/library/health/reset-lyrics-misses", response_class=HTMLResponse)
 async def reset_lyrics_misses(request: Request) -> HTMLResponse:
     """Delete cached LRCLIB miss markers so previously-missed tracks are retried.

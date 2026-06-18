@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +59,29 @@ def has_lyrics_sidecar(audio_path: Path) -> bool:
     p = lrc_sidecar_path(audio_path)
     try:
         return p.exists() and p.stat().st_size > 0
+    except OSError:
+        return False
+
+
+# A synced LRC line begins with a timestamp like ``[01:23.45]`` — a digit right
+# after the bracket distinguishes it from metadata tags such as ``[ar:...]``.
+_TIMESTAMP_RE = re.compile(r"^\[\d{1,2}:\d{2}")
+
+
+def sidecar_is_synced(audio_path: Path) -> bool:
+    """True if the .lrc sidecar exists and contains synced (timestamped) lyrics.
+
+    Plain-text sidecars (and missing ones) return False — used to find tracks
+    that could be upgraded to a synced version if LRCLIB now has one.
+    """
+    p = lrc_sidecar_path(audio_path)
+    try:
+        if not (p.exists() and p.stat().st_size > 0):
+            return False
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if _TIMESTAMP_RE.match(line.strip()):
+                return True
+        return False
     except OSError:
         return False
 

@@ -102,6 +102,15 @@
     <span id="lyrics-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
   <button class="btn btn-ghost btn-sm" style="margin-left:4px"
+          hx-post="/library/health/upgrade-plain-lyrics"
+          hx-target="#lyrics-result"
+          hx-swap="innerHTML"
+          hx-indicator="#lyrics-upgrade-spinner"
+          hx-confirm="Re-check tracks that only have plain lyrics and upgrade them to synced where LRCLIB now has a timestamped version?">
+    Upgrade to synced
+    <span id="lyrics-upgrade-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+  <button class="btn btn-ghost btn-sm" style="margin-left:4px"
           hx-post="/library/health/reset-lyrics-misses"
           hx-target="#lyrics-result"
           hx-swap="innerHTML"
@@ -115,6 +124,8 @@
   Fetch synced (or plain) lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a>
   for every track without a .lrc sidecar. Saves a .lrc file alongside each track — does not modify audio
   file tags. Navidrome serves these to any Subsonic client (Symfonium, etc.). Runs in the background.
+  <br><strong>Upgrade to synced</strong> re-checks tracks that only have plain text and replaces them with
+  a timestamped (karaoke-scrolling) version when LRCLIB now has one — leaves already-synced tracks alone.
   <br><strong>Reset misses</strong> clears cached “no lyrics” results so tracks that previously came up
   empty are looked up again on the next Fetch all.
 </p>

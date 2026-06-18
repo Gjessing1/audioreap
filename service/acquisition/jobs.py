@@ -823,12 +823,22 @@ async def fetch_missing_covers(ctx: dict[str, object]) -> None:
     logger.info("fetch_missing_covers: fetched=%d skipped=%d", fetched, skipped)
 
 
-async def fetch_missing_lyrics(ctx: dict[str, object]) -> None:
-    """arq job: fetch lyrics from LRCLIB for every track missing a .lrc sidecar.
+async def fetch_missing_lyrics(ctx: dict[str, object], upgrade_plain: bool = False) -> None:
+    """arq job: fetch lyrics from LRCLIB and write .lrc sidecars.
 
     Writes a synced (or plain) .lrc next to each audio file — Navidrome serves
-    these over the Subsonic API. Audio file tags are never modified. Skips files
-    that already have a sidecar. Paces requests to stay polite to LRCLIB.
+    these over the Subsonic API. Audio file tags are never modified. Paces
+    requests to stay polite to LRCLIB.
+
+    Two modes:
+
+    * default — fetch lyrics for every track *missing* a sidecar; skips files
+      that already have one.
+    * ``upgrade_plain=True`` — only re-checks tracks whose sidecar is
+      *plain text*, and rewrites it only when LRCLIB now has a *synced*
+      version. Tracks that are missing or already synced are skipped. The disk
+      cache is bypassed in this mode so newly-contributed synced lyrics are
+      actually discovered (the cache can't tell synced from plain on its own).
     """
     from pathlib import Path
 
@@ -837,6 +847,7 @@ async def fetch_missing_lyrics(ctx: dict[str, object]) -> None:
     from service.metadata.lyrics import (
         fetch_lyrics as _fetch_lyrics,
         has_lyrics_sidecar as _has_sidecar,
+        sidecar_is_synced as _is_synced,
         write_lrc_sidecar as _write_lrc,
     )
     from sqlalchemy import select as _select
@@ -860,7 +871,12 @@ async def fetch_missing_lyrics(ctx: dict[str, object]) -> None:
         path = Path(track.file.path)
         if not path.exists():
             continue
-        if _has_sidecar(path):
+        if upgrade_plain:
+            # Only plain sidecars are candidates; skip missing and already-synced.
+            if not _has_sidecar(path) or _is_synced(path):
+                skipped += 1
+                continue
+        elif _has_sidecar(path):
             skipped += 1
             continue
         artist = track.artist.name if track.artist else None
@@ -869,12 +885,21 @@ async def fetch_missing_lyrics(ctx: dict[str, object]) -> None:
                 artist=artist,
                 title=track.title,
                 duration_seconds=track.duration_seconds,
-                cache_dir=_s.cache_dir,
+                # Bypass the cache when upgrading — it stores only best() text and
+                # would keep handing back the old plain version.
+                cache_dir=None if upgrade_plain else _s.cache_dir,
             )
         except Exception as exc:
             logger.debug("fetch_missing_lyrics: %s failed: %s", track.title, exc)
             lyrics = None
-        if lyrics is not None and lyrics.best:
+        if upgrade_plain:
+            # Only rewrite when we actually got a synced upgrade.
+            if lyrics is not None and lyrics.synced:
+                if await asyncio.to_thread(_write_lrc, path, lyrics.synced):
+                    fetched += 1
+            else:
+                missed += 1
+        elif lyrics is not None and lyrics.best:
             if await asyncio.to_thread(_write_lrc, path, lyrics.best):
                 fetched += 1
         else:
@@ -882,6 +907,12 @@ async def fetch_missing_lyrics(ctx: dict[str, object]) -> None:
         # Be polite to LRCLIB — a steady trickle, not a burst.
         await asyncio.sleep(0.3)
 
-    logger.info(
-        "fetch_missing_lyrics: fetched=%d skipped=%d no-match=%d", fetched, skipped, missed
-    )
+    if upgrade_plain:
+        logger.info(
+            "fetch_missing_lyrics(upgrade): upgraded=%d skipped=%d no-synced=%d",
+            fetched, skipped, missed,
+        )
+    else:
+        logger.info(
+            "fetch_missing_lyrics: fetched=%d skipped=%d no-match=%d", fetched, skipped, missed
+        )
