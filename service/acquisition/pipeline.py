@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -696,6 +697,7 @@ async def run_acquisition(
             prov_recording=prov_recording,
             # Propagate replacement flag so place_approved_track can trash the old file
             is_replacement=candidate.skip_dedup,
+            replace_path=candidate.replace_path,
         )
 
         row = await session.get(AcquisitionJobRow, job_id)
@@ -877,13 +879,29 @@ async def place_approved_track(
         )
 
         is_replacement: bool = meta.is_replacement
-        if dest.exists() and is_replacement:
-            # Trash the old file before placing the replacement so the new
-            # version actually lands instead of being skipped.
+        if is_replacement:
+            from service.db.schema import TrackFile
             from service.library.writer import safe_trash as _safe_trash
             trash_dir = settings.music_dir / ".trash"
-            await asyncio.to_thread(_safe_trash, dest, trash_dir)
-            logger.info("Approve replacement: trashed old file at %s", dest)
+            # Trash the original library file by its recorded path. This handles
+            # the common case where the replacement remuxes to a different
+            # extension (e.g. .mp3 → .ogg): the recomputed `dest` no longer
+            # matches the original, so trashing only `dest` would leave the old
+            # file behind and Navidrome would show a duplicate.
+            original = Path(meta.replace_path) if meta.replace_path else None
+            if original is not None and original != dest and original.exists():
+                await asyncio.to_thread(_safe_trash, original, trash_dir)
+                # Drop the stale DB row so the library doesn't list both files
+                # before the next full scan reconciles it.
+                await session.execute(
+                    sa_delete(TrackFile).where(TrackFile.path == str(original))
+                )
+                logger.info("Approve replacement: trashed original file at %s", original)
+            # Also trash anything already sitting at the destination so the new
+            # version actually lands instead of being skipped (same-extension case).
+            if dest.exists():
+                await asyncio.to_thread(_safe_trash, dest, trash_dir)
+                logger.info("Approve replacement: trashed old file at %s", dest)
 
         # Idempotency: file already in place — still fall through to indexing so
         # that a previous approval that hit the tombstone bug (file placed but no

@@ -4377,7 +4377,11 @@ async def queue_replacement_track(
 
     stmt = (
         select(Track)
-        .options(joinedload(Track.artist), joinedload(Track.album))
+        .options(
+            joinedload(Track.artist),
+            joinedload(Track.album),
+            joinedload(Track.file),
+        )
         .where(Track.id == internal_id)
     )
     row = (await session.execute(stmt)).unique().scalar_one_or_none()
@@ -4401,6 +4405,7 @@ async def queue_replacement_track(
         "mb_recording_id": row.musicbrainz_recording_id,
         "mb_release_id": row.album.musicbrainz_release_id if row.album else None,
         "skip_dedup": True,
+        "replace_path": row.file.path if row.file else None,
     })
 
     job_id = await create_job(
@@ -4450,7 +4455,11 @@ async def queue_url_replacement(
 
     stmt = (
         select(Track)
-        .options(joinedload(Track.artist), joinedload(Track.album))
+        .options(
+            joinedload(Track.artist),
+            joinedload(Track.album),
+            joinedload(Track.file),
+        )
         .where(Track.id == internal_id)
     )
     row = (await session.execute(stmt)).unique().scalar_one_or_none()
@@ -4468,6 +4477,7 @@ async def queue_url_replacement(
         mb_recording_id=row.musicbrainz_recording_id,
         mb_release_id=row.album.musicbrainz_release_id if row.album else None,
         skip_dedup=True,
+        replace_path=row.file.path if row.file else None,
     )
 
     job_id = await create_job(

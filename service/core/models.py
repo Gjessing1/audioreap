@@ -88,6 +88,11 @@ class TrackCandidate(BaseModel):
     # When True, the dedup check in run_acquisition is skipped.  Used for
     # "replace source" jobs where the existing track IS the local match.
     skip_dedup: bool = False
+    # Absolute path of the existing library file this job replaces. Carried so
+    # Phase 2 can trash the original even when the replacement remuxes to a
+    # different extension (e.g. .mp3 → .ogg), where the recomputed destination
+    # path no longer matches the original and the old file would otherwise survive.
+    replace_path: str | None = None
 
 
 class FetchResult(BaseModel):
@@ -213,6 +218,8 @@ class ResolvedTrackMetadata(BaseModel):
     thumbnail_url: str | None = None
     is_replacement: bool = False
     is_enrichment: bool = False
+    # Original library file path being replaced (see TrackCandidate.replace_path).
+    replace_path: str | None = None
 
     # Metadata provenance (which source contributed each field)
     prov_title: str | None = None
