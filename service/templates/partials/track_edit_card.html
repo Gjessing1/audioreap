@@ -239,12 +239,11 @@
         ↑ Upgrade
       </button>
       {% endif %}
-      <button type="button" class="btn btn-sm btn-ghost"
+      <button type="button" class="btn btn-sm btn-danger"
               hx-delete="/library/tracks/{{ track.id }}"
               hx-target="#browse-{{ safe_id }}"
               hx-swap="outerHTML swap:0.3s"
-              hx-confirm="Move this track to trash?"
-              style="color:var(--t4)">
+              hx-confirm="Move this track to trash?">
         Delete
       </button>
       {% if source_album_id %}
