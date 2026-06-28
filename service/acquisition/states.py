@@ -39,6 +39,23 @@ _TRANSIENT_PATTERNS: list[str] = [
 ]
 
 
+# Age-gate: YouTube refuses the streams without an age-verified login. Distinct from
+# the generic permanent class because the pipeline can auto-substitute a non-gated
+# source when no usable cookies are configured.
+_AGE_GATE_PATTERNS: list[str] = [
+    "confirm your age",
+    "sign in to confirm",
+    "age-restricted",
+    "inappropriate for some users",
+]
+
+
+def is_age_gate_error(exc: Exception) -> bool:
+    """True when the failure is YouTube's age-confirmation wall."""
+    msg = str(exc).lower()
+    return any(p in msg for p in _AGE_GATE_PATTERNS)
+
+
 def classify_failure(exc: Exception) -> tuple[FailureClass, str]:
     """Map an exception to (failure_class, human-readable message).
 

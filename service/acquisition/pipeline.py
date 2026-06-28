@@ -19,7 +19,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from service.acquisition.states import classify_failure
+from service.acquisition.states import classify_failure, is_age_gate_error
 from service.config import settings
 from service.core.identity import make_id
 from service.core.models import CandidateScore, ResolvedTrackMetadata, TrackCandidate
@@ -113,6 +113,86 @@ async def _find_local_match(
     return None
 
 
+# Minimum source-match score to auto-substitute for an age-gated video. The picker's
+# own "no match" floor is 0.35; we hold substitutes a little higher so we only swap in
+# a clearly-good alternative, never a weak guess.
+_SUBSTITUTE_MIN_SCORE = 0.45
+# Original + how many alternative sources we'll try before giving up.
+_MAX_SOURCE_ATTEMPTS = 3
+
+
+async def _download_with_source_fallback(
+    *,
+    session: AsyncSession,
+    job_id: str,
+    provider: Provider,
+    provider_ref: str,
+    candidate: TrackCandidate,
+    tmp_dir: Path,
+    on_progress: Callable[[float], None] | None,
+):
+    """Fetch the audio, auto-substituting a non-gated source on a YouTube age-gate.
+
+    When YouTube age-gates the chosen video and no usable login cookies are configured,
+    the user still wants the *track* — not this particular upload — so we pick the next
+    best non-gated match (`yt_search_best`, excluding ids already tried) and retry,
+    bounded by `_MAX_SOURCE_ATTEMPTS`. If cookies are configured we leave the gate to
+    them. Returns the FetchResult, or None after recording the failure on the job row.
+    """
+    from service.providers.ytdlp import (
+        cookies_are_configured,
+        video_id_from_url,
+        yt_search_best,
+    )
+
+    active_ref = provider_ref
+    tried_ids: set[str] = set()
+    first_id = video_id_from_url(provider_ref)
+    if first_id:
+        tried_ids.add(first_id)
+
+    for attempt in range(_MAX_SOURCE_ATTEMPTS):
+        try:
+            return await provider.fetch(active_ref, tmp_dir, on_progress=on_progress)
+        except Exception as exc:
+            fc, err = classify_failure(exc)
+            eligible = (
+                is_age_gate_error(exc)
+                and provider.name == "ytdlp"
+                and not cookies_are_configured()
+                and bool(candidate.title and candidate.artist)
+                and attempt < _MAX_SOURCE_ATTEMPTS - 1
+            )
+            if not eligible:
+                await _set_state(session, job_id, "failed", failure_class=fc, error=err)
+                logger.error("Download failed [%s] %s: %s", fc, job_id, err)
+                return None
+
+            alt_url, alt_score = await asyncio.to_thread(
+                yt_search_best,
+                candidate.artist,
+                candidate.title,
+                candidate.duration_seconds,
+                exclude_ids=tried_ids,
+            )
+            alt_id = video_id_from_url(alt_url)
+            if not alt_id or alt_id in tried_ids or alt_score < _SUBSTITUTE_MIN_SCORE:
+                await _set_state(session, job_id, "failed", failure_class=fc, error=err)
+                logger.error(
+                    "Download failed [%s] %s (age-gated, no non-gated alternative ≥ %.2f): %s",
+                    fc, job_id, _SUBSTITUTE_MIN_SCORE, err,
+                )
+                return None
+
+            tried_ids.add(alt_id)
+            active_ref = alt_url
+            logger.warning(
+                "Job %s age-gated (%r); substituting non-gated source %s (score %.2f)",
+                job_id, candidate.title, alt_url, alt_score,
+            )
+    return None
+
+
 async def run_acquisition(
     *,
     job_id: str,
@@ -147,13 +227,17 @@ async def run_acquisition(
 
         # ── 1. Download ────────────────────────────────────────────────────────
         await _set_state(session, job_id, "downloading")
-        try:
-            fetch_result = await provider.fetch(provider_ref, tmp_dir, on_progress=on_progress)
-        except Exception as exc:
-            fc, err = classify_failure(exc)
-            await _set_state(session, job_id, "failed", failure_class=fc, error=err)
-            logger.error("Download failed [%s] %s: %s", fc, job_id, err)
-            return
+        fetch_result = await _download_with_source_fallback(
+            session=session,
+            job_id=job_id,
+            provider=provider,
+            provider_ref=provider_ref,
+            candidate=candidate,
+            tmp_dir=tmp_dir,
+            on_progress=on_progress,
+        )
+        if fetch_result is None:
+            return  # failure state already recorded on the job row
 
         audio_path = fetch_result.file_path
         _rm = fetch_result.raw_metadata

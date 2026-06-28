@@ -55,6 +55,47 @@ def _youtube_auth_opts() -> dict[str, object]:
     return opts
 
 
+def cookies_are_configured() -> bool:
+    """True when a cookies file is set *and* actually carries login cookies.
+
+    The placeholder jar we ship has only ``#`` comment lines, so a bare path isn't
+    enough — a real cookie is a tab-separated data line. Used to decide whether an
+    age-gated download can be rescued by substituting a non-gated source (no usable
+    cookies) or should be left to the cookies to handle (cookies present).
+    """
+    from service.config import settings
+
+    path = (getattr(settings, "ytdlp_cookies_file", "") or "").strip()
+    if not path:
+        return False
+    p = Path(path)
+    if not p.is_file():
+        return False
+    try:
+        for line in p.read_text(errors="ignore").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#") and "\t" in line:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+_VIDEO_ID_RE = re.compile(r"(?:v=|/watch\?.*v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})")
+
+
+def video_id_from_url(url: str) -> str | None:
+    """Extract the 11-char YouTube video id from a watch/short URL, else None."""
+    if not url:
+        return None
+    m = _VIDEO_ID_RE.search(url)
+    if m:
+        return m.group(1)
+    # Bare id or trailing-id form (…/v/<id>): take the last 11-char id-shaped token.
+    tail = url.rstrip("/").split("/")[-1].split("?")[0]
+    return tail if re.fullmatch(r"[A-Za-z0-9_-]{11}", tail) else None
+
+
 def _canonical_source_url(info: object, provider_ref: str) -> str | None:
     """Best canonical media URL for the thing yt-dlp actually downloaded.
 
@@ -636,11 +677,13 @@ def yt_search_best(
     n_candidates: int = 10,
     prefer_ytm: bool = True,
     prefer_explicit: bool = True,
+    exclude_ids: set[str] | None = None,
 ) -> tuple[str, float]:
     """Search for the best-matching studio version on YouTube (Music).
 
     Scores up to n_candidates results with `score_yt_candidate` and returns
-    (url, score). Score < 0.35 = no match.
+    (url, score). Score < 0.35 = no match. ``exclude_ids`` drops candidates by
+    video id — used to pick the next-best source after one age-gates or fails.
 
     Retrieval breadth matters more than score precision here: a wrong pick is usually a
     *missing* correct candidate, so we pull a wide pool (default 10) and let the
@@ -651,12 +694,16 @@ def yt_search_best(
     """
     query = f"{artist} {title}"
     entries = _yt_search_entries(query, n_candidates)
+    excluded = exclude_ids or set()
 
     best_url = ""
     best_score = -1.0
     seen_ids: set[str] = set()
     for entry in entries:
-        seen_ids.add(str(entry.get("id") or ""))
+        eid = str(entry.get("id") or "")
+        seen_ids.add(eid)
+        if eid in excluded:
+            continue
         score, _ = score_yt_candidate(entry, artist, title, duration_seconds, prefer_explicit)
         if score > best_score:
             best_score = score
@@ -664,7 +711,8 @@ def yt_search_best(
 
     if prefer_ytm and best_score < _YTM_RESCUE_SCORE:
         for entry in _yt_music_search_entries(query, n_candidates):
-            if str(entry.get("id") or "") in seen_ids:
+            eid = str(entry.get("id") or "")
+            if eid in seen_ids or eid in excluded:
                 continue
             score, _ = score_yt_candidate(entry, artist, title, duration_seconds, prefer_explicit)
             if score > best_score:
