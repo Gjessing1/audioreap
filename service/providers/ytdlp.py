@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import shutil
+import tempfile
+import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +33,45 @@ _DEFAULT_SEARCH_LIMIT = 5
 _SEARCH_PREFIX = "ytsearch"
 
 
+_COOKIE_COPY_LOCK = threading.Lock()
+_COOKIE_COPY_PATH: Path | None = None
+
+
+def _writable_cookies(src: str) -> str | None:
+    """Return a writable copy of the cookies file for yt-dlp to use.
+
+    yt-dlp saves the refreshed cookie jar *back* to ``cookiefile`` after a download
+    (rotating session tokens). Our cookies.txt is bind-mounted ``:ro`` for safety, so
+    writing there raises ``[Errno 30] Read-only file system``. Copy the source jar to
+    a writable temp file once (re-copying only when the source changes) and hand
+    yt-dlp that copy — its write-backs land harmlessly on the copy, the real jar stays
+    untouched. Returns None (caller falls back to no cookies) if the copy can't be made.
+    """
+    global _COOKIE_COPY_PATH
+    p = Path(src)
+    try:
+        src_mtime = p.stat().st_mtime
+    except OSError:
+        return None
+    with _COOKIE_COPY_LOCK:
+        dst = _COOKIE_COPY_PATH
+        if dst is None:
+            fd, name = tempfile.mkstemp(prefix="audioreap-cookies-", suffix=".txt")
+            os.close(fd)
+            dst = Path(name)
+            _COOKIE_COPY_PATH = dst
+        try:
+            # Refresh the copy when the user pastes a newer jar. yt-dlp's own
+            # write-backs bump the copy's mtime past the source, so they don't
+            # trigger a re-copy (and aren't clobbered).
+            if not dst.exists() or dst.stat().st_mtime < src_mtime:
+                shutil.copyfile(p, dst)
+                os.utime(dst, (src_mtime, src_mtime))
+        except OSError:
+            return None
+        return str(dst)
+
+
 def _youtube_auth_opts() -> dict[str, object]:
     """Optional yt-dlp auth so requests look logged-in (cookies / PO-token).
 
@@ -41,7 +84,9 @@ def _youtube_auth_opts() -> dict[str, object]:
     opts: dict[str, object] = {}
     cookies = (getattr(settings, "ytdlp_cookies_file", "") or "").strip()
     if cookies and Path(cookies).is_file():
-        opts["cookiefile"] = cookies
+        writable = _writable_cookies(cookies)
+        if writable:
+            opts["cookiefile"] = writable
 
     yt_args: dict[str, list[str]] = {}
     clients = [c.strip() for c in (getattr(settings, "ytdlp_player_client", "") or "").split(",") if c.strip()]
