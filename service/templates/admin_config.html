@@ -107,4 +107,36 @@
     <button type="submit" class="btn btn-lg">Save overrides</button>
   </div>
 </form>
+
+<div class="page-header" style="margin-top:40px">
+  <h1 style="font-size:18px">YouTube cookies</h1>
+</div>
+<p style="font-size:13px;color:var(--t3);margin-bottom:8px;max-width:560px">
+  Age-gated videos (“Sign in to confirm your age”) need cookies from a logged-in Google
+  account. In a browser where you’re signed in to YouTube, export <code>cookies.txt</code>
+  with a “Get cookies.txt” extension, then upload or paste it below. Stored in the writable
+  <code>/data/cookies.txt</code> and read live by the worker — no restart needed.
+</p>
+<p style="font-size:13px;margin-bottom:12px">
+  {% if cookies_active %}
+    <span class="badge-ok">Active jar: {{ cookies_active }}</span>
+  {% else %}
+    <span class="badge-warn">No usable cookies — age-gated videos fall back to a non-gated source.</span>
+  {% endif %}
+</p>
+
+<form hx-post="/admin/cookies" hx-target="#cookies-status" hx-swap="innerHTML"
+      hx-encoding="multipart/form-data"
+      style="display:flex;flex-direction:column;gap:10px;max-width:560px">
+  <input class="rv-input" type="file" name="file" accept=".txt,text/plain">
+  <textarea class="rv-input" name="cookies" rows="6"
+            placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	0	NID	..."
+            style="font-family:monospace;font-size:12px"></textarea>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button type="submit" name="action" value="save" class="btn">Save cookies</button>
+    <button type="submit" name="action" value="clear" class="btn btn-ghost"
+            hx-confirm="Clear the saved cookies jar?">Clear</button>
+    <span id="cookies-status" style="font-size:13px"></span>
+  </div>
+</form>
 {% endblock %}

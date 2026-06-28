@@ -6639,9 +6639,70 @@ async def admin_update_ytdlp(request: Request) -> HTMLResponse:
 @router.get("/admin/config", response_class=HTMLResponse)
 async def admin_config_page(request: Request) -> HTMLResponse:
     from service.config import CONFIG_EDITABLE_KEYS
+    from service.providers.ytdlp import active_cookies_file
     current = {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS}
     return templates.TemplateResponse(
-        request, "admin_config.html", {"active": "library", "current": current}
+        request, "admin_config.html",
+        {"active": "library", "current": current, "cookies_active": active_cookies_file()},
+    )
+
+
+@router.post("/admin/cookies", response_class=HTMLResponse)
+async def admin_cookies_save(request: Request) -> HTMLResponse:
+    """Save a UI-uploaded Netscape cookies.txt to the writable /data jar (or clear it).
+
+    Lets the user paste/upload cookies exported from a logged-in browser window so
+    age-gated downloads work without editing the :ro bind-mount. Read live by the
+    worker at download time — no restart needed.
+    """
+    from service.providers.ytdlp import managed_cookies_path
+
+    form = await request.form()
+    managed = managed_cookies_path()
+
+    if (form.get("action") or "save") == "clear":
+        try:
+            managed.unlink(missing_ok=True)
+        except OSError as exc:
+            return HTMLResponse(f'<span class="badge-warn">Clear failed: {exc}</span>')
+        return HTMLResponse('<span class="badge-ok">Cookies cleared — downloads run anonymously.</span>')
+
+    # Content can come from a file input or a pasted textarea.
+    content = ""
+    upload = form.get("file")
+    if upload is not None and hasattr(upload, "read"):
+        raw = await upload.read()
+        if raw:
+            content = raw.decode("utf-8", errors="ignore")
+    if not content.strip():
+        content = str(form.get("cookies") or "")
+    content = content.strip()
+    if not content:
+        return HTMLResponse('<span class="badge-warn">Nothing to save — paste a cookies.txt or choose a file.</span>')
+
+    def _is_cookie(ln: str) -> bool:
+        return bool(ln.strip()) and not ln.strip().startswith("#") and "\t" in ln
+
+    lines = content.splitlines()
+    n = sum(1 for ln in lines if _is_cookie(ln))
+    if n == 0:
+        return HTMLResponse(
+            '<span class="badge-warn">That doesn’t look like a Netscape cookies.txt '
+            '(no tab-separated cookie lines). Export it with a “Get cookies.txt” browser '
+            'extension on youtube.com and paste the whole file.</span>'
+        )
+    if not lines[0].startswith(("# Netscape", "# HTTP Cookie")):
+        content = "# Netscape HTTP Cookie File\n" + content
+    try:
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        tmp = managed.with_name(managed.name + ".tmp")
+        tmp.write_text(content + "\n", encoding="utf-8")
+        tmp.replace(managed)
+    except OSError as exc:
+        return HTMLResponse(f'<span class="badge-warn">Save failed: {exc}</span>')
+    return HTMLResponse(
+        f'<span class="badge-ok">Saved {n} cookie{"" if n == 1 else "s"} to /data/cookies.txt — '
+        f'age-gated downloads will use them. No restart needed.</span>'
     )
 
 

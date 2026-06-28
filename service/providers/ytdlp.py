@@ -72,6 +72,47 @@ def _writable_cookies(src: str) -> str | None:
         return str(dst)
 
 
+def _has_login_cookie(p: Path) -> bool:
+    """True when the jar carries at least one real (tab-separated, non-comment) cookie.
+
+    The placeholder jar we ship has only ``#`` comment lines, so its mere presence
+    isn't enough to count as "logged in".
+    """
+    try:
+        for line in p.read_text(errors="ignore").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#") and "\t" in line:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def managed_cookies_path() -> Path:
+    """Writable jar the UI uploads to — lives in the persistent /data volume."""
+    from service.config import settings
+
+    return settings.data_dir / "cookies.txt"
+
+
+def active_cookies_file() -> str | None:
+    """Resolve which cookies jar to actually use, or None for anonymous access.
+
+    A UI-uploaded jar in /data wins over the env-mounted file (which is typically
+    bind-mounted ``:ro`` and may be just the header-only placeholder). Either source
+    only counts when it carries a real login cookie.
+    """
+    from service.config import settings
+
+    managed = managed_cookies_path()
+    if managed.is_file() and _has_login_cookie(managed):
+        return str(managed)
+    env = (getattr(settings, "ytdlp_cookies_file", "") or "").strip()
+    if env and Path(env).is_file() and _has_login_cookie(Path(env)):
+        return env
+    return None
+
+
 def _youtube_auth_opts() -> dict[str, object]:
     """Optional yt-dlp auth so requests look logged-in (cookies / PO-token).
 
@@ -82,8 +123,8 @@ def _youtube_auth_opts() -> dict[str, object]:
     from service.config import settings
 
     opts: dict[str, object] = {}
-    cookies = (getattr(settings, "ytdlp_cookies_file", "") or "").strip()
-    if cookies and Path(cookies).is_file():
+    cookies = active_cookies_file()
+    if cookies:
         writable = _writable_cookies(cookies)
         if writable:
             opts["cookiefile"] = writable
@@ -101,29 +142,13 @@ def _youtube_auth_opts() -> dict[str, object]:
 
 
 def cookies_are_configured() -> bool:
-    """True when a cookies file is set *and* actually carries login cookies.
+    """True when a usable login jar is available (UI-uploaded or env-mounted).
 
-    The placeholder jar we ship has only ``#`` comment lines, so a bare path isn't
-    enough — a real cookie is a tab-separated data line. Used to decide whether an
-    age-gated download can be rescued by substituting a non-gated source (no usable
-    cookies) or should be left to the cookies to handle (cookies present).
+    Used to decide whether an age-gated download can be rescued by substituting a
+    non-gated source (no usable cookies) or should be left to the cookies to handle
+    (cookies present).
     """
-    from service.config import settings
-
-    path = (getattr(settings, "ytdlp_cookies_file", "") or "").strip()
-    if not path:
-        return False
-    p = Path(path)
-    if not p.is_file():
-        return False
-    try:
-        for line in p.read_text(errors="ignore").splitlines():
-            s = line.strip()
-            if s and not s.startswith("#") and "\t" in line:
-                return True
-    except OSError:
-        return False
-    return False
+    return active_cookies_file() is not None
 
 
 _VIDEO_ID_RE = re.compile(r"(?:v=|/watch\?.*v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})")
