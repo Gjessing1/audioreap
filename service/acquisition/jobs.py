@@ -77,16 +77,16 @@ async def acquire_album(
 
     album_candidate = AlbumCandidate.model_validate_json(candidate_json)
 
-    async with session_factory() as session, session.begin():
-        await run_album_acquisition(
-            album_job_id=album_job_id,
-            provider=provider,
-            album_candidate=album_candidate,
-            music_dir=Path(music_dir),
-            tmp_acquire_dir=Path(tmp_acquire_dir),
-            session=session,
-            policy=policy,
-        )
+    # run_album_acquisition manages its own short per-step transactions.
+    await run_album_acquisition(
+        album_job_id=album_job_id,
+        provider=provider,
+        album_candidate=album_candidate,
+        music_dir=Path(music_dir),
+        tmp_acquire_dir=Path(tmp_acquire_dir),
+        session_factory=session_factory,
+        policy=policy,
+    )
 
 
 async def enrich_track(
@@ -298,9 +298,40 @@ async def acquire_album_from_mb(
             )).scalars().all()
             owned_recording_ids = {r.musicbrainz_recording_id for r in existing if r.musicbrainz_recording_id}
 
-    # ── 3. Create import session + child jobs with locked album metadata ───────
-    redis = await create_pool(RedisSettings.from_dsn(_settings.redis_url))
-    queued_count = 0
+    # ── 3. Score YouTube sources — network calls, so BEFORE any transaction ────
+    # yt_search_best takes seconds per track; running it inside the transaction
+    # below used to hold SQLite's write lock open for a minute+ on a full album,
+    # starving every other writer.
+    from service.providers.ytdlp import yt_search_best as _yt_search_best
+    prefer_explicit: bool = getattr(_settings, "prefer_explicit", True)
+
+    planned: list[tuple[object, str]] = []  # (mb_track, search_ref)
+    for t in mb_tracks:
+        if t.recording_id and t.recording_id in owned_recording_ids:
+            continue
+        # Score top YouTube Music candidates instead of taking yt-dlp's #1 blindly
+        yt_url, yt_score = await _asyncio.to_thread(
+            _yt_search_best,
+            artist_name,
+            t.title,
+            t.duration_seconds,
+            10,
+            True,
+            prefer_explicit,
+        )
+        # Fall back to unscored search when no result scored high enough
+        if yt_score < 0.35:
+            search_ref = f"ytsearch1:{artist_name} {t.title}"
+        else:
+            search_ref = yt_url
+        planned.append((t, search_ref))
+
+    # ── 4. Create import session + child jobs, COMMIT, then enqueue ────────────
+    # The child rows must be committed before the arq jobs exist: a worker that
+    # picked up a child before this transaction committed saw no row and silently
+    # dropped the job (the rate gate treats a missing row as cancelled), so
+    # tracks vanished from batches.
+    queued: list[tuple[str, str, str]] = []  # (job_id, search_ref, candidate_json)
 
     async with session_factory() as session, session.begin():
         # Create a persistent ImportSession so provenance is queryable later
@@ -320,29 +351,7 @@ async def acquire_album_from_mb(
         await session.flush()
         import_session_id = import_session.id
 
-        from service.providers.ytdlp import yt_search_best as _yt_search_best
-        prefer_explicit: bool = getattr(_settings, "prefer_explicit", True)
-
-        for t in mb_tracks:
-            if t.recording_id and t.recording_id in owned_recording_ids:
-                continue
-
-            # Score top YouTube Music candidates instead of taking yt-dlp's #1 blindly
-            yt_url, yt_score = await _asyncio.to_thread(
-                _yt_search_best,
-                artist_name,
-                t.title,
-                t.duration_seconds,
-                10,
-                True,
-                prefer_explicit,
-            )
-            # Fall back to unscored search when no result scored high enough
-            if yt_score < 0.35:
-                search_ref = f"ytsearch1:{artist_name} {t.title}"
-            else:
-                search_ref = yt_url
-
+        for t, search_ref in planned:
             candidate = TrackCandidate(
                 provider="ytdlp",
                 provider_ref=search_ref,
@@ -371,23 +380,7 @@ async def acquire_album_from_mb(
                 child_row.import_session_id = import_session_id
                 child_row.acquired_from_release_group = release_group_id
                 child_row.acquired_from_release = release_id
-
-            # Stagger download starts so a whole album doesn't hit YouTube at once
-            # (the thundering herd that triggers HTTP 429 / rate-limit transient
-            # failures and forces manual requeues). Spreading them out lets the
-            # batch finish in a single pass. First track fires immediately.
-            await redis.enqueue_job(
-                "acquire_track",
-                job_id=job_id,
-                provider_name="ytdlp",
-                provider_ref=search_ref,
-                candidate_json=candidate.model_dump_json(),
-                music_dir=music_dir,
-                tmp_acquire_dir=tmp_acquire_dir,
-                _job_id=f"acquire:{job_id}",
-                _defer_by=_timedelta(seconds=queued_count * _ALBUM_DOWNLOAD_STAGGER_SECONDS),
-            )
-            queued_count += 1
+            queued.append((job_id, search_ref, candidate.model_dump_json()))
 
         # Update album job state
         album_row = await session.get(_AlbumJob, album_job_id)
@@ -395,10 +388,33 @@ async def acquire_album_from_mb(
             album_row.state = "running"
             album_row.track_count = len(mb_tracks)
 
-    await redis.aclose()
+    # Rows are committed — now hand the children to arq. Reuse the worker's own
+    # pool when available. Stagger download starts so a whole album doesn't hit
+    # YouTube at once (the thundering herd that triggers HTTP 429 / rate-limit
+    # transient failures). First track fires immediately.
+    redis = ctx.get("redis")
+    _own_redis = redis is None
+    if _own_redis:
+        redis = await create_pool(RedisSettings.from_dsn(_settings.redis_url))
+    try:
+        for i, (job_id, search_ref, candidate_json) in enumerate(queued):
+            await redis.enqueue_job(
+                "acquire_track",
+                job_id=job_id,
+                provider_name="ytdlp",
+                provider_ref=search_ref,
+                candidate_json=candidate_json,
+                music_dir=music_dir,
+                tmp_acquire_dir=tmp_acquire_dir,
+                _job_id=f"acquire:{job_id}",
+                _defer_by=_timedelta(seconds=i * _ALBUM_DOWNLOAD_STAGGER_SECONDS),
+            )
+    finally:
+        if _own_redis:
+            await redis.aclose()
     logger.info(
         "Album job %s (%s): queued %d tracks, %d already owned",
-        album_job_id, album_title, queued_count, len(owned_recording_ids),
+        album_job_id, album_title, len(queued), len(owned_recording_ids),
     )
 
 
@@ -515,6 +531,11 @@ async def acquire_track(
                 r = await s.get(AcquisitionJobRow, job_id)
                 if r and r.state == "downloading":
                     r.progress = fraction
+                    # Heartbeat: a progressing download is alive. Without this,
+                    # updated_at goes stale during long downloads and the stuck-job
+                    # recovery flags a healthy job as failed, re-queueing it while
+                    # this worker is still running it (double download).
+                    r.updated_at = _now()
         except Exception:
             pass
 
@@ -523,8 +544,12 @@ async def acquire_track(
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
 
-    # One Redis pool for the rate gate and the retry re-enqueue (closed in finally).
-    redis = await create_pool(RedisSettings.from_dsn(_settings.redis_url))
+    # Reuse the worker's own arq pool for the rate gate and retry re-enqueue;
+    # only build (and later close) a private pool if ctx lacks one.
+    redis = ctx.get("redis")
+    _own_redis = redis is None
+    if _own_redis:
+        redis = await create_pool(RedisSettings.from_dsn(_settings.redis_url))
     gate = YtdlpRateGate(redis, _settings)
     try:
         # ── Rate gate: pace yt-dlp downloads into a slow, steady stream ─────────
@@ -536,16 +561,17 @@ async def acquire_track(
             if cancelled:
                 return
 
-        async with session_factory() as session, session.begin():
-            await run_acquisition(
-                job_id=job_id,
-                provider=provider,
-                provider_ref=provider_ref,
-                candidate=candidate,
-                tmp_acquire_dir=Path(tmp_acquire_dir),
-                session=session,
-                on_progress=on_progress,
-            )
+        # run_acquisition manages its own short per-stage transactions — no
+        # session (and no SQLite write lock) is held across the download.
+        await run_acquisition(
+            job_id=job_id,
+            provider=provider,
+            provider_ref=provider_ref,
+            candidate=candidate,
+            tmp_acquire_dir=Path(tmp_acquire_dir),
+            session_factory=session_factory,
+            on_progress=on_progress,
+        )
 
         # ── Feed the outcome back to the gate (adaptive pacing) ────────────────
         if _settings.ytdlp_rate_limit_enabled and provider_name == "ytdlp":
@@ -592,7 +618,8 @@ async def acquire_track(
             _defer_by=timedelta(seconds=delay_seconds),
         )
     finally:
-        await redis.aclose()
+        if _own_redis:
+            await redis.aclose()
 
 
 def _is_rate_limited(message: str) -> bool:
@@ -624,13 +651,18 @@ async def _await_rate_slot(
             msg = f"⏳ Paused after a YouTube rate-limit (429) — resuming in ~{eta}s"
         else:
             msg = f"⏳ Pacing downloads to stay under YouTube's rate limit — starting in ~{eta}s"
-        async with session_factory() as s, s.begin():
-            r = await s.get(AcquisitionJobRow, job_id)
-            if r is None or r.state == "cancelled":
-                return True
-            r.state = "waiting"
-            r.error = msg
-            r.updated_at = _now()
+        # Best-effort: the countdown is cosmetic, so a momentary "database is
+        # locked" must not abort the job — skip this tick and try the next one.
+        try:
+            async with session_factory() as s, s.begin():
+                r = await s.get(AcquisitionJobRow, job_id)
+                if r is None or r.state == "cancelled":
+                    return True
+                r.state = "waiting"
+                r.error = msg
+                r.updated_at = _now()
+        except Exception as exc:
+            logger.debug("Rate-slot countdown write skipped for %s: %s", job_id, exc)
         # Re-render cadence ≈ the job card's 3s self-poll, so the countdown ticks.
         await asyncio.sleep(min(remaining - 1.0, 3.0))
 

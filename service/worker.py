@@ -23,10 +23,27 @@ _STUCK_CUTOFF_MINUTES = 15
 _WAITING_CUTOFF_MINUTES = 3
 
 
-async def _recover_stuck_jobs(session_factory: async_sessionmaker) -> None:  # type: ignore[type-arg]
+async def _recover_stuck_jobs(
+    session_factory: async_sessionmaker,  # type: ignore[type-arg]
+    redis: object | None = None,
+) -> None:
+    """Reset jobs whose worker died mid-flight, and re-queue them automatically.
+
+    A stuck job has no live coroutine left to run acquire_track's tail-of-job
+    retry logic (a deploy, worker crash, or arq timeout killed it), so merely
+    marking it failed/transient left it sitting until a manual retry click.
+    While retry budget remains, put it back on the queue with the usual backoff;
+    only budget-exhausted jobs stay failed for manual attention.
+    """
+    import uuid as _uuid
+
+    from service.acquisition.jobs import _MAX_RETRIES, _RETRY_DELAYS
+
     now = datetime.utcnow()
     stuck_cutoff = now - timedelta(minutes=_STUCK_CUTOFF_MINUTES)
     waiting_cutoff = now - timedelta(minutes=_WAITING_CUTOFF_MINUTES)
+    # (job_id, provider, provider_ref, candidate_json, delay_seconds)
+    requeue: list[tuple[str, str, str, str, int]] = []
     async with session_factory() as session, session.begin():
         rows = (await session.execute(
             select(AcquisitionJobRow).where(
@@ -46,10 +63,57 @@ async def _recover_stuck_jobs(session_factory: async_sessionmaker) -> None:  # t
             was_state = row.state
             cutoff_min = _WAITING_CUTOFF_MINUTES if was_state == "waiting" else _STUCK_CUTOFF_MINUTES
             logger.warning("Resetting stuck job %s (was %s, idle since %s)", row.id, was_state, row.updated_at)
-            row.state = "failed"
             row.failure_class = "transient"
-            row.error = f"Stuck in '{was_state}' for >{cutoff_min}m — reset by worker recovery"
             row.updated_at = now
+            if row.candidate_json and row.provider_ref and row.retry_count < _MAX_RETRIES:
+                delay = _RETRY_DELAYS[row.retry_count]
+                row.retry_count += 1
+                row.state = "queued"
+                row.error = (
+                    f"Stuck in '{was_state}' for >{cutoff_min}m — auto-requeued "
+                    f"(retry {row.retry_count}/{_MAX_RETRIES} in {delay}s)"
+                )
+                requeue.append(
+                    (row.id, row.provider, row.provider_ref, row.candidate_json, delay)
+                )
+            else:
+                row.state = "failed"
+                row.error = f"Stuck in '{was_state}' for >{cutoff_min}m — reset by worker recovery"
+
+    if not requeue:
+        return
+
+    # If the enqueue below fails, the row is left "queued" with no arq job — the
+    # next recovery pass sees it stuck in "queued" and tries again.
+    own_pool = redis is None
+    if own_pool:
+        from arq import create_pool
+        try:
+            redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        except Exception as exc:
+            logger.warning("Stuck-job requeue skipped — Redis unavailable: %s", exc)
+            return
+    try:
+        for jid, provider_name, provider_ref, candidate_json, delay in requeue:
+            try:
+                await redis.enqueue_job(  # type: ignore[attr-defined]
+                    "acquire_track",
+                    job_id=jid,
+                    provider_name=provider_name,
+                    provider_ref=provider_ref,
+                    candidate_json=candidate_json,
+                    music_dir=str(settings.music_dir),
+                    tmp_acquire_dir=str(settings.tmp_acquire_dir),
+                    # Unique arq ID per requeue so arq's NX dedup doesn't drop it
+                    _job_id=f"acquire:{jid}:rec{_uuid.uuid4().hex[:8]}",
+                    _defer_by=timedelta(seconds=delay),
+                )
+                logger.info("Re-queued stuck job %s (retry in %ds)", jid, delay)
+            except Exception as exc:
+                logger.warning("Could not re-queue stuck job %s: %s", jid, exc)
+    finally:
+        if own_pool:
+            await redis.aclose()  # type: ignore[attr-defined]
 
 
 def _cleanup_tmp(tmp_dir: str) -> None:
@@ -95,7 +159,7 @@ async def startup(ctx: dict[str, object]) -> None:
     ctx["music_dir"] = str(settings.music_dir)
     ctx["tmp_acquire_dir"] = str(settings.tmp_acquire_dir)
 
-    await _recover_stuck_jobs(session_factory)
+    await _recover_stuck_jobs(session_factory, ctx.get("redis"))
     _cleanup_tmp(str(settings.tmp_acquire_dir))
 
     providers: dict[str, object] = ctx["providers"]  # type: ignore[assignment]
@@ -106,11 +170,13 @@ async def shutdown(ctx: dict[str, object]) -> None:
     import asyncio
 
     from service.acquisition.jobs import _bg_tasks
-    if _bg_tasks:
-        for task in list(_bg_tasks):
+    from service.acquisition.pipeline import _bg_tasks as _pipeline_bg_tasks
+    pending = list(_bg_tasks) + list(_pipeline_bg_tasks)
+    if pending:
+        for task in pending:
             task.cancel()
-        await asyncio.gather(*list(_bg_tasks), return_exceptions=True)
-        logger.info("Cancelled %d background progress task(s) on shutdown", len(_bg_tasks))
+        await asyncio.gather(*pending, return_exceptions=True)
+        logger.info("Cancelled %d background task(s) on shutdown", len(pending))
 
     engine = ctx.get("engine")
     if isinstance(engine, AsyncEngine):
@@ -139,7 +205,7 @@ async def worker_heartbeat(ctx: dict[str, object]) -> None:
     session_factory: async_sessionmaker = ctx.get("session_factory")  # type: ignore[assignment]
     if session_factory:
         try:
-            await _recover_stuck_jobs(session_factory)
+            await _recover_stuck_jobs(session_factory, ctx.get("redis"))
         except Exception as exc:
             logger.warning("periodic stuck-job recovery failed: %s", exc)
 

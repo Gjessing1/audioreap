@@ -68,16 +68,15 @@ async def _run(
     provider = provider or FakeProvider(FIXTURE_AUDIO)
     scan_mock = scan_mock or AsyncMock()
     job_id = await _insert_job(db, candidate, provider_ref)
-    async with db() as session, session.begin():
-        await run_acquisition(
-            job_id=job_id,
-            provider=provider,
-            provider_ref=provider_ref,
-            candidate=candidate,
-            tmp_acquire_dir=tmp_path / "tmp",
-            session=session,
-            scan_trigger=scan_mock,
-        )
+    await run_acquisition(
+        job_id=job_id,
+        provider=provider,
+        provider_ref=provider_ref,
+        candidate=candidate,
+        tmp_acquire_dir=tmp_path / "tmp",
+        session_factory=db,
+        scan_trigger=scan_mock,
+    )
     return job_id
 
 
@@ -221,13 +220,12 @@ async def _run_with_failing(
     )
     job_id = await _insert_job(db, candidate, "x")
     provider = _FailingProvider(exc)
-    async with db() as session, session.begin():
-        await run_acquisition(
-            job_id=job_id, provider=provider, provider_ref="x",
-            candidate=candidate,
-            tmp_acquire_dir=tmp_path / "tmp", session=session,
-            scan_trigger=AsyncMock(),
-        )
+    await run_acquisition(
+        job_id=job_id, provider=provider, provider_ref="x",
+        candidate=candidate,
+        tmp_acquire_dir=tmp_path / "tmp", session_factory=db,
+        scan_trigger=AsyncMock(),
+    )
     async with db() as session:
         row = await session.get(AcquisitionJobRow, job_id)
     assert row is not None

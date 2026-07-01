@@ -17,7 +17,7 @@ from pathlib import Path
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from service.acquisition.states import classify_failure, is_age_gate_error
 from service.config import settings
@@ -38,9 +38,40 @@ ScanTrigger = Callable[[], Awaitable[None]]
 
 _REMUX_CONTAINERS = frozenset({".webm", ".weba"})
 
+# Fire-and-forget tasks (lyrics sidecars) kept referenced so they aren't GC'd
+# mid-flight; cancelled on worker shutdown alongside the progress tasks.
+_bg_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+
+
+async def _write_lyrics_sidecar(
+    dest: Path,
+    artist: str | None,
+    title: str,
+    album: str | None,
+    duration_seconds: int | None,
+) -> None:
+    """Best-effort LRCLIB fetch + .lrc sidecar, off the approval critical path."""
+    try:
+        from service.metadata.lyrics import fetch_lyrics, write_lrc_sidecar
+        lyrics = await fetch_lyrics(
+            artist=artist,
+            title=title,
+            album=album,
+            duration_seconds=duration_seconds,
+            cache_dir=settings.cache_dir,
+        )
+        if lyrics is not None and lyrics.best:
+            await asyncio.to_thread(write_lrc_sidecar, dest, lyrics.best)
+            logger.info(
+                "Lyrics: wrote %s sidecar for %s",
+                "synced" if lyrics.synced else "plain", dest.name,
+            )
+    except Exception as exc:
+        logger.debug("Lyrics fetch failed for %s: %s", dest.name, exc)
+
 
 async def _set_state(
-    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
     job_id: str,
     state: str,
     *,
@@ -49,20 +80,27 @@ async def _set_state(
     error: str | None = None,
     track_id: str | None = None,
 ) -> None:
-    row = await session.get(AcquisitionJobRow, job_id)
-    if row is None:
-        return
-    row.state = state
-    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-    if progress is not None:
-        row.progress = progress
-    if failure_class is not None:
-        row.failure_class = failure_class
-    if error is not None:
-        row.error = error
-    if track_id is not None:
-        row.track_id = track_id
-    await session.flush()
+    """Write one state transition in its own short transaction.
+
+    Each transition commits immediately so SQLite's single writer lock is held
+    for milliseconds — never across the download/remux/MB phases in between.
+    A long-lived transaction here used to block every other writer (progress
+    writes, rate-gate countdowns, approvals) for the duration of a download.
+    """
+    async with session_factory() as session, session.begin():
+        row = await session.get(AcquisitionJobRow, job_id)
+        if row is None:
+            return
+        row.state = state
+        row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        if progress is not None:
+            row.progress = progress
+        if failure_class is not None:
+            row.failure_class = failure_class
+        if error is not None:
+            row.error = error
+        if track_id is not None:
+            row.track_id = track_id
 
 
 async def _remux_to_ogg(src: Path, dest_dir: Path) -> Path:
@@ -123,7 +161,7 @@ _MAX_SOURCE_ATTEMPTS = 3
 
 async def _download_with_source_fallback(
     *,
-    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
     job_id: str,
     provider: Provider,
     provider_ref: str,
@@ -164,7 +202,7 @@ async def _download_with_source_fallback(
                 and attempt < _MAX_SOURCE_ATTEMPTS - 1
             )
             if not eligible:
-                await _set_state(session, job_id, "failed", failure_class=fc, error=err)
+                await _set_state(session_factory, job_id, "failed", failure_class=fc, error=err)
                 logger.error("Download failed [%s] %s: %s", fc, job_id, err)
                 return None
 
@@ -177,7 +215,7 @@ async def _download_with_source_fallback(
             )
             alt_id = video_id_from_url(alt_url)
             if not alt_id or alt_id in tried_ids or alt_score < _SUBSTITUTE_MIN_SCORE:
-                await _set_state(session, job_id, "failed", failure_class=fc, error=err)
+                await _set_state(session_factory, job_id, "failed", failure_class=fc, error=err)
                 logger.error(
                     "Download failed [%s] %s (age-gated, no non-gated alternative ≥ %.2f): %s",
                     fc, job_id, _SUBSTITUTE_MIN_SCORE, err,
@@ -200,7 +238,7 @@ async def run_acquisition(
     provider_ref: str,
     candidate: TrackCandidate,
     tmp_acquire_dir: Path,
-    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
     scan_trigger: ScanTrigger | None = None,
     on_progress: Callable[[float], None] | None = None,
 ) -> None:
@@ -208,14 +246,19 @@ async def run_acquisition(
 
     Places the file in /music-staging and stores resolved_metadata_json on the
     job row. Sets state to needs_review. Never raises — errors go to the job row.
+
+    Takes a session factory, not a session: every DB touch opens its own short
+    transaction so no SQLite write lock is ever held across the download or the
+    MusicBrainz/AcoustID network phases (which can run for minutes).
     """
     # ── 0. Dedup check ────────────────────────────────────────────────────────
     if not candidate.skip_dedup:
         try:
-            local_match = await _find_local_match(session, candidate)
+            async with session_factory() as session:
+                local_match = await _find_local_match(session, candidate)
             if local_match is not None:
                 logger.info("Dedup: skipping — local match exists: %s", local_match)
-                await _set_state(session, job_id, "done", track_id=local_match)
+                await _set_state(session_factory, job_id, "done", track_id=local_match)
                 return
         except Exception as exc:
             logger.debug("Dedup check failed (continuing): %s", exc)
@@ -226,9 +269,9 @@ async def run_acquisition(
         tmp_dir = Path(tmp_str)
 
         # ── 1. Download ────────────────────────────────────────────────────────
-        await _set_state(session, job_id, "downloading")
+        await _set_state(session_factory, job_id, "downloading")
         fetch_result = await _download_with_source_fallback(
-            session=session,
+            session_factory=session_factory,
             job_id=job_id,
             provider=provider,
             provider_ref=provider_ref,
@@ -238,6 +281,19 @@ async def run_acquisition(
         )
         if fetch_result is None:
             return  # failure state already recorded on the job row
+
+        # The download may have taken minutes: re-check the row before investing
+        # in identification. The user may have cancelled, or stuck-job recovery
+        # may have re-queued the job to another worker (state back to "queued") —
+        # continuing would race that worker and stage the same track twice.
+        async with session_factory() as session:
+            _row_after_dl = await session.get(AcquisitionJobRow, job_id)
+        if _row_after_dl is None or _row_after_dl.state in ("cancelled", "queued"):
+            logger.info(
+                "Job %s state became %s during download; discarding result",
+                job_id, _row_after_dl.state if _row_after_dl else "deleted",
+            )
+            return
 
         audio_path = fetch_result.file_path
         _rm = fetch_result.raw_metadata
@@ -267,17 +323,17 @@ async def run_acquisition(
         _fetch_year: int | None = int(_ry) if isinstance(_ry, (int, float)) and _ry else None
 
         # ── 2. Remux if needed ─────────────────────────────────────────────────
-        await _set_state(session, job_id, "processing")
+        await _set_state(session_factory, job_id, "processing")
         if audio_path.suffix.lower() in _REMUX_CONTAINERS:
             try:
                 audio_path = await _remux_to_ogg(audio_path, tmp_dir)
             except Exception as exc:
-                await _set_state(session, job_id, "failed", failure_class="transient", error=str(exc))
+                await _set_state(session_factory, job_id, "failed", failure_class="transient", error=str(exc))
                 logger.error("Remux failed %s: %s", job_id, exc)
                 return
 
         # ── 3. Read tags + merge ───────────────────────────────────────────────
-        await _set_state(session, job_id, "tagging")
+        await _set_state(session_factory, job_id, "tagging")
         tagged = read_tags(audio_path)
 
         # Initial provenance: "tagged" > "provider" > "candidate"
@@ -368,9 +424,10 @@ async def run_acquisition(
             mb: object = None
             mb_from_acoustid = False
 
-            # Read original user query for intent signal (cached in session identity map)
-            _job_row_q = await session.get(AcquisitionJobRow, job_id)
-            _raw_query: str | None = _job_row_q.query if _job_row_q else None
+            # Read original user query for intent signal
+            async with session_factory() as _q_session:
+                _job_row_q = await _q_session.get(AcquisitionJobRow, job_id)
+                _raw_query: str | None = _job_row_q.query if _job_row_q else None
             # Skip URL and synthetic queries (re-acquire, replacement) — not user intent
             _search_query: str | None = (
                 _raw_query
@@ -469,7 +526,8 @@ async def run_acquisition(
                 # don't fragment it with a remaster / alternate edition.
                 if not _preferred_rg and album:
                     from service.library.cohesion import find_local_release_group
-                    _preferred_rg = await find_local_release_group(session, album, artist)
+                    async with session_factory() as _rg_session:
+                        _preferred_rg = await find_local_release_group(_rg_session, album, artist)
                     if _preferred_rg:
                         logger.info(
                             "Path B cohesion: %r / %r → preferred release group %s",
@@ -721,7 +779,7 @@ async def run_acquisition(
         )
 
         # ── 4. Place in staging (holding area for review) ─────────────────────
-        await _set_state(session, job_id, "importing")
+        await _set_state(session_factory, job_id, "importing")
 
         ext = audio_path.suffix.lstrip(".")
         staging_dest = track_path(
@@ -739,7 +797,7 @@ async def run_acquisition(
         try:
             await asyncio.to_thread(atomic_place, audio_path, staging_dest)
         except Exception as exc:
-            await _set_state(session, job_id, "failed", failure_class="transient", error=str(exc))
+            await _set_state(session_factory, job_id, "failed", failure_class="transient", error=str(exc))
             logger.error("Staging placement failed %s: %s", job_id, exc)
             return
 
@@ -784,17 +842,17 @@ async def run_acquisition(
             replace_path=candidate.replace_path,
         )
 
-        row = await session.get(AcquisitionJobRow, job_id)
-        if row is not None:
-            row.state = "needs_review"
-            row.staging_path = str(staging_dest)
-            row.resolved_metadata_json = resolved_metadata.model_dump_json()
-            # Always (re)assign — None clears any stale "⏳ Pacing downloads…"
-            # back-off message left on the row by the rate gate, so a completed
-            # review card doesn't keep showing a countdown that already elapsed.
-            row.error = force_staging_reason
-            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-            await session.flush()
+        async with session_factory() as session, session.begin():
+            row = await session.get(AcquisitionJobRow, job_id)
+            if row is not None:
+                row.state = "needs_review"
+                row.staging_path = str(staging_dest)
+                row.resolved_metadata_json = resolved_metadata.model_dump_json()
+                # Always (re)assign — None clears any stale "⏳ Pacing downloads…"
+                # back-off message left on the row by the rate gate, so a completed
+                # review card doesn't keep showing a countdown that already elapsed.
+                row.error = force_staging_reason
+                row.updated_at = datetime.now(UTC).replace(tzinfo=None)
 
         logger.info(
             "Identify done (source=%s, quality=%.0f%%): %s → staged at %s",
@@ -808,7 +866,8 @@ async def run_acquisition(
         if candidate.skip_dedup and not force_staging_reason:
             logger.info("Auto-approving replacement job %s — user already vetted source", job_id)
             try:
-                await place_approved_track(job_id, {}, session, scan_trigger)
+                async with session_factory() as approve_session, approve_session.begin():
+                    await place_approved_track(job_id, {}, approve_session, scan_trigger)
             except Exception as exc:
                 logger.warning(
                     "Auto-approve for replacement %s failed — left in needs_review: %s",
@@ -1025,31 +1084,21 @@ async def place_approved_track(
             logger.debug("Approve: artwork embed failed: %s", exc)
         write_cover_jpg(dest.parent, artwork_bytes)
 
-    # Fetch lyrics from LRCLIB and write a .lrc sidecar (best-effort). Navidrome
-    # reads these natively; audio tags are left untouched.
+    # Lyrics (LRCLIB → .lrc sidecar) run as a fire-and-forget background task:
+    # the network fetch added a serial round-trip to every approval, which adds
+    # up fast in a batch. It only touches the sidecar file, never the audio or
+    # the DB, so nothing downstream depends on it.
     if settings.lyrics_enabled:
         try:
-            from service.metadata.lyrics import (
-                has_lyrics_sidecar,
-                fetch_lyrics,
-                write_lrc_sidecar,
-            )
+            from service.metadata.lyrics import has_lyrics_sidecar
             if not has_lyrics_sidecar(dest):
-                lyrics = await fetch_lyrics(
-                    artist=artist,
-                    title=title,
-                    album=album,
-                    duration_seconds=duration_seconds,
-                    cache_dir=settings.cache_dir,
+                task = asyncio.create_task(
+                    _write_lyrics_sidecar(dest, artist, title, album, duration_seconds)
                 )
-                if lyrics is not None and lyrics.best:
-                    await asyncio.to_thread(write_lrc_sidecar, dest, lyrics.best)
-                    logger.info(
-                        "Approve: wrote %s lyrics for %s",
-                        "synced" if lyrics.synced else "plain", dest.name,
-                    )
+                _bg_tasks.add(task)
+                task.add_done_callback(_bg_tasks.discard)
         except Exception as exc:
-            logger.debug("Approve: lyrics fetch failed: %s", exc)
+            logger.debug("Approve: lyrics task not started: %s", exc)
 
     # Index in DB using a savepoint so failures don't roll back the outer transaction.
     # Everything (index + track-row updates) lives inside begin_nested() so any flush
@@ -1145,6 +1194,16 @@ async def place_approved_track(
                                     sib_fp = Path(sib.file.path)
                                     if sib_fp.exists():
                                         try:
+                                            # Only rewrite when the tag actually differs.
+                                            # Unconditional writes made batch approval
+                                            # O(n²) in tag rewrites and churned every
+                                            # sibling's mtime, forcing full re-scans.
+                                            sib_tags = await asyncio.to_thread(read_tags, sib_fp)
+                                            if (
+                                                sib_tags is not None
+                                                and sib_tags.mb_release_id == effective_release_id
+                                            ):
+                                                continue
                                             await asyncio.to_thread(
                                                 write_tags, sib_fp,
                                                 mb_release_id=effective_release_id,

@@ -57,13 +57,12 @@ async def _stage_track(
                                   provider_ref=provider_ref, candidate=candidate)
     staging_dir = tmp_path / "staging"
     tmp_acquire = tmp_path / "tmp"
-    async with db() as s, s.begin():
-        await run_acquisition(
-            job_id=job_id, provider=provider, provider_ref=provider_ref,
-            candidate=candidate,
-            tmp_acquire_dir=tmp_acquire,
-            session=s, scan_trigger=AsyncMock(),
-        )
+    await run_acquisition(
+        job_id=job_id, provider=provider, provider_ref=provider_ref,
+        candidate=candidate,
+        tmp_acquire_dir=tmp_acquire,
+        session_factory=db, scan_trigger=AsyncMock(),
+    )
     return job_id
 
 
@@ -175,12 +174,11 @@ async def test_approve_links_album_when_duration_diverges(
 
     # Keep the locked candidate IDs by making the MB lookup a no-op (offline-safe).
     with patch("service.metadata.musicbrainz.get_recording_by_id", return_value=None):
-        async with db() as s, s.begin():
-            await run_acquisition(
-                job_id=job_id, provider=provider, provider_ref="fake-001",
-                candidate=candidate, tmp_acquire_dir=tmp_acquire,
-                session=s, scan_trigger=AsyncMock(),
-            )
+        await run_acquisition(
+            job_id=job_id, provider=provider, provider_ref="fake-001",
+            candidate=candidate, tmp_acquire_dir=tmp_acquire,
+            session_factory=db, scan_trigger=AsyncMock(),
+        )
 
     with patch.object(settings, "music_dir", music_dir):
         async with db() as s, s.begin():
@@ -237,12 +235,11 @@ async def test_album_locked_pins_discover_release_group(
                                   provider_ref="fake-001", candidate=candidate)
 
     with patch("service.metadata.musicbrainz.get_recording_by_id", return_value=wrong_rg):
-        async with db() as s, s.begin():
-            await run_acquisition(
-                job_id=job_id, provider=provider, provider_ref="fake-001",
-                candidate=candidate, tmp_acquire_dir=tmp_path / "tmp",
-                session=s, scan_trigger=AsyncMock(),
-            )
+        await run_acquisition(
+            job_id=job_id, provider=provider, provider_ref="fake-001",
+            candidate=candidate, tmp_acquire_dir=tmp_path / "tmp",
+            session_factory=db, scan_trigger=AsyncMock(),
+        )
 
     with patch.object(settings, "music_dir", music_dir):
         async with db() as s, s.begin():

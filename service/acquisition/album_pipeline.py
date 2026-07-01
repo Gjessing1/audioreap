@@ -14,7 +14,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from service.acquisition.jobs import create_job
 from service.acquisition.pipeline import ScanTrigger, run_acquisition
@@ -31,12 +31,14 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-async def _set_album_state(session: AsyncSession, album_job_id: str, state: str) -> None:
-    row = await session.get(AlbumAcquisitionJob, album_job_id)
-    if row:
-        row.state = state
-        row.updated_at = _now()
-        await session.flush()
+async def _set_album_state(
+    session_factory: async_sessionmaker[AsyncSession], album_job_id: str, state: str
+) -> None:
+    async with session_factory() as session, session.begin():
+        row = await session.get(AlbumAcquisitionJob, album_job_id)
+        if row:
+            row.state = state
+            row.updated_at = _now()
 
 
 async def create_album_job(
@@ -76,37 +78,39 @@ async def run_album_acquisition(
     album_candidate: AlbumCandidate,
     music_dir: Path,
     tmp_acquire_dir: Path,
-    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
     policy: AlbumPolicy = "partial_ok",
     scan_trigger: ScanTrigger | None = None,
 ) -> None:
     """Acquire all tracks in an album.
 
     Tracks are downloaded into a staging directory, then moved atomically into
-    the music library once the policy condition is met.
+    the music library once the policy condition is met. Uses short per-step
+    transactions — a single transaction spanning every track's download held
+    SQLite's write lock for the whole album and starved all other writers.
     """
     if scan_trigger is None:
         from service.navidrome.client import trigger_scan
         scan_trigger = trigger_scan
 
-    await _set_album_state(session, album_job_id, "running")
+    await _set_album_state(session_factory, album_job_id, "running")
 
     staging_root = tmp_acquire_dir / f"album-{album_job_id}"
     staging_root.mkdir(parents=True, exist_ok=True)
 
     tracks = album_candidate.tracks
     if not tracks:
-        await _set_album_state(session, album_job_id, "failed")
+        await _set_album_state(session_factory, album_job_id, "failed")
         return
 
     child_job_ids: list[str] = []
 
     # ── Acquire each track into staging ───────────────────────────────────
     for idx, candidate in enumerate(tracks):
-        # Use a savepoint for job creation so a DB constraint error on one
-        # track rolls back only that child, not all prior children.
+        # Each child job row commits on its own so a DB constraint error on one
+        # track affects only that child, not all prior children.
         try:
-            async with session.begin_nested():
+            async with session_factory() as session, session.begin():
                 child_id = await create_job(
                     session,
                     provider_name=provider.name,
@@ -136,17 +140,18 @@ async def run_album_acquisition(
             provider_ref=candidate.provider_ref,
             candidate=candidate,
             tmp_acquire_dir=tmp_acquire_dir,
-            session=session,
+            session_factory=session_factory,
             scan_trigger=lambda: None,  # type: ignore[arg-type,return-value]
         )
 
     # ── Evaluate outcomes ─────────────────────────────────────────────────
     # needs_review counts as success — track downloaded OK, awaiting user approval
     failed_ids: list[str] = []
-    for child_id in child_job_ids:
-        row = await session.get(AcquisitionJobRow, child_id)
-        if row and row.state == "failed":
-            failed_ids.append(child_id)
+    async with session_factory() as session:
+        for child_id in child_job_ids:
+            row = await session.get(AcquisitionJobRow, child_id)
+            if row and row.state == "failed":
+                failed_ids.append(child_id)
 
     success_count = len(child_job_ids) - len(failed_ids)
 
@@ -155,11 +160,11 @@ async def run_album_acquisition(
             "Album %s: %d/%d tracks failed — aborting (all_or_nothing policy)",
             album_job_id, len(failed_ids), len(tracks),
         )
-        await _set_album_state(session, album_job_id, "failed")
+        await _set_album_state(session_factory, album_job_id, "failed")
         return
 
     if success_count == 0:
-        await _set_album_state(session, album_job_id, "failed")
+        await _set_album_state(session_factory, album_job_id, "failed")
         return
 
     # Tracks are staged in settings.staging_dir (via run_acquisition) and land
@@ -178,7 +183,7 @@ async def run_album_acquisition(
         logger.warning("Album: Navidrome scan trigger failed: %s", exc)
 
     final_state = "done" if not failed_ids else "partial"
-    await _set_album_state(session, album_job_id, final_state)
+    await _set_album_state(session_factory, album_job_id, final_state)
     logger.info(
         "Album acquisition %s: %s (%d/%d tracks)",
         album_job_id, final_state, success_count, len(tracks),

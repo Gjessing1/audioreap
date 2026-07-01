@@ -88,16 +88,16 @@ async def test_dedup_skips_acquisition_for_local_match(
             candidate=candidate,
             query="Around the World Daft Punk",
         )
-        with patch.object(provider, "fetch", fetch_mock):
-            await run_acquisition(
-                job_id=job_id,
-                provider=provider,
-                provider_ref="fake-001",
-                candidate=candidate,
-                tmp_acquire_dir=tmp_path / "tmp",
-                session=session,
-                scan_trigger=AsyncMock(),
-            )
+    with patch.object(provider, "fetch", fetch_mock):
+        await run_acquisition(
+            job_id=job_id,
+            provider=provider,
+            provider_ref="fake-001",
+            candidate=candidate,
+            tmp_acquire_dir=tmp_path / "tmp",
+            session_factory=db,
+            scan_trigger=AsyncMock(),
+        )
 
     # fetch() must NOT have been called — dedup caught it first
     fetch_mock.assert_not_called()
@@ -141,15 +141,15 @@ async def test_dedup_does_not_skip_different_track(
             provider_ref="fake-001",
             candidate=candidate,
         )
-        await run_acquisition(
-            job_id=job_id,
-            provider=provider,
-            provider_ref="fake-001",
-            candidate=candidate,
-            tmp_acquire_dir=tmp_path / "tmp",
-            session=session,
-            scan_trigger=AsyncMock(),
-        )
+    await run_acquisition(
+        job_id=job_id,
+        provider=provider,
+        provider_ref="fake-001",
+        candidate=candidate,
+        tmp_acquire_dir=tmp_path / "tmp",
+        session_factory=db,
+        scan_trigger=AsyncMock(),
+    )
 
     async with db() as session:
         row = await session.get(AcquisitionJobRow, job_id)

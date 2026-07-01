@@ -65,16 +65,16 @@ async def _run(
             album_candidate=album_candidate,
             policy=policy,
         )
-        await run_album_acquisition(
-            album_job_id=album_job_id,
-            provider=provider,
-            album_candidate=album_candidate,
-            music_dir=music_dir,
-            tmp_acquire_dir=tmp_acquire,
-            session=session,
-            policy=policy,
-            scan_trigger=scan_mock,
-        )
+    await run_album_acquisition(
+        album_job_id=album_job_id,
+        provider=provider,
+        album_candidate=album_candidate,
+        music_dir=music_dir,
+        tmp_acquire_dir=tmp_acquire,
+        session_factory=db,
+        policy=policy,
+        scan_trigger=scan_mock,
+    )
 
     return album_job_id, music_dir
 
@@ -274,8 +274,8 @@ async def test_child_job_creation_failure_does_not_roll_back_prior_children(
 ) -> None:
     """A DB error creating one child job must not roll back previously created children.
 
-    This tests the savepoint fix: each child's create_job is wrapped in
-    begin_nested() so a constraint error on child N leaves children 1..N-1 intact.
+    Each child's create_job runs in its own short transaction, so a constraint
+    error on child N leaves children 1..N-1 intact.
     """
     from unittest.mock import patch, AsyncMock
     from service.acquisition.album_pipeline import create_album_job, run_album_acquisition
@@ -299,14 +299,14 @@ async def test_child_job_creation_failure_does_not_roll_back_prior_children(
             session, provider_name=provider.name,
             album_ref=FAKE_ALBUM_REF, album_candidate=album_candidate,
         )
-        with patch("service.acquisition.album_pipeline.create_job",
-                   side_effect=_sometimes_failing_create_job):
-            await run_album_acquisition(
-                album_job_id=album_job_id, provider=provider,
-                album_candidate=album_candidate,
-                music_dir=music_dir, tmp_acquire_dir=tmp_acquire,
-                session=session, scan_trigger=AsyncMock(),
-            )
+    with patch("service.acquisition.album_pipeline.create_job",
+               side_effect=_sometimes_failing_create_job):
+        await run_album_acquisition(
+            album_job_id=album_job_id, provider=provider,
+            album_candidate=album_candidate,
+            music_dir=music_dir, tmp_acquire_dir=tmp_acquire,
+            session_factory=db, scan_trigger=AsyncMock(),
+        )
 
     # 3 out of 4 children should be present (track 3 failed, others intact)
     async with db() as session:
@@ -317,5 +317,5 @@ async def test_child_job_creation_failure_does_not_roll_back_prior_children(
         ).scalars().all()
 
     assert len(children) == 3, (
-        f"Expected 3 children (1 skipped due to savepoint rollback), got {len(children)}"
+        f"Expected 3 children (1 skipped due to per-child rollback), got {len(children)}"
     )

@@ -997,58 +997,74 @@ async def batch_approve(
         _redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     except Exception:
         _redis = None
+    async def _noop_scan() -> None:
+        # One Navidrome scan at the end of the batch instead of one per track.
+        return None
+
     # Album identities of approved discography-batch tracks — healed for Navidrome
     # splits once the batch lands (a source-swap or year/MBID drift can fragment it).
     heal_targets: set[tuple[str, str]] = set()
-    for jid in job_ids:
-        if _redis is not None:
-            try:
-                if not await _redis.set(f"approve_lock:{jid}", "1", ex=60, nx=True):
-                    # Another approval for this job is already in flight — skip it
-                    # rather than racing (and clobbering) that placement.
-                    continue
-            except Exception:
-                pass
-        try:
-            dest = await place_approved_track(jid, {}, session, mark_progress=True)
-            await session.commit()
-            if dest is not None and dest.exists():
+    try:
+        for jid in job_ids:
+            locked = False
+            if _redis is not None:
                 try:
-                    from service.library.tagger import compute_replaygain, write_replaygain
-                    rg = await asyncio.to_thread(compute_replaygain, dest)
-                    if rg is not None:
-                        await asyncio.to_thread(write_replaygain, dest, rg)
+                    locked = bool(await _redis.set(f"approve_lock:{jid}", "1", ex=60, nx=True))
+                    if not locked:
+                        # Another approval for this job is already in flight — skip it
+                        # rather than racing (and clobbering) that placement.
+                        continue
+                except Exception:
+                    locked = False
+            try:
+                await place_approved_track(
+                    jid, {}, session, scan_trigger=_noop_scan, mark_progress=True
+                )
+                await session.commit()
+                try:
+                    _r = await session.get(AcquisitionJobRow, jid)
+                    if _r and _r.album_job_id and _r.resolved_metadata_json:
+                        _m = json.loads(_r.resolved_metadata_json)
+                        _alb = (_m.get("album") or "").strip()
+                        _aa = (_m.get("albumartist") or _m.get("artist") or "").strip()
+                        if _alb and _aa:
+                            heal_targets.add((_alb, _aa))
                 except Exception:
                     pass
+                done_count += 1
+            except Exception as exc:
+                logger.error("Batch approve failed for %s: %s", jid, exc)
+                # Must rollback before reusing the session
+                try:
+                    await session.rollback()
+                    row = await session.get(AcquisitionJobRow, jid)
+                    if row:
+                        # Undo the intermediate "importing" state so the job returns
+                        # to the review queue instead of being stuck mid-import.
+                        if row.state == "importing":
+                            row.state = "needs_review"
+                        row.error = str(exc)[:200]
+                        await session.commit()
+                except Exception:
+                    pass
+                fail_count += 1
+            finally:
+                # Release the lock right away so a failed job can be re-approved
+                # without waiting out the 60s expiry.
+                if _redis is not None and locked:
+                    try:
+                        await _redis.delete(f"approve_lock:{jid}")
+                    except Exception:
+                        pass
+    finally:
+        if _redis is not None:
             try:
-                _r = await session.get(AcquisitionJobRow, jid)
-                if _r and _r.album_job_id and _r.resolved_metadata_json:
-                    _m = json.loads(_r.resolved_metadata_json)
-                    _alb = (_m.get("album") or "").strip()
-                    _aa = (_m.get("albumartist") or _m.get("artist") or "").strip()
-                    if _alb and _aa:
-                        heal_targets.add((_alb, _aa))
+                await _redis.aclose()
             except Exception:
                 pass
-            done_count += 1
-        except Exception as exc:
-            logger.error("Batch approve failed for %s: %s", jid, exc)
-            # Must rollback before reusing the session
-            try:
-                await session.rollback()
-                row = await session.get(AcquisitionJobRow, jid)
-                if row:
-                    # Undo the intermediate "importing" state so the job returns
-                    # to the review queue instead of being stuck mid-import.
-                    if row.state == "importing":
-                        row.state = "needs_review"
-                    row.error = str(exc)[:200]
-                    await session.commit()
-            except Exception:
-                pass
-            fail_count += 1
 
     # Auto-heal Navidrome album splits for any discography batch that just landed.
+    scanned = False
     if heal_targets:
         from service.library.cohesion import auto_heal_album_splits
         healed = 0
@@ -1065,6 +1081,11 @@ async def batch_approve(
                     pass
         if healed:
             await _do_scans()
+            scanned = True
+
+    # Single Navidrome scan for the whole batch (per-track scans were suppressed).
+    if done_count and not scanned:
+        await _do_scans()
 
     return templates.TemplateResponse(
         request, "partials/job_list.html", await _job_list_ctx(session)
@@ -1152,16 +1173,7 @@ async def approve_job(
             except Exception:
                 pass
 
-    # ReplayGain after commit — subprocess inside a session causes greenlet conflict
-    if dest is not None and dest.exists():
-        try:
-            from service.library.tagger import compute_replaygain, write_replaygain
-            rg_gain = await asyncio.to_thread(compute_replaygain, dest)
-            if rg_gain is not None:
-                await asyncio.to_thread(write_replaygain, dest, rg_gain)
-                logger.debug("ReplayGain: %s gain=%+.2f dB", dest.name, rg_gain)
-        except Exception as rg_exc:
-            logger.debug("ReplayGain failed for %s: %s", dest, rg_exc)
+    # ReplayGain already ran inside place_approved_track — no second ffmpeg pass.
 
     # Build a brief fade-out confirmation instead of showing the done card
     row = await session.get(AcquisitionJobRow, job_id)
