@@ -984,10 +984,31 @@ async def batch_approve(
 
     done_count = 0
     fail_count = 0
+    # Per-job approval lock — mirrors the single approve route. Without it, two
+    # overlapping batch requests (a double-clicked "Approve N" button, or a batch
+    # racing a single approve) could both run place_approved_track for the same
+    # job: the winner moves the staging file and sets state=done, the loser then
+    # hits "Staged file missing" and bounces the row back to needs_review — leaving
+    # the job stuck in the review queue even though its file is already in /music.
+    _redis = None
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        _redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    except Exception:
+        _redis = None
     # Album identities of approved discography-batch tracks — healed for Navidrome
     # splits once the batch lands (a source-swap or year/MBID drift can fragment it).
     heal_targets: set[tuple[str, str]] = set()
     for jid in job_ids:
+        if _redis is not None:
+            try:
+                if not await _redis.set(f"approve_lock:{jid}", "1", ex=60, nx=True):
+                    # Another approval for this job is already in flight — skip it
+                    # rather than racing (and clobbering) that placement.
+                    continue
+            except Exception:
+                pass
         try:
             dest = await place_approved_track(jid, {}, session, mark_progress=True)
             await session.commit()
