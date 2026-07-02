@@ -194,6 +194,13 @@ class ResolvedTrackMetadata(BaseModel):
     # resolved YouTube watch URL, not the `ytsearch1:` query). Surfaced in the
     # review card so the user can open the source and validate the pick fast.
     source_url: str | None = None
+    # Human-readable description of that media: the raw video title (with all
+    # its "(Live)" / "(Clean)" decorations intact), the uploading channel, and
+    # the media length. Lets the review UI show WHAT was downloaded without a
+    # network call, so wrong-version picks are visible before approval.
+    source_title: str | None = None
+    source_channel: str | None = None
+    source_duration_seconds: int | None = None
 
     # MusicBrainz / AcoustID identification
     mb_recording_id: str | None = None

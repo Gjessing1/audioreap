@@ -1,7 +1,7 @@
-"""Unit tests for parse_artists() in tagger.py."""
+"""Unit tests for parse_artists() / primary_artist() in tagger.py."""
 import pytest
 
-from service.library.tagger import parse_artists
+from service.library.tagger import parse_artists, primary_artist
 
 
 @pytest.mark.parametrize("input_str, expected", [
@@ -50,3 +50,19 @@ def test_primary_ampersand_order():
     result = parse_artists("A & B")
     assert result[0] == "A"
     assert result[1] == "B"
+
+
+@pytest.mark.parametrize("input_str, expected", [
+    # Featuring credits are stripped for albumartist use
+    ("Kanye West feat. Rihanna", "Kanye West"),
+    ("Artist ft. Guest", "Artist"),
+    ("Artist featuring Guest", "Artist"),
+    # Duo/collaboration names are NOT split — could be a band name
+    ("Simon & Garfunkel", "Simon & Garfunkel"),
+    ("Earth, Wind & Fire", "Earth, Wind & Fire"),
+    # Plain names pass through
+    ("Daft Punk", "Daft Punk"),
+    ("", ""),
+])
+def test_primary_artist(input_str: str, expected: str) -> None:
+    assert primary_artist(input_str) == expected

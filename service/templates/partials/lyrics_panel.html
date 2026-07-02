@@ -1,0 +1,47 @@
+{# Lyrics editor for one track — lives inside the track edit card.
+   Swapped whole (outerHTML) by every action so status + text stay in sync. #}
+<div id="lyrics-panel-{{ safe_id }}">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Lyrics (.lrc sidecar)</span>
+    {% if lyrics_status == 'synced' %}
+    <span class="badge badge-done" title="Timestamped lyrics — clients can highlight the current line">✓ synced</span>
+    {% elif lyrics_status == 'plain' %}
+    <span class="badge badge-queued" title="Plain text — no timestamps">plain text</span>
+    {% else %}
+    <span class="badge badge-queued">none</span>
+    {% endif %}
+    {% if message %}
+    <span style="font-size:12px;color:var({% if message_kind == 'warn' %}--warn{% else %}--success{% endif %})">{{ message }}</span>
+    {% endif %}
+  </div>
+  <form hx-post="/library/tracks/{{ track.id }}/lyrics"
+        hx-target="#lyrics-panel-{{ safe_id }}"
+        hx-swap="outerHTML">
+    <textarea class="rv-input" name="lyrics" rows="10" spellcheck="false"
+              placeholder="[00:12.34] First line…&#10;Plain text works too — timestamps are optional."
+              style="width:100%;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical">{{ lyrics_text }}</textarea>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+      <button type="submit" name="action" value="save" class="btn btn-sm">
+        Save lyrics <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+      <button type="submit" name="action" value="fetch" class="btn btn-sm btn-ghost"
+              title="Ask LRCLIB again, ignoring the cached result — overwrites the sidecar on success">
+        Fetch from LRCLIB <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+      {% if lyrics_status %}
+      {# Own hx-post (not a form submit): hx-confirm only gates the element that
+         issues the request, which for a submit button would be the form. #}
+      <button type="button" class="btn btn-sm btn-ghost"
+              hx-post="/library/tracks/{{ track.id }}/lyrics"
+              hx-vals='{"action":"delete"}'
+              hx-target="#lyrics-panel-{{ safe_id }}"
+              hx-swap="outerHTML"
+              hx-confirm="Delete the .lrc sidecar for this track?"
+              style="color:var(--danger)">
+        Delete
+      </button>
+      {% endif %}
+      <span style="font-size:11px;color:var(--t4)">Served by Navidrome to any Subsonic client. Audio tags are never touched.</span>
+    </div>
+  </form>
+</div>

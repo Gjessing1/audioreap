@@ -73,6 +73,7 @@
   {% if group.type == "single" %}
     {% set job = group.job %}
     {% set confidence = group.confidence %}
+    {% set src = group.src %}
     {% include "partials/job_card.html" %}
   {% elif group.type == "album" %}
   <div class="album-batch-group" id="album-group-{{ group.album_job_id[:8] }}">
@@ -98,11 +99,12 @@
     {% for item in group.jobs %}
     {% set job = item.job %}
     {% set confidence = item.confidence %}
+    {% set src = item.src %}
     {% if item.is_flagged %}
     <div class="flagged-track-wrapper">
       {% include "partials/job_card.html" %}
       {% if item.flag_reason %}
-      <div class="flag-detail">⚠ {{ item.flag_reason }}</div>
+      <div class="flag-detail" title="{{ item.flag_reason }}">⚠ {{ item.flag_reason }}</div>
       {% endif %}
     </div>
     {% else %}

@@ -140,7 +140,13 @@ async def startup(ctx: dict[str, object]) -> None:
     import yt_dlp
 
     import service.providers.ytdlp  # noqa: F401 — registers YtdlpProvider
+    from service.config import load_config_overrides
     from service.providers import all_providers
+
+    # UI-saved settings (/admin/config → /data/config_overrides.json). The API
+    # process loads these at startup; without this the worker would run on env
+    # defaults forever and Runtime Config changes would never reach downloads.
+    load_config_overrides()
 
     logger.info("yt-dlp version: %s", yt_dlp.version.__version__)
 
@@ -191,6 +197,16 @@ async def worker_heartbeat(ctx: dict[str, object]) -> None:
     a worker restart.
     """
     import redis.asyncio as aioredis
+
+    from service.config import load_config_overrides
+
+    # Re-apply UI config overrides every minute so Runtime Config changes reach
+    # the worker without a restart (worker_concurrency is the one exception —
+    # arq reads max_jobs once at startup).
+    try:
+        load_config_overrides()
+    except Exception as exc:
+        logger.debug("config override reload failed: %s", exc)
 
     ts = datetime.utcnow().isoformat()
     try:
@@ -264,7 +280,7 @@ async def auto_rescan(ctx: dict[str, object]) -> None:
         logger.warning("auto_rescan: scan failed: %s", exc)
 
     try:
-        await trigger_scan(settings.navidrome_url, settings.navidrome_user, settings.navidrome_password)
+        await trigger_scan()
     except Exception as exc:
         logger.warning("auto_rescan: Navidrome trigger failed: %s", exc)
 

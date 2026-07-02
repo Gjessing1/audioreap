@@ -28,7 +28,23 @@
 
   <div class="card-info">
     <div class="card-title">{{ job.track_ref.title }}</div>
-    <div class="card-sub">{{ job.track_ref.artist }}<span class="muted"> · {{ job.id[:8] }}</span></div>
+    <div class="card-sub">{{ job.track_ref.artist }}{% if job.track_ref.album %}<span class="muted"> · {{ job.track_ref.album }}</span>{% endif %}</div>
+    {# What was actually downloaded — raw video title, channel, length, and
+       version hint chips — so a live/clean/remix pick is visible from the list
+       before hitting Approve. #}
+    {% if job.state == 'needs_review' and src is defined and src %}
+    <div class="card-source">
+      {% if src.url %}
+      <a href="{{ src.url }}" target="_blank" rel="noopener"
+         title="Open the source this audio was downloaded from">▶ {{ src.title or src.url }}</a>
+      {% else %}
+      <span>▶ {{ src.title }}</span>
+      {% endif %}
+      {% if src.channel %}<span class="card-source-meta">· {{ src.channel }}</span>{% endif %}
+      {% if src.duration %}<span class="card-source-meta">· {{ src.duration }}</span>{% endif %}
+      {% for h in src.hints %}<span class="src-hint src-hint--{{ h.kind }}">{{ h.label }}</span>{% endfor %}
+    </div>
+    {% endif %}
     {# needs_review flag reasons are surfaced by the flag-detail row in job_list.html,
        so suppress the card-error here for review jobs to avoid showing the same
        fingerprint/artist mismatch twice. #}

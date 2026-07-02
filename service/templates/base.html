@@ -40,6 +40,7 @@
       Jobs <span hx-get="/nav/review-count" hx-trigger="load, every 30s" hx-swap="outerHTML"></span>
     </a>
     <a href="/library"   {% if active == 'library'   %}class="active"{% endif %}>Library</a>
+    <a href="/admin/config" {% if active == 'settings' %}class="active"{% endif %} title="Runtime configuration">Settings</a>
   </div>
 </nav>
 

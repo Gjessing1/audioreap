@@ -32,6 +32,18 @@
         {% else %}
         <span class="badge badge-queued">No cover</span>
         {% endif %}
+        {% if track.file %}
+        {% if lyrics_status == 'synced' %}
+        <span class="badge badge-done" style="cursor:pointer" title="Synced .lrc sidecar present — click to view/edit"
+              onclick="document.getElementById('lyrics-wrap-{{ safe_id }}').classList.remove('hidden')">Lyrics ✓</span>
+        {% elif lyrics_status == 'plain' %}
+        <span class="badge badge-queued" style="cursor:pointer" title="Plain-text lyrics (no timestamps) — click to view/edit"
+              onclick="document.getElementById('lyrics-wrap-{{ safe_id }}').classList.remove('hidden')">Lyrics (plain)</span>
+        {% else %}
+        <span class="badge badge-queued" style="cursor:pointer" title="No .lrc sidecar — click to add or fetch lyrics"
+              onclick="document.getElementById('lyrics-wrap-{{ safe_id }}').classList.remove('hidden')">No lyrics</span>
+        {% endif %}
+        {% endif %}
         {% if saved %}<span class="badge badge-done">Saved ✓</span>{% endif %}
       </div>
       {% if track.file %}
@@ -229,6 +241,13 @@
               onclick="document.getElementById('replace-panel-{{ safe_id }}').classList.toggle('hidden')">
         Replace source
       </button>
+      {% if track.file %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="document.getElementById('lyrics-wrap-{{ safe_id }}').classList.toggle('hidden')"
+              title="View, edit, fetch, or delete the .lrc lyrics sidecar">
+        Lyrics
+      </button>
+      {% endif %}
       {% if provider_ref and bitrate_kbps and min_bitrate_kbps and bitrate_kbps < min_bitrate_kbps %}
       <button type="button" class="btn btn-sm btn-ghost"
               hx-post="/library/tracks/{{ track.id }}/reacquire"
@@ -265,6 +284,17 @@
     <div id="replace-status-{{ safe_id }}"></div>
     <div id="edit-preview-{{ safe_id }}" style="margin-top:8px"></div>
   </form>
+
+  {# ── Lyrics panel (lazy-loaded on first reveal) ──────────────────────────── #}
+  {% if track.file %}
+  <div id="lyrics-wrap-{{ safe_id }}" class="mb-panel hidden">
+    <div hx-get="/library/tracks/{{ track.id }}/lyrics-panel"
+         hx-trigger="intersect once"
+         hx-swap="outerHTML">
+      <span class="muted" style="font-size:12px">Loading lyrics…</span>
+    </div>
+  </div>
+  {% endif %}
 
   {# ── Replace source panel ────────────────────────────────────────────────── #}
   <div id="replace-panel-{{ safe_id }}" class="mb-panel hidden">

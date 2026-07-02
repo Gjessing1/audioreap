@@ -22,6 +22,19 @@ _FEAT_RE = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+", re.IGNORECASE)
 _COLLAB_RE = re.compile(r"\s*[,&]\s*")
 
 
+def primary_artist(artist: str) -> str:
+    """Artist string with any featuring credit removed ("A feat. B" → "A").
+
+    Only feat./ft./featuring is stripped — "&" and "," collaborations are kept
+    intact because legitimate duo names ("Simon & Garfunkel") are
+    indistinguishable from collaborations at this level. Used for ALBUMARTIST,
+    which must never carry guests or albums fragment into per-featuring artists.
+    """
+    if not artist:
+        return artist
+    return _FEAT_RE.split(artist, maxsplit=1)[0].strip() or artist
+
+
 def parse_artists(artist: str) -> list[str]:
     """Split a combined artist string into individual artists.
 

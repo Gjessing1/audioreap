@@ -3,10 +3,17 @@
 
 {% block content %}
 
+{# One tab bar instead of three stacked collapsible sections: Search (library +
+   YouTube), Discover (MB discographies), Playlists (URL import). The last-used
+   tab is remembered per browser; a server hint (active_section) wins on load. #}
+<div class="acq-tabs" id="acq-tabs" role="tablist">
+  <button type="button" role="tab" data-tab="search"    class="acq-tab">Search</button>
+  <button type="button" role="tab" data-tab="discover"  class="acq-tab">Discover</button>
+  <button type="button" role="tab" data-tab="playlists" class="acq-tab">Playlists</button>
+</div>
+
 {# ── Search ──────────────────────────────────────────────────────────────── #}
-<details open>
-<summary class="acquire-section-header">Search</summary>
-<div class="acquire-section-body">
+<section class="acq-panel" id="acq-panel-search" hidden>
   <form id="search-form" class="search-bar"
         hx-get="/search/results"
         hx-trigger="input changed delay:350ms from:#q, submit"
@@ -49,14 +56,11 @@
       </div>
     </div>
   </div>
-</div>
-</details>
+</section>
 
 {# ── Discover ─────────────────────────────────────────────────────────────── #}
-<details open>
-<summary class="acquire-section-header">Discover</summary>
-<div class="acquire-section-body">
-  <p class="empty" style="font-size:13px;padding:0 0 10px">Browse an artist's full MusicBrainz discography and acquire missing albums.</p>
+<section class="acq-panel" id="acq-panel-discover" hidden>
+  <p class="empty" style="font-size:13px;padding:0 0 10px;text-align:left">Browse an artist's full MusicBrainz discography and acquire missing albums.</p>
   <input id="disco-q" name="q" type="search"
          placeholder="Search artist (e.g. Radiohead, Daft Punk)…"
          inputmode="search" enterkeyhint="search" autocomplete="off"
@@ -66,13 +70,10 @@
          hx-target="#artist-candidates">
   <div id="artist-candidates"></div>
   <div id="disco-detail" style="margin-top:8px"></div>
-</div>
-</details>
+</section>
 
 {# ── Playlists ────────────────────────────────────────────────────────────── #}
-<details {% if active_section == 'playlists' %}open{% endif %}>
-<summary class="acquire-section-header">Playlists</summary>
-<div class="acquire-section-body">
+<section class="acq-panel" id="acq-panel-playlists" hidden>
   <form id="playlist-form"
         hx-post="/playlists/resolve"
         hx-target="#playlist-preview"
@@ -90,7 +91,7 @@
       </button>
     </div>
     {% if not spotify_enabled %}
-    <p class="empty" style="margin-top:4px;font-size:12px">
+    <p class="empty" style="margin-top:4px;font-size:12px;text-align:left">
       Public Spotify playlists import without a key (~50 tracks max). Add
       AUDIOREAP_SPOTIFY_CLIENT_ID + AUDIOREAP_SPOTIFY_CLIENT_SECRET for full-length and
       your own private playlists.
@@ -122,7 +123,40 @@
     {% endfor %}
   </div>
   {% endif %}
-</div>
-</details>
+</section>
 
+<script>
+(function () {
+  var KEY = 'ar-acquire-tab';
+  var tabs = document.querySelectorAll('#acq-tabs .acq-tab');
+  var serverHint = {{ active_section|default('')|tojson }};
+
+  function show(name) {
+    tabs.forEach(function (t) {
+      var on = t.dataset.tab === name;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', String(on));
+      var panel = document.getElementById('acq-panel-' + t.dataset.tab);
+      if (panel) panel.hidden = !on;
+    });
+    try { localStorage.setItem(KEY, name); } catch (e) {}
+    // Focus the tab's main input on desktop (skip on touch to avoid keyboard pop)
+    if (!('ontouchstart' in window)) {
+      var input = document.querySelector('#acq-panel-' + name + ' input[type=search], #acq-panel-' + name + ' input[type=url]');
+      if (input) input.focus();
+    }
+  }
+
+  tabs.forEach(function (t) {
+    t.addEventListener('click', function () { show(t.dataset.tab); });
+  });
+
+  var initial = 'search';
+  if (serverHint && serverHint !== 'search') initial = serverHint;
+  else { try { initial = localStorage.getItem(KEY) || 'search'; } catch (e) {} }
+  if (!document.getElementById('acq-panel-' + initial)) initial = 'search';
+  {% if q %}initial = 'search';{% endif %}
+  show(initial);
+})();
+</script>
 {% endblock %}

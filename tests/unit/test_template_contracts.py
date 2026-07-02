@@ -388,6 +388,7 @@ def _edit_ctx(**over: Any) -> dict:
         "source_album_id": "",
         "open_art": False,
         "saved": False,
+        "lyrics_status": None,
     }
     ctx.update(over)
     return ctx

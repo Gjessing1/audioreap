@@ -321,6 +321,8 @@ async def run_acquisition(
         _fetch_album = _rm_str("album")
         _ry = _rm.get("release_year")
         _fetch_year: int | None = int(_ry) if isinstance(_ry, (int, float)) and _ry else None
+        _sd = _rm.get("duration")
+        _source_duration: int | None = int(_sd) if isinstance(_sd, (int, float)) and _sd else None
 
         # ── 2. Remux if needed ─────────────────────────────────────────────────
         await _set_state(session_factory, job_id, "processing")
@@ -765,7 +767,14 @@ async def run_acquisition(
             except Exception as genre_exc:
                 logger.debug("Genre fetch skipped: %s", genre_exc)
 
-        albumartist = candidate.artist if candidate_album_locked else artist
+        if candidate_album_locked:
+            albumartist = candidate.artist
+        else:
+            # ALBUMARTIST never carries featuring credits: an "A feat. B" track
+            # must group under A, not fragment the library into a separate
+            # "A feat. B" artist. Guests stay in the per-track ARTIST(S) tags.
+            from service.library.tagger import primary_artist
+            albumartist = primary_artist(artist)
         is_compilation = (album is not None) and albumartist.lower() in ("various artists", "various")
 
         quality_score = compute_quality_score(
@@ -816,6 +825,9 @@ async def run_acquisition(
             source_codec=fetch_result.codec,
             source_bitrate_kbps=fetch_result.bitrate_kbps,
             source_url=fetch_result.source_url,
+            source_title=_rm_str("title"),
+            source_channel=_uploader,
+            source_duration_seconds=_source_duration,
             mb_recording_id=mb_recording_id,
             mb_release_id=mb_release_id,
             mb_release_group_id=mb_release_group_id,
@@ -941,14 +953,17 @@ async def place_approved_track(
             else:
                 setattr(meta, k, None)
 
-    # Sync albumartist when artist was overridden but albumartist wasn't
+    from service.library.tagger import primary_artist as _primary_artist
+
+    # Sync albumartist when artist was overridden but albumartist wasn't —
+    # sans featuring credit, so a "feat." edit can't split the album grouping.
     if "artist" in overrides and "albumartist" not in overrides:
-        meta.albumartist = meta.artist
+        meta.albumartist = _primary_artist(meta.artist)
 
     is_enrichment: bool = meta.is_enrichment
     title: str = meta.title or "Unknown"
     artist: str = meta.artist or "Unknown"
-    albumartist: str = meta.albumartist or artist
+    albumartist: str = meta.albumartist or _primary_artist(artist)
     album: str | None = meta.album or None
     year: int | None = meta.year
     original_year: int | None = meta.original_year

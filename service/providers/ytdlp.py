@@ -566,6 +566,26 @@ def explicit_score(title: str, age_limit: int | None = None) -> int:
     return 0
 
 
+def source_title_hints(video_title: str) -> list[dict[str, str]]:
+    """Version signals in a downloaded YouTube title, for the review UI.
+
+    Returns chips as {"label", "kind"} where kind is "warn" (probably not the
+    studio cut the user wanted: live/cover, clean/radio edit, remix/sped-up…)
+    or "ok" (explicit — usually the wanted version). Empty list = no signals.
+    """
+    hints: list[dict[str, str]] = []
+    if looks_like_live(video_title):
+        hints.append({"label": "live / cover?", "kind": "warn"})
+    if _CLEAN_RE.search(video_title):
+        hints.append({"label": "clean version?", "kind": "warn"})
+    elif _EXPLICIT_RE.search(video_title):
+        hints.append({"label": "explicit", "kind": "ok"})
+    m = _UNWANTED_VERSION_RE.search(video_title)
+    if m:
+        hints.append({"label": m.group(0).lower(), "kind": "warn"})
+    return hints
+
+
 def _yt_search_entries(query: str, n_candidates: int) -> list[dict]:
     """Run a flat YouTube search and return the raw entry dicts.
 

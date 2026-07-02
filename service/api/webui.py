@@ -316,7 +316,17 @@ def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
     }
 
 
-def _classify_review_confidence(row: AcquisitionJobRow) -> tuple[str, str | None]:
+def _row_resolved_meta(row: AcquisitionJobRow) -> dict:
+    """Parsed resolved_metadata_json, or {} when absent/corrupt."""
+    if not row.resolved_metadata_json:
+        return {}
+    try:
+        return json.loads(row.resolved_metadata_json)
+    except Exception:
+        return {}
+
+
+def _classify_review_confidence(row: AcquisitionJobRow, m: dict) -> tuple[str, str | None]:
     """Classify a needs_review job for the job-list confidence border.
 
     Returns (confidence, flag_reason) where confidence is one of:
@@ -328,11 +338,7 @@ def _classify_review_confidence(row: AcquisitionJobRow) -> tuple[str, str | None
     has_staging = bool(row.staging_path and Path(row.staging_path).exists())
     if not has_staging:
         return "flagged", "Staging file missing — use Re-download"
-    if row.resolved_metadata_json:
-        try:
-            m = json.loads(row.resolved_metadata_json)
-        except Exception:
-            m = {}
+    if m:
         if m.get("force_staging_reason"):
             return "flagged", m["force_staging_reason"]
         source = m.get("mb_match_source")
@@ -341,6 +347,42 @@ def _classify_review_confidence(row: AcquisitionJobRow) -> tuple[str, str | None
         ):
             return "verified", None
     return "probable", None
+
+
+def _fmt_duration(seconds: object) -> str:
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return ""
+    s = int(seconds)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def _source_summary(row: AcquisitionJobRow, m: dict) -> dict | None:
+    """Compact "what did we actually download" line for a review job card.
+
+    Shows the raw source video title (decorations intact), channel, length, and
+    version hint chips (live/clean/remix/…) so the user can spot a wrong-version
+    pick from the list without opening the review card.
+    """
+    url = (m.get("source_url") or "").strip()
+    if not url:
+        pr = (row.provider_ref or "").strip()
+        if pr.startswith(("http://", "https://")):
+            url = pr
+    title = (m.get("source_title") or "").strip()
+    channel = (m.get("source_channel") or "").strip()
+    if not title and not url:
+        return None
+    hints: list[dict[str, str]] = []
+    if title:
+        from service.providers.ytdlp import source_title_hints
+        hints = source_title_hints(title)
+    return {
+        "url": url,
+        "title": title,
+        "channel": channel,
+        "duration": _fmt_duration(m.get("source_duration_seconds")),
+        "hints": hints,
+    }
 
 
 async def _build_review_groups(
@@ -379,7 +421,8 @@ async def _build_review_groups(
     for r, j in zip(review_rows, review_jobs):
         # Confidence drives the colour-coded left border on the job-list card so the
         # user can triage needs_review jobs without opening each review card.
-        confidence, flag_reason = _classify_review_confidence(r)
+        meta = _row_resolved_meta(r)
+        confidence, flag_reason = _classify_review_confidence(r, meta)
         is_flagged = confidence == "flagged"
 
         # Safe = confident match + no flags + staging file present.
@@ -388,16 +431,18 @@ async def _build_review_groups(
         if confidence == "verified" and not r.album_job_id:
             safe_ids.append(j.id)
 
+        src = _source_summary(r, meta)
         item = {
             "job": j,
             "is_flagged": is_flagged,
             "flag_reason": flag_reason,
             "confidence": confidence,
+            "src": src,
         }
         if r.album_job_id:
             album_buckets.setdefault(r.album_job_id, []).append(item)
         else:
-            singles.append({"type": "single", "job": j, "confidence": confidence})
+            singles.append({"type": "single", "job": j, "confidence": confidence, "src": src})
 
     # Within an album batch, order tracks by review status so the approvable ones
     # cluster at the top and problems escalate toward the bottom:
@@ -431,7 +476,7 @@ async def _build_review_groups(
 
 async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
     """Build resolved_metadata for staged items that pre-date Phase 13."""
-    from service.library.tagger import read_tags
+    from service.library.tagger import primary_artist, read_tags
     from service.core.models import TrackCandidate
 
     staging_path = Path(row.staging_path) if row.staging_path else None
@@ -464,7 +509,7 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
     return {
         "title": title,
         "artist": artist,
-        "albumartist": (tagged.albumartist if tagged else None) or artist,
+        "albumartist": (tagged.albumartist if tagged else None) or primary_artist(artist),
         "album": album,
         "year": year,
         "original_year": None,
@@ -560,7 +605,9 @@ async def job_status_partial(
         raise HTTPException(404)
     ctx: dict[str, object] = {"job": _job_to_model(row)}
     if row.state == "needs_review":
-        ctx["confidence"], _ = _classify_review_confidence(row)
+        meta = _row_resolved_meta(row)
+        ctx["confidence"], _ = _classify_review_confidence(row, meta)
+        ctx["src"] = _source_summary(row, meta)
     resp = templates.TemplateResponse(request, "partials/job_card.html", ctx)
     # Only active jobs self-poll this endpoint, so a non-active state here means the
     # job just transitioned. Tell the page to re-group it into the correct section
@@ -690,59 +737,10 @@ async def review_card(
     else:
         raise HTTPException(400, "Job not reviewable")
 
-    staging_exists = bool(row.staging_path and Path(row.staging_path).exists())
-    is_enrichment = bool(meta.get("is_enrichment"))
-
-    from sqlalchemy import distinct as _distinct
-    genre_rows = (await session.execute(
-        select(_distinct(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
-    )).scalars().all()
-    genres = [g for g in genre_rows if g]
-
-    # Album consistency check: warn if albumartist differs from sibling tracks in the same album job
-    album_consistency_warning: str | None = None
-    if row.album_job_id and not is_enrichment:
-        siblings = (await session.execute(
-            select(AcquisitionJobRow.resolved_metadata_json)
-            .where(
-                AcquisitionJobRow.album_job_id == row.album_job_id,
-                AcquisitionJobRow.id != job_id,
-                AcquisitionJobRow.state == "needs_review",
-                AcquisitionJobRow.resolved_metadata_json.isnot(None),
-            )
-        )).scalars().all()
-        this_aa = (meta.get("albumartist") or "").lower().strip()
-        if this_aa and siblings:
-            sibling_aas = set()
-            for sib_json in siblings:
-                try:
-                    sib_meta = json.loads(sib_json)
-                    sib_aa = (sib_meta.get("albumartist") or "").lower().strip()
-                    if sib_aa:
-                        sibling_aas.add(sib_aa)
-                except Exception:
-                    pass
-            other_aas = sibling_aas - {this_aa}
-            if other_aas:
-                album_consistency_warning = (
-                    f"Album artist mismatch: this track has \"{meta.get('albumartist')}\""
-                    f" but {len(other_aas)} other track(s) in this batch differ."
-                )
-
-    from service.library.tagger import parse_artists as _parse_artists
-    parsed_artists = _parse_artists(meta.get("artist") or "")
-    show_multi_artists = len(parsed_artists) > 1
-
-    return templates.TemplateResponse(
-        request, "partials/review_card.html",
-        {"job_id": job_id, "meta": meta, "query": row.query or "",
-         "staging_exists": staging_exists, "genres": genres,
-         "is_enrichment": is_enrichment,
-         "album_consistency_warning": album_consistency_warning,
-         "parsed_artists": parsed_artists,
-         "show_multi_artists": show_multi_artists,
-         "show_mb_search": False},
-    )
+    # Full context (source link/description, autocomplete lists, batch label,
+    # consistency warnings) — same builder every other review-card render uses.
+    ctx = await _review_card_ctx(request, session, job_id, row, meta)
+    return templates.TemplateResponse(request, "partials/review_card.html", ctx)
 
 
 async def _review_card_ctx(
@@ -869,6 +867,7 @@ async def _review_card_ctx(
         "show_mb_search": show_mb_search,
         "show_src_panel": show_src_panel,
         "source_url": source_url,
+        "src": _source_summary(row, meta),
         "artist_names": artist_names,
         "album_names": album_names,
         "candidate_track_number": candidate_track_number,
@@ -925,7 +924,8 @@ async def job_dest_preview(
     eff_disc = meta.get("disc_number")
     ext = meta.get("ext") or "ogg"
 
-    albumartist = meta.get("albumartist") or eff_artist
+    from service.library.tagger import primary_artist as _primary_artist
+    albumartist = meta.get("albumartist") or _primary_artist(eff_artist)
     mb_artist_id = meta.get("mb_artist_id") or None
     mb_release_group_id = meta.get("mb_release_group_id") or None
 
@@ -1402,9 +1402,12 @@ async def job_mb_apply(
     meta["mb_artist_id"] = mb.artist_id
     meta["mb_artist_sort"] = mb.artist_sort
     meta["mb_match_source"] = "manual"
+    from service.library.tagger import primary_artist as _primary_artist
     meta["title"] = mb.title or meta.get("title")
     meta["artist"] = mb.artist or meta.get("artist")
-    meta["albumartist"] = mb.artist or meta.get("albumartist")
+    # Sans featuring credit — "A feat. B" as ALBUMARTIST would split the album
+    # into a separate featuring artist.
+    meta["albumartist"] = _primary_artist(mb.artist) if mb.artist else meta.get("albumartist")
     if mb.album:
         meta["album"] = mb.album
     if mb.year:
@@ -3083,16 +3086,91 @@ async def merge_artist(
     )
 
 
+# Auto-fetched artist portraits (Navidrome-style external agent behaviour):
+# throttle concurrent Deezer lookups and remember misses so a library page full
+# of artists doesn't hammer the API on every render.
+_artist_img_fetch_sem = asyncio.Semaphore(3)
+_ARTIST_IMG_MISS_TTL_SECONDS = 7 * 24 * 3600
+
+
+def _artist_img_cache_paths(name: str) -> tuple[Path, Path]:
+    import hashlib
+    key = hashlib.sha1(name.strip().lower().encode()).hexdigest()
+    base = settings.cache_dir / "artist_images"
+    return base / f"{key}.jpg", base / f"{key}.miss"
+
+
+async def _auto_artist_image(name: str) -> Path | None:
+    """Best-effort cached artist portrait from Deezer for artists with no artist.jpg.
+
+    Navidrome shows artist images via its external agents even when no file
+    exists on disk; this mirrors that so the audioreap library doesn't look
+    emptier than Navidrome. Cached in /cache/artist_images (never in /music —
+    the user's explicit "Change image" flow is what writes artist.jpg). Misses
+    are cached with a TTL so absent artists are retried only weekly.
+    """
+    import time
+
+    import httpx
+
+    from service.search.matcher import artist_similarity
+
+    jpg, miss = _artist_img_cache_paths(name)
+    if jpg.exists():
+        return jpg
+    try:
+        if miss.exists() and (time.time() - miss.stat().st_mtime) < _ARTIST_IMG_MISS_TTL_SECONDS:
+            return None
+    except OSError:
+        pass
+
+    async with _artist_img_fetch_sem:
+        if jpg.exists():  # another request fetched it while we waited
+            return jpg
+        url: str | None = None
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://api.deezer.com/search/artist",
+                    params={"q": name, "limit": 5},
+                )
+                resp.raise_for_status()
+                for item in resp.json().get("data", []):
+                    pic = item.get("picture_xl") or item.get("picture_big") or ""
+                    if not pic or "default_artist" in pic:
+                        continue
+                    if artist_similarity(name, item.get("name") or "") >= 0.85:
+                        url = pic
+                        break
+                if url:
+                    img = await client.get(url)
+                    img.raise_for_status()
+                    jpg.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = jpg.with_suffix(".tmp")
+                    tmp.write_bytes(img.content)
+                    tmp.replace(jpg)
+                    return jpg
+        except Exception as exc:
+            logger.debug("Auto artist image fetch failed for %r: %s", name, exc)
+        try:
+            jpg.parent.mkdir(parents=True, exist_ok=True)
+            miss.touch()
+        except OSError:
+            pass
+        return None
+
+
 @router.get("/library/artists/{artist_id}/image", response_class=HTMLResponse)
 async def artist_image(
     artist_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Serve artist.jpg from the artist's music folder.
+    """Serve the artist's portrait: artist.jpg from /music when the user saved
+    one, else an auto-fetched cached image (same sources Navidrome's agents use),
+    else 204.
 
-    When no image exists, return 204 (not 404): the <img> tags that request this
-    fall back via onerror either way, but a 2xx keeps the browser console clean
-    instead of logging a 404 for every artist without a saved photo.
+    204 (not 404) when nothing exists: the <img> tags that request this fall
+    back via onerror either way, but a 2xx keeps the browser console clean.
     """
     from fastapi.responses import FileResponse, Response
     artist = await session.get(Artist, artist_id)
@@ -3101,6 +3179,9 @@ async def artist_image(
     img_path = settings.music_dir / artist.name / "artist.jpg"
     if img_path.exists():
         return FileResponse(str(img_path), media_type="image/jpeg")
+    cached = await _auto_artist_image(artist.name)
+    if cached is not None:
+        return FileResponse(str(cached), media_type="image/jpeg")
     return Response(status_code=204)
 
 
@@ -3782,6 +3863,14 @@ async def _edit_card_ctx(
         .where(Album.artist_id == row.artist_id)
         .order_by(Album.title)
     )).scalars().all()
+    # Lyrics sidecar status for the badge (cheap: two stats + a small read)
+    lyrics_status: str | None = None
+    if row.file:
+        from service.metadata.lyrics import has_lyrics_sidecar, sidecar_is_synced
+        fp = Path(row.file.path)
+        if has_lyrics_sidecar(fp):
+            lyrics_status = "synced" if sidecar_is_synced(fp) else "plain"
+
     return {
         "track": row,
         "genre": genre,
@@ -3793,6 +3882,7 @@ async def _edit_card_ctx(
         "min_bitrate_kbps": settings.min_bitrate_kbps,
         "source_album_id": source_album_id,
         "open_art": open_art,
+        "lyrics_status": lyrics_status,
     }
 
 
@@ -5619,6 +5709,18 @@ async def discography_acquire_single_track(
         track_number=int(track_number) if track_number.isdigit() else None,
         duration_seconds=dur_s,
         mb_recording_id=recording_id or None,
+        # Same lock the album-batch coordinator applies: keep the track anchored
+        # to this album under the main discography artist. Without it, a track
+        # whose MB credit is "Main feat. Guest" becomes the albumartist and the
+        # album fragments into a separate featuring artist. The path segment can
+        # also be a release id or local album id (album-page fallback), so only
+        # store it when it's an MBID-shaped UUID.
+        mb_release_group_id=(
+            release_group_id
+            if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", release_group_id or "")
+            else None
+        ),
+        album_locked=True,
     )
 
     # If no candidate scored above the confidence floor, create a ghost job in
@@ -6648,6 +6750,127 @@ async def reset_lyrics_misses(request: Request) -> HTMLResponse:
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 
+# ── Per-track lyrics (view / edit / fetch / delete the .lrc sidecar) ─────────
+
+
+async def _get_track_with_file(session: AsyncSession, internal_id: str) -> Track:
+    stmt = (
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
+        .where(Track.id == internal_id)
+    )
+    row = (await session.execute(stmt)).unique().scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404)
+    return row
+
+
+def _lyrics_panel_ctx(track: Track, *, message: str = "", message_kind: str = "ok") -> dict:
+    from service.metadata.lyrics import lrc_sidecar_path, sidecar_is_synced
+
+    status: str | None = None
+    text = ""
+    if track.file:
+        audio = Path(track.file.path)
+        lrc = lrc_sidecar_path(audio)
+        try:
+            if lrc.exists() and lrc.stat().st_size > 0:
+                text = lrc.read_text(encoding="utf-8")
+                status = "synced" if sidecar_is_synced(audio) else "plain"
+        except OSError:
+            pass
+    return {
+        "track": track,
+        "safe_id": track.id.replace(":", "_"),
+        "lyrics_status": status,
+        "lyrics_text": text,
+        "message": message,
+        "message_kind": message_kind,
+    }
+
+
+@router.get("/library/tracks/{internal_id}/lyrics-panel", response_class=HTMLResponse)
+async def track_lyrics_panel(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    track = await _get_track_with_file(session, internal_id)
+    return templates.TemplateResponse(
+        request, "partials/lyrics_panel.html", _lyrics_panel_ctx(track)
+    )
+
+
+@router.post("/library/tracks/{internal_id}/lyrics", response_class=HTMLResponse)
+async def track_lyrics_action(
+    request: Request,
+    internal_id: str,
+    action: str = Form("save"),
+    lyrics: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Save, delete, or (re)fetch the .lrc sidecar for one track."""
+    from service.metadata.lyrics import fetch_lyrics, lrc_sidecar_path, write_lrc_sidecar
+
+    track = await _get_track_with_file(session, internal_id)
+    if not track.file:
+        raise HTTPException(400, "Track has no file")
+    audio = Path(track.file.path)
+    lrc = lrc_sidecar_path(audio)
+
+    message, kind = "", "ok"
+    if action == "delete":
+        try:
+            lrc.unlink(missing_ok=True)
+            message = "Lyrics sidecar deleted."
+        except OSError as exc:
+            message, kind = f"Delete failed: {exc}", "warn"
+    elif action == "fetch":
+        # Bypass the disk cache (incl. miss markers) — this is an explicit
+        # user request, so always ask LRCLIB fresh.
+        result = await fetch_lyrics(
+            artist=track.artist.name if track.artist else None,
+            title=track.title,
+            album=track.album.title if track.album else None,
+            duration_seconds=track.duration_seconds,
+            cache_dir=None,
+        )
+        if result is not None and result.instrumental:
+            message, kind = "LRCLIB marks this track as instrumental — no lyrics to write.", "warn"
+        elif result is not None and result.best:
+            if write_lrc_sidecar(audio, result.best):
+                message = "Fetched from LRCLIB" + (" (synced)." if result.synced else " (plain text).")
+            else:
+                message, kind = "Fetched, but writing the sidecar failed.", "warn"
+        else:
+            message, kind = "No lyrics found on LRCLIB for this track.", "warn"
+    else:  # save
+        text = lyrics.replace("\r\n", "\n").strip()
+        if not text:
+            try:
+                lrc.unlink(missing_ok=True)
+                message = "Empty — lyrics sidecar removed."
+            except OSError as exc:
+                message, kind = f"Delete failed: {exc}", "warn"
+        elif write_lrc_sidecar(audio, text + "\n"):
+            message = "Lyrics saved."
+        else:
+            message, kind = "Saving the sidecar failed.", "warn"
+
+    if kind == "ok":
+        # Navidrome serves .lrc sidecars — nudge it so clients see the change.
+        try:
+            from service.navidrome.client import trigger_scan
+            await trigger_scan()
+        except Exception:
+            pass
+
+    return templates.TemplateResponse(
+        request, "partials/lyrics_panel.html",
+        _lyrics_panel_ctx(track, message=message, message_kind=kind),
+    )
+
+
 @router.post("/admin/update-ytdlp", response_class=HTMLResponse)
 async def admin_update_ytdlp(request: Request) -> HTMLResponse:
     """Run pip install -U yt-dlp inside the container and report the result."""
@@ -6669,15 +6892,26 @@ async def admin_update_ytdlp(request: Request) -> HTMLResponse:
         return HTMLResponse(f'<span class="badge-warn">Update failed: {exc}</span>')
 
 
-@router.get("/admin/config", response_class=HTMLResponse)
-async def admin_config_page(request: Request) -> HTMLResponse:
+def _admin_config_ctx(*, saved: bool = False) -> dict:
     from service.config import CONFIG_EDITABLE_KEYS
     from service.providers.ytdlp import active_cookies_file
-    current = {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS}
-    return templates.TemplateResponse(
-        request, "admin_config.html",
-        {"active": "library", "current": current, "cookies_active": active_cookies_file()},
-    )
+    try:
+        import yt_dlp
+        ytdlp_version = yt_dlp.version.__version__
+    except Exception:
+        ytdlp_version = None
+    return {
+        "active": "settings",
+        "current": {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS},
+        "cookies_active": active_cookies_file(),
+        "ytdlp_version": ytdlp_version,
+        "saved": saved,
+    }
+
+
+@router.get("/admin/config", response_class=HTMLResponse)
+async def admin_config_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "admin_config.html", _admin_config_ctx())
 
 
 @router.post("/admin/cookies", response_class=HTMLResponse)
@@ -6756,8 +6990,6 @@ async def admin_config_save(request: Request) -> HTMLResponse:
                 except Exception:
                     pass
     save_config_overrides(overrides)
-    current = {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS}
     return templates.TemplateResponse(
-        request, "admin_config.html",
-        {"active": "library", "current": current, "saved": True}
+        request, "admin_config.html", _admin_config_ctx(saved=True)
     )
