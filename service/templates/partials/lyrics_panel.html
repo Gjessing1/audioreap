@@ -18,6 +18,7 @@
         hx-target="#lyrics-panel-{{ safe_id }}"
         hx-swap="outerHTML">
     <textarea class="rv-input" name="lyrics" rows="10" spellcheck="false"
+              id="lyr-text-{{ safe_id }}"
               placeholder="[00:12.34] First line…&#10;Plain text works too — timestamps are optional."
               style="width:100%;font-family:var(--font-mono);font-size:12px;line-height:1.5;resize:vertical">{{ lyrics_text }}</textarea>
     <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
@@ -29,6 +30,11 @@
         Fetch from LRCLIB <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
       {% if lyrics_status %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="document.getElementById('lyr-sync-{{ safe_id }}').classList.toggle('hidden')"
+              title="Play the track and watch the lyric timing live; nudge all timestamps earlier/later">
+        Adjust sync
+      </button>
       {# Own hx-post (not a form submit): hx-confirm only gates the element that
          issues the request, which for a submit button would be the form. #}
       <button type="button" class="btn btn-sm btn-ghost"
@@ -43,5 +49,114 @@
       {% endif %}
       <span style="font-size:11px;color:var(--t4)">Served by Navidrome to any Subsonic client. Audio tags are never touched.</span>
     </div>
+
+    {% if lyrics_status %}
+    {# ── Sync preview & offset ─────────────────────────────────────────────
+       Plays the actual library file; the current line is computed from the
+       textarea content + the pending offset, so nudges preview instantly
+       without touching the sidecar until "Apply offset". #}
+    <div id="lyr-sync-{{ safe_id }}" class="{% if not sync_open %}hidden{% endif %}"
+         style="margin-top:10px;padding:10px;border:1px solid var(--b1);border-radius:8px">
+      <div style="font-size:11px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">
+        Sync preview
+      </div>
+      <audio id="lyr-audio-{{ safe_id }}" controls preload="none"
+             src="/library/tracks/{{ track.id }}/stream"
+             style="width:100%;height:34px"></audio>
+      <div style="text-align:center;padding:10px 4px;min-height:74px">
+        <div id="lyr-prev-{{ safe_id }}" style="font-size:12px;color:var(--t4);min-height:18px"></div>
+        <div id="lyr-cur-{{ safe_id }}" style="font-size:15px;font-weight:600;min-height:24px;margin:2px 0">Press play to preview timing</div>
+        <div id="lyr-next-{{ safe_id }}" style="font-size:12px;color:var(--t4);min-height:18px"></div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:center">
+        <button type="button" class="btn btn-sm btn-ghost" data-lyr-nudge="-0.5">−0.5s</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-lyr-nudge="-0.1">−0.1s</button>
+        <span id="lyr-off-{{ safe_id }}"
+              style="font-family:var(--font-mono);font-size:13px;min-width:64px;text-align:center">0.0 s</span>
+        <button type="button" class="btn btn-sm btn-ghost" data-lyr-nudge="0.1">+0.1s</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-lyr-nudge="0.5">+0.5s</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="lyr-reset-{{ safe_id }}" style="color:var(--t3)">Reset</button>
+        <button type="submit" name="action" value="offset" class="btn btn-sm" id="lyr-apply-{{ safe_id }}" disabled
+                title="Rewrite every timestamp in the lyrics by the chosen offset and save the sidecar">
+          Apply offset <span class="htmx-indicator"><span class="spinner"></span></span>
+        </button>
+      </div>
+      <div style="font-size:11px;color:var(--t4);text-align:center;margin-top:6px">
+        Line appears too early? nudge <b>+</b> (later). Too late? nudge <b>−</b> (earlier).
+        The preview follows your nudges live — Apply rewrites the timestamps.
+      </div>
+      <input type="hidden" name="offset" id="lyr-offset-{{ safe_id }}" value="0">
+    </div>
+    <script>
+    (function () {
+      var root = document.getElementById('lyr-sync-{{ safe_id }}');
+      if (!root) return;
+      var audio = document.getElementById('lyr-audio-{{ safe_id }}');
+      var ta = document.getElementById('lyr-text-{{ safe_id }}');
+      var prevEl = document.getElementById('lyr-prev-{{ safe_id }}');
+      var curEl = document.getElementById('lyr-cur-{{ safe_id }}');
+      var nextEl = document.getElementById('lyr-next-{{ safe_id }}');
+      var offEl = document.getElementById('lyr-off-{{ safe_id }}');
+      var offInput = document.getElementById('lyr-offset-{{ safe_id }}');
+      var applyBtn = document.getElementById('lyr-apply-{{ safe_id }}');
+      var offset = 0, lines = [];
+
+      function parse() {
+        lines = [];
+        var TS = /\[(\d{1,3}):(\d{2}(?:\.\d{1,3})?)\]/g;
+        ta.value.split('\n').forEach(function (raw) {
+          var text = raw.replace(TS, '').replace(/<\d{1,3}:\d{2}(?:\.\d{1,3})?>/g, '').trim();
+          var m; TS.lastIndex = 0;
+          while ((m = TS.exec(raw)) !== null) {
+            lines.push({ t: parseInt(m[1], 10) * 60 + parseFloat(m[2]), text: text });
+          }
+        });
+        lines.sort(function (a, b) { return a.t - b.t; });
+      }
+
+      function render() {
+        offEl.textContent = (offset > 0 ? '+' : '') + offset.toFixed(1) + ' s';
+        offEl.style.color = offset ? 'var(--warn)' : '';
+        offInput.value = offset.toFixed(2);
+        applyBtn.disabled = !offset;
+        if (!lines.length) {
+          curEl.textContent = 'No timestamps found — add [mm:ss.xx] marks to preview sync.';
+          prevEl.textContent = nextEl.textContent = '';
+          return;
+        }
+        var t = audio.currentTime, idx = -1;
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].t + offset <= t) idx = i; else break;
+        }
+        prevEl.textContent = idx > 0 ? lines[idx - 1].text : '';
+        curEl.textContent = idx >= 0 ? (lines[idx].text || '♪') : '…';
+        nextEl.textContent = idx + 1 < lines.length ? lines[idx + 1].text : '';
+      }
+
+      audio.addEventListener('timeupdate', render);
+      audio.addEventListener('seeked', render);
+      ta.addEventListener('input', function () { parse(); render(); });
+      root.querySelectorAll('[data-lyr-nudge]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          offset = Math.round((offset + parseFloat(btn.dataset.lyrNudge)) * 10) / 10;
+          render();
+        });
+      });
+      document.getElementById('lyr-reset-{{ safe_id }}').addEventListener('click', function () {
+        offset = 0; render();
+      });
+      // Smooth line changes while playing (timeupdate only fires ~4×/s)
+      var raf = null;
+      audio.addEventListener('play', function loop() {
+        raf = requestAnimationFrame(function tick() {
+          render();
+          if (!audio.paused && !audio.ended) raf = requestAnimationFrame(tick);
+        });
+      });
+      audio.addEventListener('pause', function () { if (raf) cancelAnimationFrame(raf); });
+      parse(); render();
+    })();
+    </script>
+    {% endif %}
   </form>
 </div>

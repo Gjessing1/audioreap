@@ -6250,6 +6250,8 @@ async def library_health_page(
         )
     )).scalar_one()
 
+    artist_credit_count = len(await _artist_credit_mismatches(session))
+
     return templates.TemplateResponse(
         request, "library_health.html",
         {
@@ -6258,6 +6260,7 @@ async def library_health_page(
             "no_cover_count": no_cover_count,
             "no_mbid_count": no_mbid_count,
             "low_bitrate_count": low_bitrate_count,
+            "artist_credit_count": artist_credit_count,
             "min_bitrate_kbps": settings.min_bitrate_kbps,
         },
     )
@@ -6508,6 +6511,148 @@ async def library_health_low_quality(
         request, "partials/health_low_quality.html",
         {"tracks": tracks},
     )
+
+
+async def _artist_credit_mismatches(session: AsyncSession) -> list[Track]:
+    """Tracks whose per-file ARTIST tag differs from the album artist.
+
+    The scanner keys Artist rows on ALBUMARTIST, so these credits are invisible
+    as artists in audioreap — but Subsonic clients read the ARTIST tag directly
+    and surface them as separate artists (e.g. "Vitamin String Quartet" on a
+    Ramin Djawadi album). Featuring credits ("Main feat. Guest") and
+    compilations (Various Artists) are intentional and excluded.
+    """
+    from service.core.normalize import normalize as _norm
+    from service.library.tagger import primary_artist as _primary_artist
+    from sqlalchemy.orm import joinedload as _jl
+
+    rows = (await session.execute(
+        select(Track)
+        .options(_jl(Track.artist), _jl(Track.album), _jl(Track.file))
+        .join(Track.artist)
+        .where(
+            Track.artist_credit.is_not(None),
+            Track.album_id.is_not(None),
+            Track.artist_credit != Artist.name,
+        )
+        .order_by(Artist.name, Track.title)
+    )).unique().scalars().all()
+
+    out: list[Track] = []
+    for t in rows:
+        credit = (t.artist_credit or "").strip()
+        albumartist = (t.artist.name or "").strip() if t.artist else ""
+        if not credit or not albumartist:
+            continue
+        if _norm(albumartist) == "various artists":
+            continue  # compilation — per-track credits are the point
+        if _norm(credit) == _norm(albumartist):
+            continue  # case/punctuation-only difference
+        if _norm(_primary_artist(credit)) == _norm(albumartist):
+            continue  # "Main feat. Guest" under Main — by design
+        out.append(t)
+    return out
+
+
+@router.get("/library/health/artist-credits", response_class=HTMLResponse)
+async def library_health_artist_credits(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: tracks whose ARTIST tag credit differs from the album artist."""
+    mismatches = await _artist_credit_mismatches(session)
+    credits_populated = (await session.execute(
+        select(func.count(Track.id)).where(Track.artist_credit.is_not(None))
+    )).scalar_one()
+    tracks = [
+        {
+            "id": t.id,
+            "title": t.title,
+            "credit": t.artist_credit,
+            "albumartist": t.artist.name if t.artist else "",
+            "album": t.album.title if t.album else None,
+        }
+        for t in mismatches
+    ]
+    return templates.TemplateResponse(
+        request, "partials/health_artist_credits.html",
+        {"tracks": tracks, "credits_populated": credits_populated},
+    )
+
+
+async def _fix_artist_credit(session: AsyncSession, track: Track) -> str | None:
+    """Set the file's ARTIST tag to the album artist. Returns an error or None.
+
+    Writes ONLY the ARTIST tag (never ALBUMARTIST — album grouping is already
+    correct for these tracks) and mirrors the change into Track.artist_credit.
+    """
+    from service.library.tagger import write_tags as _write_tags
+
+    if not track.file:
+        return "no file"
+    albumartist = track.artist.name if track.artist else None
+    if not albumartist:
+        return "no album artist"
+    fp = Path(track.file.path)
+    if not fp.exists():
+        return "file missing on disk"
+    try:
+        await asyncio.to_thread(_write_tags, fp, artist=albumartist)
+    except Exception as exc:  # mutagen failures are per-file, keep going
+        return str(exc)
+    track.artist_credit = albumartist
+    track.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    try:
+        track.file.file_mtime = fp.stat().st_mtime
+    except OSError:
+        pass
+    return None
+
+
+@router.post("/library/health/artist-credits/{internal_id}/fix", response_class=HTMLResponse)
+async def fix_artist_credit(
+    request: Request,
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """One-click: rewrite this track's ARTIST tag to the album artist."""
+    track = await _get_track_with_file(session, internal_id)
+    err = await _fix_artist_credit(session, track)
+    if err:
+        return HTMLResponse(
+            f'<div class="card" style="padding:8px 14px"><span style="font-size:12px;color:var(--warn)">Failed: {err}</span></div>'
+        )
+    await session.commit()
+    try:
+        from service.navidrome.client import trigger_scan
+        await trigger_scan()
+    except Exception:
+        pass
+    return HTMLResponse("")  # row disappears from the list
+
+
+@router.post("/library/health/artist-credits/fix-all", response_class=HTMLResponse)
+async def fix_all_artist_credits(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Rewrite the ARTIST tag to the album artist for every mismatched track."""
+    mismatches = await _artist_credit_mismatches(session)
+    fixed, failed = 0, 0
+    for t in mismatches:
+        if await _fix_artist_credit(session, t) is None:
+            fixed += 1
+        else:
+            failed += 1
+    await session.commit()
+    if fixed:
+        try:
+            from service.navidrome.client import trigger_scan
+            await trigger_scan()
+        except Exception:
+            pass
+    # Re-render the list (anything that failed stays visible)
+    return await library_health_artist_credits(request, session)
 
 
 @router.post("/library/tracks/{track_id}/enrich", response_class=HTMLResponse)
@@ -6958,7 +7103,9 @@ async def _get_track_with_file(session: AsyncSession, internal_id: str) -> Track
     return row
 
 
-def _lyrics_panel_ctx(track: Track, *, message: str = "", message_kind: str = "ok") -> dict:
+def _lyrics_panel_ctx(
+    track: Track, *, message: str = "", message_kind: str = "ok", sync_open: bool = False,
+) -> dict:
     from service.metadata.lyrics import lrc_sidecar_path, sidecar_is_synced
 
     status: str | None = None
@@ -6979,7 +7126,27 @@ def _lyrics_panel_ctx(track: Track, *, message: str = "", message_kind: str = "o
         "lyrics_text": text,
         "message": message,
         "message_kind": message_kind,
+        "sync_open": sync_open,
     }
+
+
+@router.get("/library/tracks/{internal_id}/stream")
+async def stream_library_track(
+    internal_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Stream a library track's audio — used by the lyrics sync preview player."""
+    from fastapi.responses import FileResponse
+    track = await _get_track_with_file(session, internal_id)
+    if not track.file:
+        raise HTTPException(404)
+    path = Path(track.file.path)
+    if not path.exists():
+        raise HTTPException(404)
+    ext = path.suffix.lower()
+    media_map = {".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac",
+                 ".opus": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac"}
+    return FileResponse(path, media_type=media_map.get(ext, "audio/ogg"))
 
 
 @router.get("/library/tracks/{internal_id}/lyrics-panel", response_class=HTMLResponse)
@@ -7000,10 +7167,11 @@ async def track_lyrics_action(
     internal_id: str,
     action: str = Form("save"),
     lyrics: str = Form(""),
+    offset: float = Form(0.0),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Save, delete, or (re)fetch the .lrc sidecar for one track."""
-    from service.metadata.lyrics import fetch_lyrics, lrc_sidecar_path, write_lrc_sidecar
+    """Save, delete, (re)fetch, or time-shift the .lrc sidecar for one track."""
+    from service.metadata.lyrics import fetch_lyrics, lrc_sidecar_path, shift_lrc, write_lrc_sidecar
 
     track = await _get_track_with_file(session, internal_id)
     if not track.file:
@@ -7037,6 +7205,18 @@ async def track_lyrics_action(
                 message, kind = "Fetched, but writing the sidecar failed.", "warn"
         else:
             message, kind = "No lyrics found on LRCLIB for this track.", "warn"
+    elif action == "offset":
+        # Shift every timestamp in the submitted text (keeps unsaved edits) and save.
+        text = shift_lrc(lyrics.replace("\r\n", "\n"), offset).strip()
+        if not text:
+            message, kind = "Nothing to shift — lyrics are empty.", "warn"
+        elif abs(offset) < 0.001:
+            message, kind = "Offset is 0 — nothing changed.", "warn"
+        elif write_lrc_sidecar(audio, text + "\n"):
+            direction = "later" if offset > 0 else "earlier"
+            message = f"Timestamps shifted {abs(offset):.2f}s {direction} and saved."
+        else:
+            message, kind = "Shifted, but saving the sidecar failed.", "warn"
     else:  # save
         text = lyrics.replace("\r\n", "\n").strip()
         if not text:
@@ -7060,7 +7240,8 @@ async def track_lyrics_action(
 
     return templates.TemplateResponse(
         request, "partials/lyrics_panel.html",
-        _lyrics_panel_ctx(track, message=message, message_kind=kind),
+        _lyrics_panel_ctx(track, message=message, message_kind=kind,
+                          sync_open=(action == "offset")),
     )
 
 

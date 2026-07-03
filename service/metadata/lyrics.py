@@ -224,6 +224,31 @@ async def fetch_lyrics(
     return result
 
 
+# Any [mm:ss] / [mm:ss.xx] / [mm:ss.xxx] timestamp, incl. mid-line (enhanced LRC).
+# The \d after '[' keeps metadata tags like [ar:...] / [offset:...] untouched.
+_SHIFT_TS_RE = re.compile(r"\[(\d{1,3}):(\d{2}(?:\.\d{1,3})?)\]")
+
+
+def shift_lrc(text: str, offset_seconds: float) -> str:
+    """Shift every LRC timestamp by offset_seconds (positive = lyrics later).
+
+    Preserves each timestamp's fractional precision ([01:23.45] stays 2-digit,
+    [01:23] stays whole-second) and clamps at 00:00 — a shift can never produce
+    a negative time. Metadata tags ([ar:], [ti:], [offset:], …) are untouched.
+    """
+    def _repl(m: re.Match[str]) -> str:
+        sec_str = m.group(2)
+        digits = len(sec_str.split(".")[1]) if "." in sec_str else 0
+        total = max(0.0, int(m.group(1)) * 60 + float(sec_str) + offset_seconds)
+        total = round(total, digits)
+        mm, ss = int(total // 60), total - int(total // 60) * 60
+        if digits:
+            return f"[{mm:02d}:{ss:0{3 + digits}.{digits}f}]"
+        return f"[{mm:02d}:{int(ss):02d}]"
+
+    return _SHIFT_TS_RE.sub(_repl, text)
+
+
 def write_lrc_sidecar(audio_path: Path, text: str) -> bool:
     """Write LRC/plain lyrics to the .lrc sidecar next to audio_path.
 

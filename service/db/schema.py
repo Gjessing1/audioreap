@@ -51,6 +51,10 @@ class Track(Base):
     album_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("albums.id"), nullable=True
     )
+    # Raw per-file ARTIST tag, scanner-populated. The artist relationship above is
+    # keyed on ALBUMARTIST, so a track credited to a guest performer under another
+    # artist's album is invisible without this column (Symfonium reads ARTIST directly).
+    artist_credit: Mapped[str | None] = mapped_column(String, nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     track_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     disc_number: Mapped[int | None] = mapped_column(Integer, nullable=True)

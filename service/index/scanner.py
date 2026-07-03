@@ -262,6 +262,7 @@ async def _process_file(
             title=title,
             artist_id=artist_id,
             album_id=album_id,
+            artist_credit=tagged.artist,
             duration_seconds=tagged.duration_seconds,
             track_number=tagged.track_number,
             disc_number=tagged.disc_number,
@@ -277,6 +278,7 @@ async def _process_file(
         # set by the pipeline — but populate it from the file tag if it's still NULL
         # (covers pre-existing files imported before the pipeline ran).
         track_row.album_id = album_id
+        track_row.artist_credit = tagged.artist
         track_row.track_number = tagged.track_number
         track_row.disc_number = tagged.disc_number
         if tagged.genre:

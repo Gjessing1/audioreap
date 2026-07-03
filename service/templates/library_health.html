@@ -29,6 +29,10 @@
     <div class="stat-val" style="color:{% if low_bitrate_count == 0 %}var(--success){% else %}var(--warn){% endif %}">{{ low_bitrate_count }}</div>
     <div class="stat-label">Low bitrate (&lt;{{ min_bitrate_kbps }}k)</div>
   </div>
+  <div class="stat">
+    <div class="stat-val" style="color:{% if artist_credit_count == 0 %}var(--success){% else %}var(--warn){% endif %}">{{ artist_credit_count }}</div>
+    <div class="stat-label">Artist credit mismatches</div>
+  </div>
 </div>
 
 <div class="section-title">Duplicate tracks
@@ -174,6 +178,24 @@
   Tracks with bitrate below {{ min_bitrate_kbps }} kbps. Use "Find →" to open the library and replace the source, or press OK to suppress the warning if the bitrate is acceptable.
 </p>
 <div id="health-low-bitrate"></div>
+
+<div class="section-title" style="margin-top:24px">Artist credit mismatches
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/health/artist-credits"
+          hx-target="#health-artist-credits"
+          hx-swap="innerHTML"
+          hx-indicator="#credits-spinner">
+    Show <span id="credits-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Tracks whose per-file ARTIST tag names a different performer than the album artist (e.g. a
+  guest performer on one album track). Subsonic clients like Symfonium show these as separate
+  artists even though audioreap groups the album correctly. "Set to album artist" rewrites only
+  the ARTIST tag — ALBUMARTIST and album grouping are never touched. Featuring credits
+  ("Main feat. Guest") and Various Artists compilations are intentionally excluded.
+</p>
+<div id="health-artist-credits"></div>
 
 <div class="section-title" style="margin-top:24px">Trash
   <button class="btn btn-ghost btn-sm" style="margin-left:8px"

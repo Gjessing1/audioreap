@@ -419,3 +419,73 @@ def test_dest_preview_single() -> None:
         "is_single": True,
     })
     assert "single" in html.lower()
+
+
+# ── Lyrics panel ─────────────────────────────────────────────────────────────
+
+
+def _lyrics_ctx(**over: Any) -> dict:
+    ctx: dict[str, Any] = {
+        "track": _Obj({"id": "track:lyr"}),
+        "safe_id": "track_lyr",
+        "lyrics_status": "synced",
+        "lyrics_text": "[00:12.00] First line\n[00:15.50] Second line",
+        "message": "",
+        "message_kind": "ok",
+        "sync_open": False,
+    }
+    ctx.update(over)
+    return ctx
+
+
+def test_lyrics_panel_synced_has_sync_preview() -> None:
+    html = _render("partials/lyrics_panel.html", _lyrics_ctx())
+    assert "Adjust sync" in html
+    assert "/library/tracks/track:lyr/stream" in html
+    assert 'name="offset"' in html
+    assert 'value="offset"' in html  # Apply offset submit button
+    # closed by default
+    assert 'id="lyr-sync-track_lyr" class="hidden"' in html
+
+
+def test_lyrics_panel_sync_open_after_offset() -> None:
+    html = _render("partials/lyrics_panel.html", _lyrics_ctx(sync_open=True))
+    assert 'id="lyr-sync-track_lyr" class=""' in html
+
+
+def test_lyrics_panel_no_lyrics_hides_sync() -> None:
+    html = _render("partials/lyrics_panel.html",
+                   _lyrics_ctx(lyrics_status=None, lyrics_text=""))
+    assert "Adjust sync" not in html
+    assert "Save lyrics" in html
+
+
+# ── Artist credit mismatches (Library Health) ────────────────────────────────
+
+
+def test_health_artist_credits_renders() -> None:
+    html = _render("partials/health_artist_credits.html", {
+        "tracks": [{
+            "id": "track:vsq",
+            "title": "Something I Can Never Have",
+            "credit": "Vitamin String Quartet",
+            "albumartist": "Ramin Djawadi",
+            "album": "Westworld Season 2",
+        }],
+        "credits_populated": 100,
+    })
+    assert "Vitamin String Quartet" in html
+    assert "Set to Ramin Djawadi" in html
+    assert "Fix all 1" in html
+
+
+def test_health_artist_credits_empty_needs_scan() -> None:
+    html = _render("partials/health_artist_credits.html",
+                   {"tracks": [], "credits_populated": 0})
+    assert "full rescan" in html
+
+
+def test_health_artist_credits_empty_all_good() -> None:
+    html = _render("partials/health_artist_credits.html",
+                   {"tracks": [], "credits_populated": 42})
+    assert "No mismatched artist credits" in html

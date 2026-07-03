@@ -1,0 +1,43 @@
+{% if not tracks %}
+  {% if credits_populated == 0 %}
+  <p class="empty">No artist credits indexed yet — run a full rescan (Library → Rescan) to read ARTIST tags into the index, then check again.</p>
+  {% else %}
+  <p class="empty">No mismatched artist credits. Every track's ARTIST tag matches its album artist (feat. credits and compilations excluded).</p>
+  {% endif %}
+{% else %}
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+  <p style="font-size:13px;color:var(--t3);margin:0">{{ tracks|length }} track{{ 's' if tracks|length != 1 }} credited to a different artist than the album artist.</p>
+  <button class="btn btn-sm btn-ghost" style="font-size:11px"
+          hx-post="/library/health/artist-credits/fix-all"
+          hx-target="#health-artist-credits"
+          hx-swap="innerHTML"
+          hx-indicator="#credits-fixall-spinner"
+          hx-confirm="Rewrite the ARTIST tag to the album artist on all {{ tracks|length }} tracks? ALBUMARTIST is never touched.">
+    Fix all {{ tracks|length }}
+    <span id="credits-fixall-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+{% for t in tracks %}
+{% set safe_id = t.id | replace(':', '_') %}
+<div class="card" id="health-credit-{{ safe_id }}" style="padding:8px 14px;gap:8px">
+  <div class="card-info" style="flex:1;min-width:0">
+    <div class="card-title">{{ t.title }}</div>
+    <div class="card-sub">
+      credited to <span style="color:var(--warn)">{{ t.credit }}</span>
+      · album artist <span style="color:var(--success)">{{ t.albumartist }}</span>
+      {% if t.album %} · {{ t.album }}{% endif %}
+    </div>
+  </div>
+  <div class="card-actions">
+    <button class="btn btn-sm btn-ghost" style="font-size:11px"
+            hx-post="/library/health/artist-credits/{{ t.id }}/fix"
+            hx-target="#health-credit-{{ safe_id }}"
+            hx-swap="outerHTML"
+            title="Rewrite this file's ARTIST tag to {{ t.albumartist }} — ALBUMARTIST and album grouping stay untouched">
+      Set to {{ t.albumartist }}
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
