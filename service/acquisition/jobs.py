@@ -360,6 +360,7 @@ async def acquire_album_from_mb(
                 album=album_title,
                 year=year_val,
                 track_number=t.number,
+                disc_number=t.disc,
                 duration_seconds=t.duration_seconds,
                 mb_release_id=release_id,
                 mb_recording_id=t.recording_id,

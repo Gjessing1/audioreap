@@ -30,6 +30,25 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 # requiring every calling endpoint to pass them in context explicitly.
 templates.env.globals["settings"] = settings
 
+
+def _local_album_rows(album) -> list[dict]:
+    """Owned-track rows for album_tracklist.html's local (non-MB) mode.
+
+    Sorted disc-major so multi-disc albums don't interleave (two "track 1" rows
+    from different discs). Done here rather than in Jinja because disc_number is
+    None on single-disc tracks and Jinja's sort can't compare None with int.
+    """
+    def _key(t):
+        return (t.disc_number or 1, t.track_number is None, t.track_number or 0, t.title or "")
+    return [
+        {"status": "plain", "number": t.track_number, "title": t.title,
+         "track": t, "disc": t.disc_number}
+        for t in sorted(album.tracks, key=_key)
+    ]
+
+
+templates.env.globals["local_album_rows"] = _local_album_rows
+
 from service.library.writer import trash_empty_album_dir as _trash_empty_album_dir
 
 _JOBS_COMPLETED_PAGE = 50
@@ -2369,6 +2388,7 @@ async def album_tracklist(
         rows.append({
             "status": status,
             "number": mt.number,
+            "disc": mt.disc,
             "title": (track.title if track is not None else mt.title),
             "track": track,
             "recording_id": mt.recording_id,
@@ -2389,7 +2409,7 @@ async def album_tracklist(
         if rid_in_mb or title_in_mb:
             continue  # duplicate of an MB track already shown above
         extra += 1
-        rows.append({"status": "extra", "number": None, "title": lt.title, "track": lt})
+        rows.append({"status": "extra", "number": None, "disc": None, "title": lt.title, "track": lt})
 
     if not rows:
         return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found.</p>')
@@ -2572,6 +2592,136 @@ async def move_track_to_album(
     await _do_scans()
 
     return HTMLResponse(f'<span style="color:var(--success);font-size:12px">✓ Moved to {target_album.title}</span>')
+
+
+@router.post("/library/albums/{album_id}/fix-discs", response_class=HTMLResponse)
+async def album_fix_discs(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Repair disc/track numbers on a multi-disc album from its MB tracklist.
+
+    Albums acquired before disc awareness existed had every disc flattened with
+    per-disc positions and no DISCNUMBER tag — two "track 1" rows, two "track 2"
+    rows, and so on. Matches owned tracks to the MB tracklist (recording ID
+    first, title fallback), writes disc + track number tags, and renames files
+    into the disc-aware layout (disc 2 track 1 → "201 - Title.ext").
+    """
+    from sqlalchemy.orm import joinedload as _jl
+    from service.library.layout import track_path as _tp
+    from service.library.tagger import write_tags as _wt
+    from service.library.writer import atomic_place as _ap
+    from service.search.matcher import title_similarity as _tsim
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file),
+                 _jl(Album.tracks).joinedload(Track.artist))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+    if not (album.mb_release_group_id or album.musicbrainz_release_id):
+        return HTMLResponse('<span class="badge badge-warn">Not linked to MusicBrainz — link the album first</span>')
+
+    try:
+        if album.mb_release_group_id:
+            from service.metadata.musicbrainz import get_release_group_tracks as _get_tracks
+            _, _, _, mb_tracks = await asyncio.to_thread(
+                _get_tracks, album.mb_release_group_id, settings.cache_dir
+            )
+        else:
+            from service.metadata.musicbrainz import get_release_tracks_by_id as _get_rel
+            _, _, _, mb_tracks = await asyncio.to_thread(
+                _get_rel, album.musicbrainz_release_id, settings.cache_dir
+            )
+    except Exception as exc:
+        return HTMLResponse(f'<span class="badge badge-warn">MusicBrainz unavailable: {exc}</span>')
+
+    if not any(t.disc for t in mb_tracks):
+        return HTMLResponse('<span class="badge badge-done">MusicBrainz lists a single disc — nothing to fix ✓</span>')
+
+    # Match owned tracks to MB slots: recording ID first, then title similarity
+    # among unclaimed slots (same fallback the tracklist reconciliation uses).
+    by_rid = {t.recording_id: t for t in mb_tracks if t.recording_id}
+    used: set[int] = set()
+    matches: list[tuple[Track, object]] = []
+    for track in album.tracks:
+        rid = track.musicbrainz_recording_id
+        mt = by_rid.get(rid) if rid else None
+        if mt is not None and id(mt) not in used:
+            used.add(id(mt))
+            matches.append((track, mt))
+    matched_ids = {t.id for t, _ in matches}
+    for track in album.tracks:
+        if track.id in matched_ids:
+            continue
+        best, best_s = None, 0.0
+        for mt in mb_tracks:
+            if id(mt) in used:
+                continue
+            s = _tsim(track.title, mt.title)
+            if s > best_s:
+                best_s, best = s, mt
+        if best is not None and best_s >= 0.80:
+            used.add(id(best))
+            matches.append((track, best))
+
+    if not matches:
+        return HTMLResponse('<span class="badge badge-warn">No owned track matched the MB tracklist</span>')
+
+    albumartist = album.artist.name if album.artist else "Unknown"
+    fixed = moved = 0
+    for track, mt in matches:
+        new_disc = mt.disc
+        new_num = mt.number or track.track_number
+        fp = Path(track.file.path) if track.file else None
+        if fp is None or not fp.exists():
+            track.disc_number = new_disc
+            track.track_number = new_num
+            continue
+        try:
+            await asyncio.to_thread(_wt, fp, track_number=new_num, disc_number=new_disc)
+        except Exception as exc:
+            logger.warning("fix-discs: tag write failed for %s: %s", fp, exc)
+            continue
+        if track.disc_number != new_disc or track.track_number != new_num:
+            fixed += 1
+        track.disc_number = new_disc
+        track.track_number = new_num
+        dst = _tp(
+            settings.music_dir,
+            artist=(track.artist.name if track.artist else albumartist),
+            album=album.title,
+            year=album.year,
+            track_number=new_num,
+            disc_number=new_disc,
+            title=track.title,
+            ext=fp.suffix.lstrip("."),
+            albumartist=albumartist,
+        )
+        if dst != fp and not dst.exists():
+            try:
+                await asyncio.to_thread(_ap, fp, dst)
+                # Keep the .lrc lyrics sidecar next to its audio file
+                lrc = fp.with_suffix(".lrc")
+                if lrc.exists():
+                    try:
+                        lrc.rename(dst.with_suffix(".lrc"))
+                    except OSError:
+                        pass
+                track.file.path = str(dst)
+                moved += 1
+            except Exception as exc:
+                logger.warning("fix-discs: rename failed %s → %s: %s", fp, dst, exc)
+
+    await session.commit()
+    await _do_scans()
+    return HTMLResponse(
+        f'<span class="badge badge-done">Disc numbers written to {fixed} track(s), '
+        f'{moved} file(s) renamed ✓ — reopen the album to see discs</span>'
+    )
 
 
 @router.get("/library/stats-fragment", response_class=HTMLResponse)
@@ -2787,7 +2937,7 @@ async def artist_page(
         select(Track)
         .options(_jl(Track.album), _jl(Track.file))
         .where(Track.artist_id == artist_id)
-        .order_by(Album.year.nullslast(), Album.title.nullslast(), Track.track_number.nullslast(), Track.title)  # type: ignore[union-attr]
+        .order_by(Album.year.nullslast(), Album.title.nullslast(), Track.disc_number.nullsfirst(), Track.track_number.nullslast(), Track.title)  # type: ignore[union-attr]
         .outerjoin(Track.album)
         .join(Track.file)
     )).unique().scalars().all()
@@ -3299,6 +3449,47 @@ async def save_artist_image(
             img_path.write_bytes(resp.content)
     except Exception as exc:
         return HTMLResponse(f'<p style="font-size:12px;color:var(--danger)">Download failed: {exc}</p>')
+
+    # Trigger Navidrome rescan so the new image is picked up
+    await _do_scans()
+
+    cache_bust = int(datetime.now(UTC).timestamp())
+    return HTMLResponse(
+        f'<img src="/library/artists/{artist_id}/image?v={cache_bust}" '
+        f'style="width:80px;height:80px;object-fit:cover;border-radius:8px;display:block;margin-bottom:6px" '
+        f'alt="{artist.name}">'
+        f'<p style="font-size:12px;color:var(--success)">✓ Artist image saved — Navidrome rescan triggered.</p>'
+    )
+
+
+@router.post("/library/artists/{artist_id}/image/upload", response_class=HTMLResponse)
+async def upload_artist_image(
+    request: Request,
+    artist_id: str,
+    image: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Save a user-uploaded portrait as artist.jpg in the artist's music folder."""
+    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small
+
+    if not image.content_type or not image.content_type.startswith("image/"):
+        return HTMLResponse('<p style="font-size:12px;color:var(--danger)">Not an image file</p>')
+    art = await image.read()
+    if not art:
+        return HTMLResponse('<p style="font-size:12px;color:var(--danger)">Empty file</p>')
+    if _image_too_small(art, _MIN_USER_COVER_PX):
+        return HTMLResponse('<p style="font-size:12px;color:var(--danger)">Image too small — must be at least 300×300 px</p>')
+
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+
+    artist_dir = settings.music_dir / artist.name
+    artist_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        await asyncio.to_thread((artist_dir / "artist.jpg").write_bytes, art)
+    except OSError as exc:
+        return HTMLResponse(f'<p style="font-size:12px;color:var(--danger)">Save failed: {exc}</p>')
 
     # Trigger Navidrome rescan so the new image is picked up
     await _do_scans()
@@ -5682,6 +5873,7 @@ async def discography_acquire_single_track(
     artist: str = Form(""),
     album: str = Form(""),
     track_number: str = Form(""),
+    disc_number: str = Form(""),
     duration_seconds: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
@@ -5707,6 +5899,7 @@ async def discography_acquire_single_track(
         artist=artist or "Unknown",
         album=album or None,
         track_number=int(track_number) if track_number.isdigit() else None,
+        disc_number=int(disc_number) if disc_number.isdigit() else None,
         duration_seconds=dur_s,
         mb_recording_id=recording_id or None,
         # Same lock the album-batch coordinator applies: keep the track anchored

@@ -73,6 +73,7 @@ class TrackCandidate(BaseModel):
     album: str | None = None
     year: int | None = None
     track_number: int | None = None
+    disc_number: int | None = None
     duration_seconds: int | None = None
     quality_hint: TrackQuality | None = None
     thumbnail_url: str | None = None

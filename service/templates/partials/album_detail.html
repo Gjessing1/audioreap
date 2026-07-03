@@ -137,6 +137,17 @@
               hx-swap="outerHTML"
               title="Rewrite album, albumartist and year tags on all track files (fixes Navidrome album splits)"
               style="font-size:11px">Fix file tags</button>
+      {% if album.mb_release_group_id or album.musicbrainz_release_id %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              hx-post="/library/albums/{{ album.id }}/fix-discs"
+              hx-target="#fix-discs-result-{{ aid }}"
+              hx-swap="innerHTML"
+              hx-indicator="this"
+              hx-confirm="Re-number tracks per disc from the MusicBrainz tracklist? Files are renamed to the disc-aware layout."
+              title="Multi-disc repair: writes disc + per-disc track numbers from MusicBrainz (fixes duplicate track numbers when one album spans several discs)"
+              style="font-size:11px">Fix discs (MB)
+        <span class="htmx-indicator"><span class="spinner"></span></span></button>
+      {% endif %}
       <button type="button" class="btn btn-sm btn-ghost"
               hx-delete="/library/albums/{{ album.id }}"
               hx-target="#album-{{ aid }}"
@@ -148,6 +159,7 @@
               hx-target="#album-list"
               hx-swap="innerHTML">Close</button>
     </div>
+    <div id="fix-discs-result-{{ aid }}" style="font-size:12px"></div>
   </form>
 
   {# ── Link MusicBrainz ─────────────────────────────────────────────────── #}

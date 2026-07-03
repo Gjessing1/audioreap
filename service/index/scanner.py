@@ -278,6 +278,7 @@ async def _process_file(
         # (covers pre-existing files imported before the pipeline ran).
         track_row.album_id = album_id
         track_row.track_number = tagged.track_number
+        track_row.disc_number = tagged.disc_number
         if tagged.genre:
             track_row.genre = tagged.genre
         if tagged.mb_recording_id and not track_row.musicbrainz_recording_id:

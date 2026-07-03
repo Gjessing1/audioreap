@@ -4,8 +4,13 @@
 <div class="release-tracklist">
   <div style="font-weight:600;margin-bottom:8px">{{ album_title }}</div>
   {% if tracks %}
+  {% set _discs = tracks | map(attribute='disc') | select | unique | list %}
+  {% set show_discs = _discs | length > 1 %}
   <table style="width:100%;font-size:13px;border-collapse:collapse">
     {% for t in tracks %}
+    {% if show_discs and t.disc and (loop.previtem is undefined or loop.previtem.disc != t.disc) %}
+    <tr><td colspan="5" style="padding:{% if loop.first %}2px{% else %}10px{% endif %} 0 4px;font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Disc {{ t.disc }}</td></tr>
+    {% endif %}
     {% set is_owned = (t.recording_id and t.recording_id in owned_recording_ids) or (t.title|lower|trim in owned_titles) %}
     <tr id="disco-track-{{ t.recording_id or loop.index }}"
         style="border-bottom:1px solid var(--border)">
@@ -30,6 +35,7 @@
           <input type="hidden" name="artist" value="{{ artist|e }}">
           <input type="hidden" name="album" value="{{ album_title|e }}">
           <input type="hidden" name="track_number" value="{{ t.number }}">
+          {% if t.disc %}<input type="hidden" name="disc_number" value="{{ t.disc }}">{% endif %}
           {% if t.duration_seconds %}<input type="hidden" name="duration_seconds" value="{{ t.duration_seconds }}">{% endif %}
           <button type="submit" class="btn btn-sm" style="font-size:11px;padding:2px 8px">Get</button>
         </form>

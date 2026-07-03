@@ -762,6 +762,9 @@ class MBTrack:
     title: str
     duration_seconds: int | None
     recording_id: str | None
+    # Disc (audio medium) this track sits on. None for single-disc releases so
+    # everything downstream keeps today's behaviour; 1..N on multi-disc releases.
+    disc: int | None = None
 
 
 def get_release_group_tracks(
@@ -866,6 +869,7 @@ def _fetch_release_tracks(
                 pass
 
     seen_rids: set[str] = set()
+    disc_idx = 0
     for medium in rel_data.get("medium-list") or []:
         if not isinstance(medium, dict):
             continue
@@ -876,6 +880,7 @@ def _fetch_release_tracks(
         fmt = str(medium.get("format") or "").lower()
         if any(h in fmt for h in _VIDEO_MEDIUM_HINTS):
             continue
+        disc_idx += 1
         for t in medium.get("track-list") or []:
             if not isinstance(t, dict):
                 continue
@@ -895,9 +900,16 @@ def _fetch_release_tracks(
                 if rid in seen_rids:
                     continue
                 seen_rids.add(rid)
-            tracks.append(MBTrack(number=number, title=title, duration_seconds=duration_s, recording_id=rid))
+            tracks.append(MBTrack(number=number, title=title, duration_seconds=duration_s, recording_id=rid, disc=disc_idx))
 
-    tracks.sort(key=lambda t: t.number)
+    # Positions restart at 1 on every medium, so a flat sort by number interleaves
+    # discs (two "track 1"s, two "track 2"s…). Sort disc-major, and only keep disc
+    # numbers when the release actually has more than one audio disc — single-disc
+    # albums stay exactly as before (no DISCNUMBER tag, no "NN" prefix change).
+    if disc_idx <= 1:
+        for t in tracks:
+            t.disc = None
+    tracks.sort(key=lambda t: (t.disc or 1, t.number))
     return album_title, release_id, rg_year, tracks
 
 

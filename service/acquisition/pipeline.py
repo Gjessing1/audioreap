@@ -380,6 +380,8 @@ async def run_acquisition(
             prov_year = "candidate:locked" if candidate_album_locked else "candidate"
         if candidate.track_number:
             track_number = candidate.track_number
+        if candidate.disc_number:
+            disc_number = candidate.disc_number
 
         prov_recording = "candidate" if candidate.mb_recording_id else "none"
         mb_recording_id: str | None = candidate.mb_recording_id

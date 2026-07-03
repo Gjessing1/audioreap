@@ -16,14 +16,13 @@
    no blocking). Used for the immediate render and as the MB-unavailable
    fallback. Builds plain rows here so callers only need to pass `album`. #}
 {% if local_only is defined and local_only %}
-  {% set _numbered = album.tracks | selectattr('track_number') | sort(attribute='track_number') | list %}
-  {% set _unnumbered = album.tracks | rejectattr('track_number') | list %}
-  {% set rows = [] %}
-  {% for t in (_numbered + _unnumbered) %}
-  {% set _ = rows.append({'status': 'plain', 'number': t.track_number, 'title': t.title, 'track': t}) %}
-  {% endfor %}
+  {% set rows = local_album_rows(album) %}
   {% set linked = False %}
 {% endif %}
+
+{# Disc headers only when the list actually spans more than one disc #}
+{% set _discs = rows | map(attribute='disc') | select | unique | list %}
+{% set show_discs = _discs | length > 1 %}
 
 {% if note %}
 <div style="font-size:11px;color:#e8a000;margin-bottom:8px">{{ note }}</div>
@@ -46,6 +45,9 @@
 {# ── The list ──────────────────────────────────────────────────────────────── #}
 <div class="track-list">
   {% for r in rows %}
+  {% if show_discs and r.disc and (loop.previtem is undefined or loop.previtem.disc != r.disc) %}
+  <div style="font-size:10px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;margin:{% if loop.first %}0{% else %}8px{% endif %} 0 4px">Disc {{ r.disc }}</div>
+  {% endif %}
   {% if r.status == 'extra' and (loop.previtem is undefined or loop.previtem.status != 'extra') %}
   <div style="font-size:10px;font-weight:600;color:#e8a000;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;padding-top:8px;border-top:1px dashed var(--b1)">Also in your library · not in MusicBrainz</div>
   {% endif %}
@@ -92,6 +94,7 @@
         <input type="hidden" name="artist" value="{{ album.artist.name if album.artist else '' }}">
         <input type="hidden" name="album" value="{{ album.title|e }}">
         <input type="hidden" name="track_number" value="{{ r.number }}">
+        {% if r.disc %}<input type="hidden" name="disc_number" value="{{ r.disc }}">{% endif %}
         {% if r.duration_seconds %}<input type="hidden" name="duration_seconds" value="{{ r.duration_seconds }}">{% endif %}
         <button type="submit" class="btn btn-sm" style="font-size:10px;padding:2px 8px">Get</button>
       </form>
