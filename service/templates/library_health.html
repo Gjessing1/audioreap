@@ -96,6 +96,22 @@
 </p>
 <div id="covers-result"></div>
 
+<div class="section-title" style="margin-top:24px">ReplayGain
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-post="/library/health/backfill-replaygain"
+          hx-target="#replaygain-result"
+          hx-swap="innerHTML"
+          hx-indicator="#replaygain-spinner">
+    Backfill all
+    <span id="replaygain-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Analyze loudness (via <a href="https://github.com/complexlogic/rsgain" target="_blank" rel="noopener">rsgain</a>, EBU R128) and write REPLAYGAIN_TRACK_GAIN/PEAK and REPLAYGAIN_ALBUM_GAIN/PEAK tags for every track that doesn't have them yet.
+  New acquisitions are tagged automatically — this catches tracks from before ReplayGain support existed. Safe to re-run; already-tagged files are skipped. Runs in the background.
+</p>
+<div id="replaygain-result"></div>
+
 <div class="section-title" style="margin-top:24px">Missing lyrics
   <button class="btn btn-ghost btn-sm" style="margin-left:8px"
           hx-post="/library/health/fetch-missing-lyrics"

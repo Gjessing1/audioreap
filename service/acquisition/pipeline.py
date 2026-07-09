@@ -1072,14 +1072,17 @@ async def place_approved_track(
             # Atomic place: staging → music
             await asyncio.to_thread(atomic_place, staging_path, dest)
 
-        # ReplayGain (best-effort; adds ~5s but runs only once per track)
-        try:
-            from service.library.tagger import compute_replaygain, write_replaygain
-            rg = await asyncio.to_thread(compute_replaygain, dest)
-            if rg is not None:
-                await asyncio.to_thread(write_replaygain, dest, rg)
-        except Exception as rg_exc:
-            logger.debug("Approve: ReplayGain failed for %s: %s", dest, rg_exc)
+        # ReplayGain: singles get track-only tags immediately (best-effort).
+        # Album tracks are deferred to a per-album job below — album gain must
+        # combine loudness across every track in the release, which isn't known
+        # until (and is re-derived each time) a track lands, so per-track analysis
+        # here would be redundant and couldn't produce a correct album value.
+        if not album:
+            try:
+                from service.library.tagger import run_rsgain
+                await asyncio.to_thread(run_rsgain, [dest], album=False)
+            except Exception as rg_exc:
+                logger.debug("Approve: ReplayGain failed for %s: %s", dest, rg_exc)
 
     # Fetch and embed artwork (cached — cheap on second call)
     artwork_bytes: bytes | None = None
@@ -1130,6 +1133,7 @@ async def place_approved_track(
     # "unlinked", forcing a manual MB link). Discography batches hit this routinely
     # because their candidate duration is the MB tracklist value, not the download.
     hash_track_id = make_id(artist=artist, title=title, duration_seconds=duration_seconds)
+    album_id_for_rg: str | None = None
     try:
         async with session.begin_nested():
             # Clear any tombstone for this recording so the user's explicit approval
@@ -1156,6 +1160,7 @@ async def place_approved_track(
                 _Track, hash_track_id, options=[_selin_file(_Track.file)]
             )
             if track_row is not None:
+                album_id_for_rg = track_row.album_id
                 if mb_recording_id:
                     track_row.musicbrainz_recording_id = mb_recording_id
                 if genre:
@@ -1233,6 +1238,30 @@ async def place_approved_track(
                 await session.flush()
     except Exception as exc:
         logger.warning("Approve: DB index failed for %s: %s", dest, exc)
+
+    # Album ReplayGain: debounced per-album job, deferred a couple minutes so
+    # repeat enqueues while a batch of siblings is still being approved collapse
+    # into arq's job-id dedup (see compute_album_replaygain in jobs.py) instead
+    # of re-scanning the whole album once per track.
+    if album_id_for_rg and not is_enrichment:
+        try:
+            from datetime import timedelta
+
+            from arq import create_pool
+            from arq.connections import RedisSettings
+
+            redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+            try:
+                await redis.enqueue_job(
+                    "compute_album_replaygain",
+                    album_id_for_rg,
+                    _job_id=f"replaygain:{album_id_for_rg}",
+                    _defer_by=timedelta(seconds=120),
+                )
+            finally:
+                await redis.aclose()
+        except Exception as rg_exc:
+            logger.debug("Approve: ReplayGain enqueue failed for album %s: %s", album_id_for_rg, rg_exc)
 
     # Navidrome scan
     try:

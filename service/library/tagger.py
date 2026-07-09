@@ -580,81 +580,51 @@ def strip_album_version_tags(path: Path) -> bool:
         return False
 
 
-def compute_replaygain(path: Path) -> float | None:
-    """Run ffmpeg ebur128 loudness analysis and return track gain in dB.
+def run_rsgain(paths: list[Path], *, album: bool, skip_existing: bool = False) -> bool:
+    """Analyze loudness/peak via rsgain and write ReplayGain 2.0 tags in place.
 
-    Reference level is -18 LUFS (EBU R128). Returns None if ffmpeg fails
-    or the output cannot be parsed.
+    Always writes REPLAYGAIN_TRACK_GAIN/PEAK on every path. When album=True,
+    all paths are treated as one release and also get shared
+    REPLAYGAIN_ALBUM_GAIN/PEAK — this requires every file to be analyzed in
+    the same pass, so callers must batch a whole release into one call rather
+    than invoking this once per track. album=False (singles) writes track
+    tags only, since unrelated singles can share one filesystem folder and
+    must never be gain-grouped together.
+
+    skip_existing=True (rsgain -S) skips only the tag *write* for files that
+    already carry ReplayGain info — every file is still loudness-scanned, so
+    album-gain math stays correct even when re-run over a partially-tagged
+    folder. Only pass True for backfill sweeps; the live per-track/per-album
+    hooks in pipeline.py must leave it False so a changed track's siblings get
+    their (now-stale) album gain recomputed too.
+
+    True-peak calculation and positive-gain clipping protection are enabled.
+    Opus files still get standard REPLAYGAIN_* tags (not R128_*_GAIN) so the
+    four tags are consistent across every container. Best-effort: returns
+    False (never raises) if rsgain is missing, times out, or fails.
     """
-    import re
     import subprocess
 
+    if not paths:
+        return False
+    cmd = ["rsgain", "custom", "-s", "i", "-t", "-c", "p"]
+    if album:
+        cmd.append("-a")
+    if skip_existing:
+        cmd.append("-S")
+    cmd.extend(str(p) for p in paths)
     try:
         result = subprocess.run(
-            [
-                "ffmpeg", "-hide_banner",
-                "-i", str(path),
-                "-filter:a", "ebur128=framelog=quiet",
-                "-f", "null", "-",
-            ],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=max(120, 20 * len(paths)),
         )
-        output = result.stderr
-        m = re.search(r"I:\s+(-?\d+\.?\d*)\s+LUFS", output)
-        if m:
-            integrated_lufs = float(m.group(1))
-            return round(-18.0 - integrated_lufs, 2)
+        if result.returncode != 0:
+            return False
+        return True
     except Exception:
-        pass
-    return None
-
-
-def write_replaygain(path: Path, track_gain_db: float) -> None:
-    """Write ReplayGain track gain tag to an audio file.
-
-    Format per container:
-      FLAC/OGG/Vorbis: REPLAYGAIN_TRACK_GAIN = "+2.30 dB"
-      Opus:            R128_TRACK_GAIN = integer in Q7.8 (gain * 256)
-      MP3 ID3:         TXXX:REPLAYGAIN_TRACK_GAIN = "+2.30 dB"
-      MP4:             ----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN
-    """
-    audio = MutagenFile(path)
-    if audio is None:
-        return
-
-    gain_str = f"{track_gain_db:+.2f} dB"
-    tags = audio.tags
-
-    if isinstance(audio, MP4):
-        if tags is None:
-            audio.add_tags()
-            tags = audio.tags
-        tags["----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"] = [  # type: ignore[index]
-            gain_str.encode()
-        ]
-
-    elif isinstance(tags, ID3):
-        from mutagen.id3 import TXXX
-        tags["TXXX:REPLAYGAIN_TRACK_GAIN"] = TXXX(
-            encoding=3, desc="REPLAYGAIN_TRACK_GAIN", text=[gain_str]
-        )
-
-    else:
-        if tags is None:
-            audio.add_tags()
-            tags = audio.tags
-        # Detect Opus by checking for R128 support
-        from mutagen.oggopus import OggOpus
-        if isinstance(audio, OggOpus):
-            # Opus uses R128_TRACK_GAIN in Q7.8 fixed-point (integers, 1/256 dB)
-            gain_q78 = round(track_gain_db * 256)
-            tags["R128_TRACK_GAIN"] = [str(gain_q78)]  # type: ignore[index]
-        else:
-            tags["REPLAYGAIN_TRACK_GAIN"] = [gain_str]  # type: ignore[index]
-
-    audio.save()
+        return False
 
 
 def _embed_vorbis_art(audio: object, data: bytes) -> None:

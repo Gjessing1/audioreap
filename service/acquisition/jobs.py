@@ -856,6 +856,96 @@ async def fetch_missing_covers(ctx: dict[str, object]) -> None:
     logger.info("fetch_missing_covers: fetched=%d skipped=%d", fetched, skipped)
 
 
+async def compute_album_replaygain(ctx: dict[str, object], album_id: str) -> None:
+    """arq job: analyze one album's files together and write ReplayGain 2.0 tags.
+
+    Enqueued (debounced via arq's ``_job_id`` dedup) from ``place_approved_track``
+    after each album track lands — album gain can't be computed per-track since
+    it depends on every track in the release. Re-running is idempotent: rsgain
+    always re-scans and overwrites the whole file set from what's currently on
+    disk, so a later track landing (or a track being replaced) just re-levels
+    the album, siblings included.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import joinedload as _jl
+
+    from service.db.schema import Track as _Track
+    from service.library.tagger import run_rsgain
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+    async with session_factory() as session:
+        tracks = (await session.execute(
+            _select(_Track).options(_jl(_Track.file)).where(_Track.album_id == album_id)
+        )).unique().scalars().all()
+
+    paths = [Path(t.file.path) for t in tracks if t.file and Path(t.file.path).exists()]
+    if not paths:
+        return
+    ok = await asyncio.to_thread(run_rsgain, paths, album=True)
+    if ok:
+        logger.info("compute_album_replaygain: tagged %d files for album %s", len(paths), album_id)
+    else:
+        logger.warning("compute_album_replaygain: rsgain failed for album %s (%d files)", album_id, len(paths))
+
+
+async def backfill_replaygain(ctx: dict[str, object]) -> None:
+    """arq job: sweep the whole existing library and write ReplayGain tags for
+    anything that predates this feature (or was added outside the acquire flow).
+
+    Albums are batched per-release so REPLAYGAIN_ALBUM_GAIN/PEAK reflects the
+    whole release; singles are batched in chunks with no album flag, since the
+    Singles folder holds multiple unrelated releases per artist and must never
+    be gain-grouped together. Uses rsgain's --skip-existing so a re-run only
+    costs time on files that still lack tags — safe to trigger repeatedly (e.g.
+    from the Library Health page) as new tracks get added.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import joinedload as _jl
+
+    from service.db.schema import Album as _Album, Track as _Track
+    from service.library.tagger import run_rsgain
+
+    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
+
+    albums_done = 0
+    album_files = 0
+    async with session_factory() as session:
+        albums = (await session.execute(
+            _select(_Album).options(_jl(_Album.tracks).joinedload(_Track.file))
+        )).unique().scalars().all()
+    for album in albums:
+        paths = [Path(t.file.path) for t in album.tracks if t.file and Path(t.file.path).exists()]
+        if not paths:
+            continue
+        ok = await asyncio.to_thread(run_rsgain, paths, album=True, skip_existing=True)
+        if ok:
+            albums_done += 1
+            album_files += len(paths)
+        else:
+            logger.warning("backfill_replaygain: rsgain failed for album %s (%d files)", album.id, len(paths))
+
+    async with session_factory() as session:
+        singles = (await session.execute(
+            _select(_Track).options(_jl(_Track.file)).where(_Track.album_id.is_(None))
+        )).unique().scalars().all()
+    single_paths = [Path(t.file.path) for t in singles if t.file and Path(t.file.path).exists()]
+
+    single_files = 0
+    chunk_size = 50
+    for i in range(0, len(single_paths), chunk_size):
+        chunk = single_paths[i : i + chunk_size]
+        ok = await asyncio.to_thread(run_rsgain, chunk, album=False, skip_existing=True)
+        if ok:
+            single_files += len(chunk)
+        else:
+            logger.warning("backfill_replaygain: rsgain failed for a singles chunk (%d files)", len(chunk))
+
+    logger.info(
+        "backfill_replaygain: tagged %d files across %d albums, %d single files",
+        album_files, albums_done, single_files,
+    )
+
+
 async def fetch_missing_lyrics(ctx: dict[str, object], upgrade_plain: bool = False) -> None:
     """arq job: fetch lyrics from LRCLIB and write .lrc sidecars.
 
