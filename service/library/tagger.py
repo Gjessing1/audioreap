@@ -602,12 +602,18 @@ def run_rsgain(paths: list[Path], *, album: bool, skip_existing: bool = False) -
     Opus files still get standard REPLAYGAIN_* tags (not R128_*_GAIN) so the
     four tags are consistent across every container. Best-effort: returns
     False (never raises) if rsgain is missing, times out, or fails.
+
+    Target loudness is -14 LUFS (streaming-loudness, matches Spotify/YouTube)
+    rather than rsgain's own -18 LUFS default — quieter masters ended up
+    audibly attenuated relative to the rest of the library, and louder is
+    the preferred tradeoff here as long as it stays off clipping (-c p still
+    guards positive gains against inter-sample peaks).
     """
     import subprocess
 
     if not paths:
         return False
-    cmd = ["rsgain", "custom", "-s", "i", "-t", "-c", "p"]
+    cmd = ["rsgain", "custom", "-s", "i", "-t", "-c", "p", "-l", "-14"]
     if album:
         cmd.append("-a")
     if skip_existing:
