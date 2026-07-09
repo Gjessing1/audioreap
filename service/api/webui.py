@@ -7022,17 +7022,22 @@ async def fetch_missing_covers(request: Request, session: AsyncSession = Depends
 
 
 @router.post("/library/health/backfill-replaygain", response_class=HTMLResponse)
-async def backfill_replaygain_route(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """Enqueue a background arq job to write ReplayGain tags across the whole library."""
+async def backfill_replaygain_route(request: Request, full: bool = False, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Enqueue a background arq job to write ReplayGain tags across the whole library.
+
+    full=True forces every file to be re-analyzed and retagged, even ones that
+    already carry ReplayGain info — use after changing the target loudness.
+    """
     try:
         from arq import create_pool
         from arq.connections import RedisSettings
         redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job("backfill_replaygain")
+        await redis.enqueue_job("backfill_replaygain", full=full)
         await redis.aclose()
     except Exception as exc:
         return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
-    return HTMLResponse('<span class="badge-ok">ReplayGain backfill queued — check back in a few minutes</span>')
+    label = "Full ReplayGain retag" if full else "ReplayGain backfill"
+    return HTMLResponse(f'<span class="badge-ok">{label} queued — check back in a few minutes</span>')
 
 
 # ── Bulk lyrics fetch ─────────────────────────────────────────────────────────

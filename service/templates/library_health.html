@@ -105,10 +105,20 @@
     Backfill all
     <span id="replaygain-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-post="/library/health/backfill-replaygain?full=true"
+          hx-target="#replaygain-result"
+          hx-swap="innerHTML"
+          hx-indicator="#replaygain-spinner-full"
+          hx-confirm="Re-analyze and retag every track in the library, including ones already tagged? This takes much longer than Backfill all.">
+    Full retag
+    <span id="replaygain-spinner-full" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
 </div>
 <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
   Analyze loudness (via <a href="https://github.com/complexlogic/rsgain" target="_blank" rel="noopener">rsgain</a>, EBU R128) and write REPLAYGAIN_TRACK_GAIN/PEAK and REPLAYGAIN_ALBUM_GAIN/PEAK tags for every track that doesn't have them yet.
   New acquisitions are tagged automatically — this catches tracks from before ReplayGain support existed. Safe to re-run; already-tagged files are skipped. Runs in the background.
+  <strong>Full retag</strong> ignores existing tags and re-analyzes every file — use this after changing the target loudness so the whole library is recomputed against it.
 </p>
 <div id="replaygain-result"></div>
 

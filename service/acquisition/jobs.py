@@ -888,7 +888,7 @@ async def compute_album_replaygain(ctx: dict[str, object], album_id: str) -> Non
         logger.warning("compute_album_replaygain: rsgain failed for album %s (%d files)", album_id, len(paths))
 
 
-async def backfill_replaygain(ctx: dict[str, object]) -> None:
+async def backfill_replaygain(ctx: dict[str, object], full: bool = False) -> None:
     """arq job: sweep the whole existing library and write ReplayGain tags for
     anything that predates this feature (or was added outside the acquire flow).
 
@@ -898,6 +898,11 @@ async def backfill_replaygain(ctx: dict[str, object]) -> None:
     be gain-grouped together. Uses rsgain's --skip-existing so a re-run only
     costs time on files that still lack tags — safe to trigger repeatedly (e.g.
     from the Library Health page) as new tracks get added.
+
+    full=True forces skip_existing=False, so every file is retagged even if it
+    already carries ReplayGain info — needed after changing the target loudness
+    (e.g. -18 -> -14 LUFS), since existing tags would otherwise be skipped and
+    never recomputed against the new target.
     """
     from sqlalchemy import select as _select
     from sqlalchemy.orm import joinedload as _jl
@@ -917,7 +922,7 @@ async def backfill_replaygain(ctx: dict[str, object]) -> None:
         paths = [Path(t.file.path) for t in album.tracks if t.file and Path(t.file.path).exists()]
         if not paths:
             continue
-        ok = await asyncio.to_thread(run_rsgain, paths, album=True, skip_existing=True)
+        ok = await asyncio.to_thread(run_rsgain, paths, album=True, skip_existing=not full)
         if ok:
             albums_done += 1
             album_files += len(paths)
@@ -934,7 +939,7 @@ async def backfill_replaygain(ctx: dict[str, object]) -> None:
     chunk_size = 50
     for i in range(0, len(single_paths), chunk_size):
         chunk = single_paths[i : i + chunk_size]
-        ok = await asyncio.to_thread(run_rsgain, chunk, album=False, skip_existing=True)
+        ok = await asyncio.to_thread(run_rsgain, chunk, album=False, skip_existing=not full)
         if ok:
             single_files += len(chunk)
         else:
