@@ -1,5 +1,22 @@
 {% if genres %}
 <div id="genre-list" style="display:flex;flex-direction:column;gap:4px">
+
+  {# ── Tag cloud: primary browsing surface, sized by track count ────────── #}
+  {% set max_count = genres|map(attribute='count')|max %}
+  <div class="genre-cloud">
+    {% for g in genres|sort(attribute='name') %}
+    {# sqrt scale keeps mid-size genres readable despite a skewed distribution #}
+    {% set size = 12 + 16 * ((g.count / max_count) ** 0.5) %}
+    <a class="genre-chip genre-cloud-item" data-genre-name="{{ g.name|lower|e }}"
+       href="/library/browse?f=genre&genre={{ g.name|urlencode }}"
+       style="font-size:{{ '%.1f' % size }}px;font-weight:{{ 600 if g.count / max_count > 0.5 else 500 if g.count / max_count > 0.15 else 400 }}"
+       title="{{ g.count }} track{% if g.count != 1 %}s{% endif %}">{{ g.name }}<span class="genre-chip-count">{{ g.count }}</span></a>
+    {% endfor %}
+  </div>
+
+  {# ── Management list (rename/remove) behind a disclosure ──────────────── #}
+  <details class="genre-manage">
+  <summary>Manage genres ({{ genres|length }})</summary>
   {% for g in genres %}
   <div class="card genre-card-item" data-genre-name="{{ g.name|lower|e }}" style="padding:10px 14px;align-items:flex-start;flex-direction:column;gap:6px" id="genre-card-{{ g.name|replace(' ','_')|e }}">
     <div style="display:flex;align-items:center;gap:10px;width:100%">
@@ -34,6 +51,7 @@
     </div>
   </div>
   {% endfor %}
+  </details>
   {% if untagged_count %}
   <a href="/library/browse?f=no_genre" class="genre-untagged-item" style="text-decoration:none;color:inherit">
   <div class="card" style="padding:10px 14px;align-items:center;gap:12px">

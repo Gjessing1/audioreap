@@ -16,7 +16,7 @@ function filterGenres() {
   var input = document.getElementById('genre-search');
   if (!input) return;
   var q = input.value.trim().toLowerCase();
-  var cards = document.querySelectorAll('.genre-card-item');
+  var cards = document.querySelectorAll('.genre-card-item, .genre-cloud-item');
   var shown = 0;
   cards.forEach(function (card) {
     var name = card.getAttribute('data-genre-name') || '';

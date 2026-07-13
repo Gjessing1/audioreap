@@ -48,6 +48,39 @@
 
 <main>{% block content %}{% endblock %}</main>
 
+{# Bottom tab bar — the primary nav on small screens (PWA one-handed use);
+   hidden on ≥640px where the top nav links take over. #}
+<nav id="tab-bar" aria-label="Primary">
+  <a href="/acquire" class="tab-item {% if active == 'acquire' %}active{% endif %}">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <circle cx="9" cy="9" r="5.5"/><line x1="13.2" y1="13.2" x2="17" y2="17"/>
+    </svg>
+    <span class="tab-label">Acquire</span>
+  </a>
+  <a href="/jobs" class="tab-item {% if active == 'jobs' %}active{% endif %}">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10 3v8.5"/><path d="M6.5 8 10 11.5 13.5 8"/><path d="M3.5 13v2.5A1.5 1.5 0 0 0 5 17h10a1.5 1.5 0 0 0 1.5-1.5V13"/>
+    </svg>
+    <span class="tab-label">Jobs</span>
+    <span hx-get="/nav/review-count" hx-trigger="load, every 30s" hx-swap="outerHTML"></span>
+  </a>
+  <a href="/library" class="tab-item {% if active == 'library' %}active{% endif %}">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 16.5V5.5l9-2v11"/><circle cx="5" cy="16.5" r="2"/><circle cx="14" cy="14.5" r="2"/>
+    </svg>
+    <span class="tab-label">Library</span>
+    <span hx-get="/nav/attention-count" hx-trigger="load, every 120s" hx-swap="outerHTML"></span>
+  </a>
+  <a href="/admin/config" class="tab-item {% if active == 'settings' %}active{% endif %}">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <line x1="3.5" y1="5.5" x2="16.5" y2="5.5"/><circle cx="8" cy="5.5" r="1.8"/>
+      <line x1="3.5" y1="10" x2="16.5" y2="10"/><circle cx="13" cy="10" r="1.8"/>
+      <line x1="3.5" y1="14.5" x2="16.5" y2="14.5"/><circle cx="6.5" cy="14.5" r="1.8"/>
+    </svg>
+    <span class="tab-label">Settings</span>
+  </a>
+</nav>
+
 <div id="player-bar" class="hidden">
   <div id="player-art" class="hidden">
     <img id="player-art-img" alt="">

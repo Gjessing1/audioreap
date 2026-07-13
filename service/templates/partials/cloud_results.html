@@ -1,6 +1,19 @@
 {% if candidates %}
+{% if not offset %}
+<div id="cloud-batch-bar" class="hidden"
+     style="display:flex;align-items:center;gap:10px;padding:6px 10px;margin-bottom:8px;border:1px solid var(--b1);border-radius:8px;background:var(--s2)">
+  <span id="cloud-batch-count" style="font-size:12px;font-weight:600;color:var(--t1)">0 selected</span>
+  <button type="button" class="btn btn-sm" onclick="cloudBatchGet()">Get selected</button>
+  <button type="button" class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:11px"
+          onclick="document.querySelectorAll('.cloud-check:checked').forEach(function(cb){cb.checked=false});cloudBatchSync()">
+    Clear
+  </button>
+</div>
+{% endif %}
 {% for c in candidates %}
 <div class="card" id="cloud-{{ (offset|default(0)) + loop.index }}">
+  <input type="checkbox" class="cloud-check" title="Select for batch Get"
+         style="align-self:center;width:15px;height:15px;flex:none;accent-color:var(--primary)">
   {% if c.thumbnail_url %}
   <img class="result-thumb" src="{{ c.thumbnail_url }}" alt="" loading="lazy">
   {% else %}
@@ -10,6 +23,10 @@
     <div class="card-title">{{ c.title }}</div>
     <div class="card-sub">
       {{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ '%02d' % (c.duration_seconds % 60) }}{% endif %}
+      {% if c.owned_title %}
+      <span class="badge badge-done" style="margin-left:6px;vertical-align:1px"
+            title="Matches {{ c.owned_artist|e }} — {{ c.owned_title|e }} in your library">In library</span>
+      {% endif %}
     </div>
   </div>
   <div class="card-actions">
@@ -42,6 +59,35 @@
   </button>
 </div>
 {% endif %}
+
+<script>
+// Batch Get: submit each selected card's own Get form (htmx swaps each card
+// into a job card independently). Redefined on every swap-in; the delegated
+// listeners are registered once.
+window.cloudBatchSync = function () {
+  var n = document.querySelectorAll('.cloud-check:checked').length;
+  var bar = document.getElementById('cloud-batch-bar');
+  if (!bar) return;
+  bar.classList.toggle('hidden', n === 0);
+  var lbl = document.getElementById('cloud-batch-count');
+  if (lbl) lbl.textContent = n + ' selected';
+};
+window.cloudBatchGet = function () {
+  document.querySelectorAll('.cloud-check:checked').forEach(function (cb) {
+    var card = cb.closest('.card');
+    var form = card && card.querySelector('form');
+    if (form) form.requestSubmit();
+  });
+};
+if (!window.__cloudBatchInit) {
+  window.__cloudBatchInit = true;
+  document.body.addEventListener('change', function (e) {
+    if (e.target && e.target.classList && e.target.classList.contains('cloud-check')) cloudBatchSync();
+  });
+  // Recount after cards are swapped out (batch Get) or a new page is appended
+  document.body.addEventListener('htmx:afterSettle', function () { cloudBatchSync(); });
+}
+</script>
 
 {% elif q %}
 <p class="empty" style="text-align:left;padding:24px 0">No YouTube results for "{{ q }}".</p>

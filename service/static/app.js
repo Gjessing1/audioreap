@@ -477,3 +477,79 @@ document.addEventListener('DOMContentLoaded', function() {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/static/sw.js").catch(() => {});
 }
+
+/* ── Pull-to-refresh (opt-in per page) ───────────────────────────────────────
+ * Pages opt in with either:
+ *   data-ptr-url + data-ptr-target  — htmx GET into a target (Jobs list)
+ *   data-ptr-reload                 — full page reload (Library overview)
+ * Touch-only; activates when the page is scrolled to the top and the user
+ * drags down past a threshold. Native browser pull-to-refresh is suppressed
+ * (overscroll-behavior) only on opted-in pages so the two never fight.
+ */
+(function () {
+  if (!('ontouchstart' in window)) return;
+  var target = document.querySelector('[data-ptr-url]');
+  var reloadEl = document.querySelector('[data-ptr-reload]');
+  if (!target && !reloadEl) return;
+
+  document.documentElement.style.overscrollBehaviorY = 'contain';
+  document.body.style.overscrollBehaviorY = 'contain';
+
+  var THRESH = 70;
+  var startY = null, pulling = false, dist = 0, busy = false;
+
+  var chip = document.createElement('div');
+  chip.id = 'ptr-chip';
+  chip.innerHTML = '<span class="ptr-arrow">↓</span><span class="ptr-text">Pull to refresh</span>';
+  document.body.appendChild(chip);
+  var arrow = chip.querySelector('.ptr-arrow');
+  var text = chip.querySelector('.ptr-text');
+
+  function setDist(d) {
+    dist = d;
+    chip.classList.toggle('ptr-visible', d > 12 || busy);
+    var ready = d >= THRESH;
+    chip.classList.toggle('ptr-ready', ready);
+    text.textContent = ready ? 'Release to refresh' : 'Pull to refresh';
+  }
+
+  function doRefresh() {
+    busy = true;
+    chip.classList.add('ptr-busy', 'ptr-visible');
+    arrow.textContent = '↻';
+    text.textContent = 'Refreshing…';
+    function done() {
+      busy = false;
+      arrow.textContent = '↓';
+      chip.classList.remove('ptr-busy', 'ptr-visible', 'ptr-ready');
+    }
+    if (target) {
+      var p = htmx.ajax('GET', target.getAttribute('data-ptr-url'), {
+        target: target.getAttribute('data-ptr-target') || ('#' + target.id),
+        swap: 'innerHTML'
+      });
+      if (p && typeof p.then === 'function') p.then(done, done);
+      else setTimeout(done, 1500);
+    } else {
+      location.reload();
+    }
+  }
+
+  window.addEventListener('touchstart', function (e) {
+    if (busy) { startY = null; return; }
+    startY = window.scrollY > 0 ? null : e.touches[0].clientY;
+  }, { passive: true });
+
+  window.addEventListener('touchmove', function (e) {
+    if (startY === null || busy) return;
+    var d = e.touches[0].clientY - startY;
+    if (d > 0 && window.scrollY <= 0) { pulling = true; setDist(d); }
+    else if (pulling) { pulling = false; setDist(0); }
+  }, { passive: true });
+
+  window.addEventListener('touchend', function () {
+    if (pulling && dist >= THRESH) doRefresh();
+    else if (!busy) chip.classList.remove('ptr-visible', 'ptr-ready');
+    startY = null; pulling = false; dist = 0;
+  });
+})();

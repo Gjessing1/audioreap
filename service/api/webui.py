@@ -390,6 +390,29 @@ def _classify_review_confidence(row: AcquisitionJobRow, m: dict) -> tuple[str, s
     return "probable", None
 
 
+def _enrichment_change_count(meta: dict) -> int | None:
+    """How many fields an enrichment suggestion would change, or None if not
+    an enrichment job. Mirrors the per-field "← was" conditions in
+    review_card.html so the badge and the diff lines always agree."""
+    if not meta.get("is_enrichment"):
+        return None
+    n = 0
+    if meta.get("current_title") and meta.get("current_title") != meta.get("title"):
+        n += 1
+    if meta.get("current_artist") and meta.get("current_artist") != meta.get("artist"):
+        n += 1
+    if meta.get("current_album") is not None and meta.get("current_album") != meta.get("album"):
+        n += 1
+    if meta.get("current_year") is not None and meta.get("current_year") != meta.get("year"):
+        n += 1
+    if (meta.get("current_track_number") is not None
+            and meta.get("current_track_number") != meta.get("track_number")):
+        n += 1
+    if meta.get("mb_recording_id") and meta.get("current_mb_recording_id") != meta.get("mb_recording_id"):
+        n += 1
+    return n
+
+
 def _fmt_duration(seconds: object) -> str:
     if not isinstance(seconds, (int, float)) or seconds <= 0:
         return ""
@@ -483,7 +506,10 @@ async def _build_review_groups(
         if r.album_job_id:
             album_buckets.setdefault(r.album_job_id, []).append(item)
         else:
-            singles.append({"type": "single", "job": j, "confidence": confidence, "src": src})
+            singles.append({
+                "type": "single", "job": j, "confidence": confidence, "src": src,
+                "enrich_changes": _enrichment_change_count(meta),
+            })
 
     # Within an album batch, order tracks by review status so the approvable ones
     # cluster at the top and problems escalate toward the bottom:
@@ -947,6 +973,7 @@ async def _review_card_ctx(
         "artist_names": artist_names,
         "album_names": album_names,
         "candidate_track_number": candidate_track_number,
+        "enrich_change_count": _enrichment_change_count(meta),
     }
 
 
@@ -1684,11 +1711,52 @@ async def delete_track(
     return HTMLResponse("")
 
 
+async def _find_owned_match(
+    session: AsyncSession,
+    title: str,
+    artist: str,
+    duration_seconds: int | None,
+) -> Track | None:
+    """Best-effort local-library match for a cloud search candidate.
+
+    Cloud candidates rarely carry MB recording IDs, so this is a fuzzy
+    title/artist/duration check (matcher.is_confident_match) over a small
+    ILIKE-prefiltered pool — cheap enough to run per result card.
+    """
+    from service.core.normalize import normalize
+    from service.search.matcher import track_similarity, DEDUP_THRESHOLD
+
+    tokens = [t for t in normalize(title).split() if len(t) >= 3]
+    if not tokens:
+        return None
+    # Longest token is the most selective LIKE prefilter
+    anchor = max(tokens, key=len)
+    stmt = (
+        select(Track)
+        .join(Track.artist)
+        .options(joinedload(Track.artist))
+        .where(Track.title.ilike(f"%{anchor}%"))
+        .limit(50)
+    )
+    rows = (await session.execute(stmt)).unique().scalars().all()
+    best: Track | None = None
+    best_score = 0.0
+    for row in rows:
+        score = track_similarity(
+            title, artist, duration_seconds,
+            row.title, row.artist.name if row.artist else "", row.duration_seconds,
+        )
+        if score > best_score:
+            best, best_score = row, score
+    return best if best is not None and best_score >= DEDUP_THRESHOLD else None
+
+
 @router.get("/search/cloud", response_class=HTMLResponse)
 async def cloud_search_page(
     request: Request,
     q: str = "",
     offset: int = 0,
+    session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     candidates: list[dict[str, object]] = []
     PAGE = 5
@@ -1720,6 +1788,21 @@ async def cloud_search_page(
                 del item["_score"]
 
             candidates = raw[offset: offset + PAGE]
+
+            for item in candidates:
+                try:
+                    owned = await _find_owned_match(
+                        session,
+                        str(item["title"]),
+                        str(item["artist"]),
+                        item["duration_seconds"],  # type: ignore[arg-type]
+                    )
+                except Exception as exc:
+                    logger.debug("Owned check failed for %r: %s", item["title"], exc)
+                    owned = None
+                if owned is not None:
+                    item["owned_title"] = owned.title
+                    item["owned_artist"] = owned.artist.name if owned.artist else ""
         except Exception as exc:
             logger.warning("Cloud search failed: %s", exc)
 

@@ -70,7 +70,12 @@
   {# ── Alerts ─────────────────────────────────────────────────────────── #}
   {% if is_enrichment %}
   <div class="rv-alert rv-alert--warn" style="display:flex;flex-direction:column;gap:2px">
-    <span style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Enrichment suggestion — fields marked ← show what will change</span>
+    <span style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em">
+      Enrichment suggestion — fields marked ← show what will change
+      {% if enrich_change_count is defined and enrich_change_count is not none %}
+      <span class="badge badge-warn" style="margin-left:6px;text-transform:none;letter-spacing:0">{{ enrich_change_count }} field{{ 's' if enrich_change_count != 1 }} changing</span>
+      {% endif %}
+    </span>
     <span style="color:var(--t3);font-size:12px">Approving will write the suggested MB metadata to the existing file in place. Edit any field before approving.</span>
   </div>
   {% elif not staging_exists %}

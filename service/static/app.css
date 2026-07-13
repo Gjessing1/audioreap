@@ -1409,3 +1409,106 @@ input::placeholder { color: var(--t4); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   max-width: 40vw;
 }
+
+/* ── Genre tag cloud ─────────────────────────────────────────────────────── */
+.genre-cloud {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 6px 12px;
+  padding: 14px 4px 18px;
+}
+.genre-chip {
+  color: var(--t1); text-decoration: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  line-height: 1.5;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.genre-chip:hover { color: var(--primary); background: var(--primary-dim); }
+.genre-chip .genre-chip-count {
+  font-size: 10px; color: var(--t4); font-weight: 400;
+  margin-left: 3px; vertical-align: super;
+}
+.genre-manage summary {
+  cursor: pointer; user-select: none;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em;
+  color: var(--t3);
+  padding: 6px 0;
+}
+.genre-manage summary:hover { color: var(--t1); }
+.genre-manage[open] summary { margin-bottom: 8px; }
+
+/* ── Bottom tab bar (mobile PWA nav) ─────────────────────────────────────── */
+:root { --tabbar-h: 56px; }
+#tab-bar { display: none; }
+
+@media (max-width: 639px) {
+  /* Tab bar replaces the hamburger as primary nav on small screens */
+  .nav-toggle { display: none; }
+  #main-nav .nav-links { display: none !important; }
+
+  #tab-bar {
+    display: flex;
+    position: fixed; bottom: 0; left: 0; right: 0;
+    height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--s1);
+    border-top: 1px solid var(--b1);
+    z-index: 210;
+  }
+  .tab-item {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 3px;
+    position: relative;
+    color: var(--t3);
+    text-decoration: none;
+    font-size: 10px; font-weight: 600;
+    letter-spacing: .02em;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tab-item:hover { text-decoration: none; color: var(--t2); }
+  .tab-item.active { color: var(--primary); }
+  .tab-label { line-height: 1; }
+  #tab-bar .nav-badge {
+    position: absolute;
+    top: 5px; left: calc(50% + 4px);
+    padding: 0 5px; min-width: 16px;
+    font-size: 9px;
+  }
+
+  /* Stack: content → player bar → tab bar. The player docks on top of the
+     tab bar, and the body reserves room for both. */
+  #player-bar {
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+    padding-bottom: 0;
+  }
+  body { padding-bottom: calc(var(--player-h) + var(--tabbar-h) + env(safe-area-inset-bottom)); }
+}
+
+/* ── Pull-to-refresh chip ────────────────────────────────────────────────── */
+#ptr-chip {
+  position: fixed;
+  top: calc(58px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%) translateY(-10px);
+  display: flex; align-items: center; gap: 7px;
+  background: var(--s3);
+  border: 1px solid var(--b2);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px; font-weight: 600;
+  color: var(--t2);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 300;
+}
+#ptr-chip.ptr-visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+#ptr-chip.ptr-ready { color: var(--primary); border-color: var(--primary); }
+.ptr-arrow { transition: transform 0.15s; display: inline-block; }
+#ptr-chip.ptr-ready .ptr-arrow { transform: rotate(180deg); }
+#ptr-chip.ptr-busy .ptr-arrow { animation: spin 0.8s linear infinite; transform: none; }

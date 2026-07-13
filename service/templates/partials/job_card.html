@@ -61,6 +61,10 @@
     {% if job.state == 'done' and job.is_replacement %}
     <span class="badge badge-done" title="Source replaced — file swapped, metadata unchanged">replaced ✓</span>
     {% elif job.state == 'needs_review' and confidence is defined and confidence %}
+    {% if enrich_changes is defined and enrich_changes is not none %}
+    <span class="badge badge-warn"
+          title="This enrichment suggestion changes {{ enrich_changes }} metadata field{{ 's' if enrich_changes != 1 }}">{{ enrich_changes }} field{{ 's' if enrich_changes != 1 }}</span>
+    {% endif %}
     {% if confidence == 'verified' %}
     <span class="badge badge-done" title="High-confidence match (AcoustID-confirmed or strong text match) — no warnings">✓ verified</span>
     {% elif confidence == 'flagged' %}
