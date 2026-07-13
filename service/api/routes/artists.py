@@ -17,6 +17,7 @@ from service.config import settings
 from service.db.schema import Album, Artist, Track, TrackFile
 from service.db.session import get_session
 
+from service.acquisition.queue import arq_pool, enqueue_album_from_mb
 from service.api.shared import _LIST_PAGE, _do_scans, _error_badge, _layout_view, _resize_cover, templates
 
 logger = logging.getLogger(__name__)
@@ -604,21 +605,13 @@ async def artist_acquire_missing(
         return HTMLResponse('<span class="badge-done">All release groups already owned ✓</span>')
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        for rg in unowned:
-            album_job_id = str(uuid.uuid4())
-            await redis.enqueue_job(
-                "acquire_album_from_mb",
-                album_job_id=album_job_id,
-                release_group_id=rg.release_group_id,
-                artist_name=artist.name,
-                music_dir=str(settings.music_dir),
-                tmp_acquire_dir=str(settings.tmp_acquire_dir),
-                _job_id=f"album:{album_job_id}",
-            )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            for rg in unowned:
+                await enqueue_album_from_mb(
+                    redis, str(uuid.uuid4()),
+                    release_group_id=rg.release_group_id,
+                    artist_name=artist.name,
+                )
     except Exception as exc:
         return _error_badge(f"Queue error: {exc}")
 

@@ -14,6 +14,7 @@ from service.db.schema import Artist, Track
 from service.db.session import get_session
 from service.providers.ytdlp import explicit_score as _explicit_score
 
+from service.acquisition.queue import arq_pool, enqueue_acquire_track
 from service.api.shared import _acquire_ctx, templates
 
 logger = logging.getLogger(__name__)
@@ -238,20 +239,13 @@ async def acquire_from_url(
     await session.commit()
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name="ytdlp",
-            provider_ref=url,
-            candidate_json=candidate.model_dump_json(),
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name="ytdlp",
+                provider_ref=url,
+                candidate_json=candidate.model_dump_json(),
+            )
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 

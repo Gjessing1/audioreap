@@ -176,27 +176,45 @@ async def library_albums_list(
     return resp
 
 
+async def render_album_detail(
+    request: Request,
+    session: AsyncSession,
+    album_id: str,
+    *,
+    saved: bool = False,
+) -> HTMLResponse | None:
+    """Load an album fresh and render its detail card; None if the album is gone.
+
+    Shared by the detail route and by mutations that re-render the open card
+    afterwards (update-meta, MB link, per-track tag save).
+    """
+    album = (await session.execute(
+        select(Album)
+        .options(joinedload(Album.artist),
+                 joinedload(Album.tracks).joinedload(Track.file).joinedload(TrackFile.track))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        return None
+    # Cover art comes from the first track whose file still exists (sidecar or embedded)
+    cover_track = next((t for t in album.tracks if t.file and Path(t.file.path).exists()), None)
+    sorted_tracks = sorted(album.tracks, key=lambda t: (t.track_number is None, t.track_number or 0))
+    ctx = {"album": album, "sorted_tracks": sorted_tracks, "cover_track": cover_track}
+    if saved:
+        ctx["saved"] = True
+    return templates.TemplateResponse(request, "partials/album_detail.html", ctx)
+
+
 @router.get("/{album_id}/detail", response_class=HTMLResponse)
 async def album_detail(
     request: Request,
     album_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from sqlalchemy.orm import joinedload as _jl
-    album = (await session.execute(
-        select(Album)
-        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file).joinedload(TrackFile.track))
-        .where(Album.id == album_id)
-    )).unique().scalar_one_or_none()
-    if album is None:
+    resp = await render_album_detail(request, session, album_id)
+    if resp is None:
         raise HTTPException(404)
-    # Find cover art path (sidecar or embedded)
-    cover_track = next((t for t in album.tracks if t.file and Path(t.file.path).exists()), None)
-    sorted_tracks = sorted(album.tracks, key=lambda t: (t.track_number is None, t.track_number or 0))
-    return templates.TemplateResponse(
-        request, "partials/album_detail.html",
-        {"album": album, "sorted_tracks": sorted_tracks, "cover_track": cover_track},
-    )
+    return resp
 
 
 @router.post("/{album_id}/update-meta", response_class=HTMLResponse)
@@ -228,16 +246,10 @@ async def album_update_meta(
     await session.commit()
     await _do_scans()
 
-    album_reloaded = (await session.execute(
-        select(Album)
-        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
-        .where(Album.id == album_id)
-    )).unique().scalar_one_or_none()
-    cover_track = next((t for t in album_reloaded.tracks if t.file and Path(t.file.path).exists()), None)
-    return templates.TemplateResponse(
-        request, "partials/album_detail.html",
-        {"album": album_reloaded, "cover_track": cover_track, "saved": True},
-    )
+    resp = await render_album_detail(request, session, album_id, saved=True)
+    if resp is None:
+        raise HTTPException(404)
+    return resp
 
 
 @router.post("/{album_id}/set-genre", response_class=HTMLResponse)
@@ -281,68 +293,37 @@ async def album_set_genre(
     )
 
 
-@router.get("/{album_id}/tracklist", response_class=HTMLResponse)
-async def album_tracklist(
-    request: Request,
-    album_id: str,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Unified album tracklist.
+async def _fetch_mb_tracklist(album: Album) -> list:
+    """Fetch the MB tracklist for a linked album (release group first, release fallback).
 
-    When the album is linked to MusicBrainz, the MB release tracklist is the
-    backbone: each row is tagged ``here`` (owned in this album), ``elsewhere``
-    (owned on another album), or ``missing``, and any local track absent from
-    the MB list is appended as ``extra``. Unlinked albums degrade to a plain
-    owned-track list. Replaces the old three-section layout (local list + full
-    MB list + local list again) with one status-annotated list.
+    Raises on MB failure — callers decide how to degrade.
     """
-    from sqlalchemy.orm import joinedload as _jl
-    from service.search.matcher import title_similarity as _tsim
-
-    album = (await session.execute(
-        select(Album)
-        .options(_jl(Album.tracks).joinedload(Track.file), _jl(Album.artist))
-        .where(Album.id == album_id)
-    )).unique().scalar_one_or_none()
-    if album is None:
-        return HTMLResponse('<p class="muted" style="font-size:12px">Album not found.</p>')
-
-    local_tracks = sorted(
-        album.tracks, key=lambda t: (t.track_number is None, t.track_number or 0)
-    )
-    linked = bool(album.mb_release_group_id or album.musicbrainz_release_id)
-
-    def _local_only(note: str | None = None) -> HTMLResponse:
-        # Owned tracks only — no MB status. Used for unlinked albums and as the
-        # fallback when MusicBrainz is unavailable, so the user's tracks always show.
-        return templates.TemplateResponse(
-            request, "partials/album_tracklist.html",
-            {"album": album, "local_only": True, "note": note},
+    if album.mb_release_group_id:
+        from service.metadata.musicbrainz import get_release_group_tracks as _get
+        _, _, _, mb_tracks = await asyncio.to_thread(
+            _get, album.mb_release_group_id, settings.cache_dir
         )
+    else:
+        from service.metadata.musicbrainz import get_release_tracks_by_id as _get
+        _, _, _, mb_tracks = await asyncio.to_thread(
+            _get, album.musicbrainz_release_id, settings.cache_dir
+        )
+    return mb_tracks
 
-    # ── Unlinked: plain owned list, no MB backbone ────────────────────────────
-    if not linked:
-        return _local_only()
 
-    # ── Linked: reconcile against the MB tracklist ────────────────────────────
-    try:
-        if album.mb_release_group_id:
-            from service.metadata.musicbrainz import get_release_group_tracks as _get_rg_tracks
-            _, _, _, mb_tracks = await asyncio.to_thread(
-                _get_rg_tracks, album.mb_release_group_id, settings.cache_dir
-            )
-        else:
-            from service.metadata.musicbrainz import get_release_tracks_by_id as _get_rel_tracks
-            _, _, _, mb_tracks = await asyncio.to_thread(
-                _get_rel_tracks, album.musicbrainz_release_id, settings.cache_dir
-            )
-    except Exception as exc:
-        # MB down/unreachable — keep showing the owned tracks rather than an error.
-        logger.warning("album_tracklist: MB fetch failed for %s: %s", album_id, exc)
-        return _local_only("MusicBrainz unavailable — showing your tracks only.")
+async def _reconcile_mb_tracklist(
+    session: AsyncSession,
+    local_tracks: list[Track],
+    mb_tracks: list,
+) -> tuple[list[dict], dict[str, int]]:
+    """Annotate the MB tracklist with ownership status against the local album.
 
-    if not mb_tracks:
-        return _local_only("No MusicBrainz tracklist available — showing your tracks only.")
+    Returns (rows, counts): one row per MB track tagged ``here`` (owned in this
+    album), ``elsewhere`` (owned on another album), or ``missing``, plus any
+    local track absent from the MB list appended as ``extra``.
+    """
+    from service.library.cohesion import get_owned_recording_ids as _owned_rids
+    from service.search.matcher import title_similarity as _tsim
 
     # Map recording ID → local track, preferring a file-bearing row. Replacements
     # can leave a fileless ghost Track sharing the same recording ID; without this
@@ -358,7 +339,6 @@ async def album_tracklist(
     local_rids = set(local_by_rid)
 
     # Recording IDs owned ANYWHERE in the library — those not in this album = "elsewhere"
-    from service.library.cohesion import get_owned_recording_ids as _owned_rids
     mb_recording_ids = [t.recording_id for t in mb_tracks if t.recording_id]
     all_owned_rids = await _owned_rids(session, mb_recording_ids) if mb_recording_ids else set()
     elsewhere_rids = all_owned_rids - local_rids
@@ -426,6 +406,61 @@ async def album_tracklist(
         extra += 1
         rows.append({"status": "extra", "number": None, "disc": None, "title": lt.title, "track": lt})
 
+    return rows, {"here": here, "elsewhere": elsewhere, "missing": missing, "extra": extra}
+
+
+@router.get("/{album_id}/tracklist", response_class=HTMLResponse)
+async def album_tracklist(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Unified album tracklist.
+
+    When the album is linked to MusicBrainz, the MB release tracklist is the
+    backbone: each row is tagged ``here`` (owned in this album), ``elsewhere``
+    (owned on another album), or ``missing``, and any local track absent from
+    the MB list is appended as ``extra``. Unlinked albums degrade to a plain
+    owned-track list. Replaces the old three-section layout (local list + full
+    MB list + local list again) with one status-annotated list.
+    """
+    from sqlalchemy.orm import joinedload as _jl
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.tracks).joinedload(Track.file), _jl(Album.artist))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        return HTMLResponse('<p class="muted" style="font-size:12px">Album not found.</p>')
+
+    local_tracks = sorted(
+        album.tracks, key=lambda t: (t.track_number is None, t.track_number or 0)
+    )
+
+    def _local_only(note: str | None = None) -> HTMLResponse:
+        # Owned tracks only — no MB status. Used for unlinked albums and as the
+        # fallback when MusicBrainz is unavailable, so the user's tracks always show.
+        return templates.TemplateResponse(
+            request, "partials/album_tracklist.html",
+            {"album": album, "local_only": True, "note": note},
+        )
+
+    # ── Unlinked: plain owned list, no MB backbone ────────────────────────────
+    if not (album.mb_release_group_id or album.musicbrainz_release_id):
+        return _local_only()
+
+    # ── Linked: reconcile against the MB tracklist ────────────────────────────
+    try:
+        mb_tracks = await _fetch_mb_tracklist(album)
+    except Exception as exc:
+        # MB down/unreachable — keep showing the owned tracks rather than an error.
+        logger.warning("album_tracklist: MB fetch failed for %s: %s", album_id, exc)
+        return _local_only("MusicBrainz unavailable — showing your tracks only.")
+    if not mb_tracks:
+        return _local_only("No MusicBrainz tracklist available — showing your tracks only.")
+
+    rows, counts = await _reconcile_mb_tracklist(session, local_tracks, mb_tracks)
     if not rows:
         return HTMLResponse('<p class="muted" style="font-size:12px">No tracks found.</p>')
 
@@ -438,8 +473,7 @@ async def album_tracklist(
     return templates.TemplateResponse(
         request, "partials/album_tracklist.html",
         {"album": album, "rows": rows, "linked": True,
-         "here": here, "elsewhere": elsewhere, "missing": missing,
-         "extra": extra, "total": total,
+         **counts, "total": total,
          "artist_mbid": (album.artist.musicbrainz_artist_id
                          if album.artist and album.artist.musicbrainz_artist_id else "unknown"),
          "release_ref": album.mb_release_group_id or album.musicbrainz_release_id or album.id},
@@ -488,7 +522,6 @@ async def album_link_mb_rg(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Save a MusicBrainz release group ID to this album and return the refreshed detail card."""
-    from sqlalchemy.orm import joinedload as _jl2
     album = (await session.execute(
         select(Album).where(Album.id == album_id)
     )).unique().scalar_one_or_none()
@@ -497,68 +530,17 @@ async def album_link_mb_rg(
     album.mb_release_group_id = release_group_id
     await session.commit()
 
-    # Return the full refreshed album detail card
-    album = (await session.execute(
-        select(Album)
-        .options(_jl2(Album.artist), _jl2(Album.tracks).joinedload(Track.file))
-        .where(Album.id == album_id)
-    )).unique().scalar_one()
-    return templates.TemplateResponse(
-        request, "partials/album_detail.html",
-        {"album": album, "saved": True},
-    )
+    resp = await render_album_detail(request, session, album_id, saved=True)
+    if resp is None:
+        raise HTTPException(404)
+    return resp
 
 
-@router.post("/{album_id}/fix-discs", response_class=HTMLResponse)
-async def album_fix_discs(
-    request: Request,
-    album_id: str,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Repair disc/track numbers on a multi-disc album from its MB tracklist.
-
-    Albums acquired before disc awareness existed had every disc flattened with
-    per-disc positions and no DISCNUMBER tag — two "track 1" rows, two "track 2"
-    rows, and so on. Matches owned tracks to the MB tracklist (recording ID
-    first, title fallback), writes disc + track number tags, and renames files
-    into the disc-aware layout (disc 2 track 1 → "201 - Title.ext").
-    """
-    from sqlalchemy.orm import joinedload as _jl
-    from service.library.layout import track_path as _tp
-    from service.library.tagger import write_tags as _wt
-    from service.library.writer import atomic_place as _ap
+def _match_local_to_mb_slots(album: Album, mb_tracks: list) -> list[tuple[Track, object]]:
+    """Match owned tracks to MB tracklist slots: recording ID first, then title
+    similarity among unclaimed slots (same fallback the tracklist reconciliation uses)."""
     from service.search.matcher import title_similarity as _tsim
 
-    album = (await session.execute(
-        select(Album)
-        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file),
-                 _jl(Album.tracks).joinedload(Track.artist))
-        .where(Album.id == album_id)
-    )).unique().scalar_one_or_none()
-    if album is None:
-        raise HTTPException(404)
-    if not (album.mb_release_group_id or album.musicbrainz_release_id):
-        return _error_badge("Not linked to MusicBrainz — link the album first")
-
-    try:
-        if album.mb_release_group_id:
-            from service.metadata.musicbrainz import get_release_group_tracks as _get_tracks
-            _, _, _, mb_tracks = await asyncio.to_thread(
-                _get_tracks, album.mb_release_group_id, settings.cache_dir
-            )
-        else:
-            from service.metadata.musicbrainz import get_release_tracks_by_id as _get_rel
-            _, _, _, mb_tracks = await asyncio.to_thread(
-                _get_rel, album.musicbrainz_release_id, settings.cache_dir
-            )
-    except Exception as exc:
-        return _error_badge(f"MusicBrainz unavailable: {exc}")
-
-    if not any(t.disc for t in mb_tracks):
-        return HTMLResponse('<span class="badge badge-done">MusicBrainz lists a single disc — nothing to fix ✓</span>')
-
-    # Match owned tracks to MB slots: recording ID first, then title similarity
-    # among unclaimed slots (same fallback the tracklist reconciliation uses).
     by_rid = {t.recording_id: t for t in mb_tracks if t.recording_id}
     used: set[int] = set()
     matches: list[tuple[Track, object]] = []
@@ -582,9 +564,18 @@ async def album_fix_discs(
         if best is not None and best_s >= 0.80:
             used.add(id(best))
             matches.append((track, best))
+    return matches
 
-    if not matches:
-        return _error_badge("No owned track matched the MB tracklist")
+
+async def _apply_disc_numbers(
+    album: Album, matches: list[tuple[Track, object]]
+) -> tuple[int, int]:
+    """Write disc/track numbers from matched MB slots to tags + DB rows and
+    rename files into the disc-aware layout. Returns (fixed, moved). Mutates
+    rows but does not commit — the caller owns the session."""
+    from service.library.layout import track_path as _tp
+    from service.library.tagger import write_tags as _wt
+    from service.library.writer import atomic_place as _ap
 
     albumartist = album.artist.name if album.artist else "Unknown"
     fixed = moved = 0
@@ -630,7 +621,49 @@ async def album_fix_discs(
                 moved += 1
             except Exception as exc:
                 logger.warning("fix-discs: rename failed %s → %s: %s", fp, dst, exc)
+    return fixed, moved
 
+
+@router.post("/{album_id}/fix-discs", response_class=HTMLResponse)
+async def album_fix_discs(
+    request: Request,
+    album_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Repair disc/track numbers on a multi-disc album from its MB tracklist.
+
+    Albums acquired before disc awareness existed had every disc flattened with
+    per-disc positions and no DISCNUMBER tag — two "track 1" rows, two "track 2"
+    rows, and so on. Matches owned tracks to the MB tracklist (recording ID
+    first, title fallback), writes disc + track number tags, and renames files
+    into the disc-aware layout (disc 2 track 1 → "201 - Title.ext").
+    """
+    from sqlalchemy.orm import joinedload as _jl
+
+    album = (await session.execute(
+        select(Album)
+        .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file),
+                 _jl(Album.tracks).joinedload(Track.artist))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+    if not (album.mb_release_group_id or album.musicbrainz_release_id):
+        return _error_badge("Not linked to MusicBrainz — link the album first")
+
+    try:
+        mb_tracks = await _fetch_mb_tracklist(album)
+    except Exception as exc:
+        return _error_badge(f"MusicBrainz unavailable: {exc}")
+
+    if not any(t.disc for t in mb_tracks):
+        return HTMLResponse('<span class="badge badge-done">MusicBrainz lists a single disc — nothing to fix ✓</span>')
+
+    matches = _match_local_to_mb_slots(album, mb_tracks)
+    if not matches:
+        return _error_badge("No owned track matched the MB tracklist")
+
+    fixed, moved = await _apply_disc_numbers(album, matches)
     await session.commit()
     await _do_scans()
     return HTMLResponse(

@@ -16,6 +16,7 @@ from service.db.schema import AcquisitionJobRow, Album, Artist, Track
 from service.db.session import get_session
 from service.providers.ytdlp import yt_search_best as _yt_search_best_shared
 
+from service.acquisition.queue import arq_pool, enqueue_acquire_track, enqueue_album_from_mb
 from service.api.shared import _acquire_ctx, _error_badge, templates
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,88 @@ async def discography_tracklist(
     )
 
 
+async def _create_ghost_review_job(
+    session: AsyncSession,
+    candidate: TrackCandidate,
+    provider_ref: str,
+    yt_score: float,
+    query: str,
+) -> None:
+    """Park an unmatched discography track in needs_review with no staging file.
+
+    The review card will have the source search panel open so the user can
+    paste a URL or search manually. This keeps the track visible in the
+    queue — never silently skipped.
+    """
+    import json as _json
+
+    from service.acquisition.jobs import _now
+
+    ghost_meta = {
+        "title": candidate.title,
+        "artist": candidate.artist,
+        "album": candidate.album,
+        "track_number": candidate.track_number,
+        "duration_seconds": candidate.duration_seconds,
+        "mb_recording_id": candidate.mb_recording_id,
+        "force_staging_reason": (
+            f"No confident YouTube match found (score: {yt_score:.2f}) — "
+            f"search for the correct track or paste a YouTube link below"
+        ),
+    }
+    session.add(AcquisitionJobRow(
+        id=str(uuid.uuid4()),
+        provider="ytdlp",
+        provider_ref=provider_ref,
+        state="needs_review",
+        query=query,
+        candidate_json=candidate.model_dump_json(),
+        resolved_metadata_json=_json.dumps(ghost_meta),
+        staging_path=None,
+        created_at=_now(),
+        updated_at=_now(),
+    ))
+    await session.commit()
+
+
+def _single_track_candidate(
+    release_group_id: str,
+    provider_ref: str,
+    *,
+    title: str,
+    artist: str,
+    album: str,
+    track_number: str,
+    disc_number: str,
+    duration_seconds: int | None,
+    recording_id: str,
+) -> TrackCandidate:
+    """Build the locked TrackCandidate for a single discography-tracklist row."""
+    return TrackCandidate(
+        provider="ytdlp",
+        provider_ref=provider_ref,
+        title=title or "Unknown",
+        artist=artist or "Unknown",
+        album=album or None,
+        track_number=int(track_number) if track_number.isdigit() else None,
+        disc_number=int(disc_number) if disc_number.isdigit() else None,
+        duration_seconds=duration_seconds,
+        mb_recording_id=recording_id or None,
+        # Same lock the album-batch coordinator applies: keep the track anchored
+        # to this album under the main discography artist. Without it, a track
+        # whose MB credit is "Main feat. Guest" becomes the albumartist and the
+        # album fragments into a separate featuring artist. The path segment can
+        # also be a release id or local album id (album-page fallback), so only
+        # store it when it's an MBID-shaped UUID.
+        mb_release_group_id=(
+            release_group_id
+            if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", release_group_id or "")
+            else None
+        ),
+        album_locked=True,
+    )
+
+
 @router.post("/{artist_mbid}/{release_group_id}/acquire-track", response_class=HTMLResponse)
 async def discography_acquire_single_track(
     request: Request,
@@ -145,7 +228,6 @@ async def discography_acquire_single_track(
 ) -> HTMLResponse:
     """Queue acquisition of a single track from the discography tracklist."""
     from service.acquisition.jobs import create_job
-    from service.core.models import TrackCandidate
 
     dur_s = int(duration_seconds) if duration_seconds.isdigit() else None
 
@@ -158,65 +240,18 @@ async def discography_acquire_single_track(
         dur_s,
     )
 
-    candidate = TrackCandidate(
-        provider="ytdlp",
-        provider_ref=provider_ref,
-        title=title or "Unknown",
-        artist=artist or "Unknown",
-        album=album or None,
-        track_number=int(track_number) if track_number.isdigit() else None,
-        disc_number=int(disc_number) if disc_number.isdigit() else None,
-        duration_seconds=dur_s,
-        mb_recording_id=recording_id or None,
-        # Same lock the album-batch coordinator applies: keep the track anchored
-        # to this album under the main discography artist. Without it, a track
-        # whose MB credit is "Main feat. Guest" becomes the albumartist and the
-        # album fragments into a separate featuring artist. The path segment can
-        # also be a release id or local album id (album-page fallback), so only
-        # store it when it's an MBID-shaped UUID.
-        mb_release_group_id=(
-            release_group_id
-            if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", release_group_id or "")
-            else None
-        ),
-        album_locked=True,
+    candidate = _single_track_candidate(
+        release_group_id, provider_ref,
+        title=title, artist=artist, album=album,
+        track_number=track_number, disc_number=disc_number,
+        duration_seconds=dur_s, recording_id=recording_id,
     )
 
-    # If no candidate scored above the confidence floor, create a ghost job in
-    # needs_review with no staging file. The review card will have the source
-    # search panel open so the user can paste a URL or search manually.
-    # This keeps the track visible in the queue — never silently skipped.
+    # No candidate scored above the confidence floor — park it for review.
     if yt_score < 0.35:
-        import json as _json
-        from service.db.schema import AcquisitionJobRow as _JobRow
-        job_id = str(uuid.uuid4())
-        ghost_meta = {
-            "title": candidate.title,
-            "artist": candidate.artist,
-            "album": candidate.album,
-            "track_number": candidate.track_number,
-            "duration_seconds": candidate.duration_seconds,
-            "mb_recording_id": candidate.mb_recording_id,
-            "force_staging_reason": (
-                f"No confident YouTube match found (score: {yt_score:.2f}) — "
-                f"search for the correct track or paste a YouTube link below"
-            ),
-        }
-        from service.acquisition.jobs import _now
-        row = _JobRow(
-            id=job_id,
-            provider="ytdlp",
-            provider_ref=provider_ref,
-            state="needs_review",
-            query=f"{artist} – {title}",
-            candidate_json=candidate.model_dump_json(),
-            resolved_metadata_json=_json.dumps(ghost_meta),
-            staging_path=None,
-            created_at=_now(),
-            updated_at=_now(),
+        await _create_ghost_review_job(
+            session, candidate, provider_ref, yt_score, query=f"{artist} – {title}"
         )
-        session.add(row)
-        await session.commit()
         return HTMLResponse(
             f'<span class="badge badge-warn">No match → <a href="/jobs" style="color:inherit">Review</a></span>'
         )
@@ -231,20 +266,13 @@ async def discography_acquire_single_track(
     await session.commit()
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name="ytdlp",
-            provider_ref=candidate.provider_ref,
-            candidate_json=candidate.model_dump_json(),
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name="ytdlp",
+                provider_ref=candidate.provider_ref,
+                candidate_json=candidate.model_dump_json(),
+            )
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 
@@ -270,9 +298,6 @@ async def discography_acquire_album(
     from service.core.models import AlbumCandidate
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-
         # Create an AlbumAcquisitionJob row for tracking
         album_candidate = AlbumCandidate(
             provider="ytdlp",
@@ -290,17 +315,13 @@ async def discography_acquire_album(
         )
         await session.commit()
 
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_album_from_mb",
-            album_job_id=album_job_id,
-            release_group_id=release_group_id,
-            artist_name=artist or "Unknown",
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"album_mb:{album_job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_album_from_mb(
+                redis, album_job_id,
+                release_group_id=release_group_id,
+                artist_name=artist or "Unknown",
+                job_key_prefix="album_mb",
+            )
     except Exception as exc:
         logger.error("Discography acquire failed: %s", exc)
         return _error_badge(f"Error: {exc}")

@@ -58,12 +58,17 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-async def _upsert_artist(
+async def upsert_artist(
     session: AsyncSession,
     name: str,
     sort_name: str | None = None,
     mb_artist_id: str | None = None,
 ) -> str:
+    """Get-or-create the Artist row for `name`; returns its stable hash ID.
+
+    Public index-layer API — also used by the tag-editing routes, so DB rows
+    created from user edits share the scanner's race handling and backfill rules.
+    """
     aid = _artist_id(name)
     row = await session.get(Artist, aid)
     if row is None:
@@ -100,7 +105,7 @@ async def _upsert_artist(
     return aid
 
 
-async def _upsert_album(
+async def upsert_album(
     session: AsyncSession,
     artist_id: str,
     title: str,
@@ -109,13 +114,14 @@ async def _upsert_album(
     mb_release_group_id: str | None = None,
     mb_release_id: str | None = None,
 ) -> str:
+    """Get-or-create the Album row; returns its stable hash ID. Public — see upsert_artist."""
     alid = _album_id(artist_name, title, year)
     row = await session.get(Album, alid)
     if row is None:
         # Savepoint: two tracks of a brand-new album approved concurrently both
         # see no Album row and both try to create it. Without this, the loser's
         # UNIQUE violation aborted its whole indexing transaction — the file was
-        # on disk but never appeared in the library. See _upsert_artist.
+        # on disk but never appeared in the library. See upsert_artist.
         try:
             async with session.begin_nested():
                 session.add(Album(
@@ -250,11 +256,11 @@ async def _process_file(
     title = tagged.title or path.stem
     album_title = tagged.album
 
-    artist_id = await _upsert_artist(session, artist_name, sort_name=tagged.artist_sort, mb_artist_id=tagged.mb_artist_id)
+    artist_id = await upsert_artist(session, artist_name, sort_name=tagged.artist_sort, mb_artist_id=tagged.mb_artist_id)
 
     album_id: str | None = None
     if album_title:
-        album_id = await _upsert_album(
+        album_id = await upsert_album(
             session, artist_id, album_title, tagged.year, artist_name,
             mb_release_id=tagged.mb_release_id,
         )

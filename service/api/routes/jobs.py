@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import time
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -23,6 +22,7 @@ from service.core.job_model import job_row_to_model as _job_to_model
 from service.library.tagger import read_mb_release_id as _read_mb_release_id
 
 from service.api.routes.artwork import _fetch_user_art
+from service.acquisition.queue import arq_pool, enqueue_acquire_track
 from service.api.shared import _ACTIVE_STATES_EXCLUDE, _COMPLETED_STATES, _JOBS_COMPLETED_PAGE, _do_scans, _mb_recording_search, templates
 
 logger = logging.getLogger(__name__)
@@ -469,23 +469,14 @@ async def retry_job(
         raise HTTPException(400, "No candidate data")
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        # Use a unique arq job ID per retry so arq's NX dedup doesn't block
-        # re-enqueue when a prior attempt's key still lingers in Redis.
-        retry_suffix = uuid.uuid4().hex[:8]
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name=row.provider,
-            provider_ref=row.provider_ref,
-            candidate_json=row.candidate_json,
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}:{retry_suffix}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name=row.provider,
+                provider_ref=row.provider_ref,
+                candidate_json=row.candidate_json,
+                unique_retry=True,
+            )
         row.state = "queued"
         row.failure_class = None
         row.error = None
@@ -513,11 +504,8 @@ async def cancel_job(
             request, "partials/job_card.html", {"job": _job_to_model(row)}
         )
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.zrem("arq:queue", f"acquire:{job_id}")
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await redis.zrem("arq:queue", f"acquire:{job_id}")
     except Exception as exc:
         logger.debug("best-effort dequeue failed: %s", exc)
 
@@ -579,32 +567,25 @@ async def review_card(
     return templates.TemplateResponse(request, "partials/review_card.html", ctx)
 
 
-async def _review_card_ctx(
-    request: Request,
-    session: AsyncSession,
-    job_id: str,
-    row: AcquisitionJobRow,
-    meta: dict,
-    *,
-    show_mb_search: bool = False,
-) -> dict:
-    """Build complete template context for review_card.html."""
-    staging_exists = bool(row.staging_path and Path(row.staging_path).exists())
-    is_enrichment = bool(meta.get("is_enrichment"))
+async def _review_autocomplete_names(
+    session: AsyncSession, meta: dict
+) -> tuple[list[str], list[str], list[str]]:
+    """Datalist options for the review form: (genres, artist names, album names).
 
+    Album names are scoped to the card's albumartist/artist when that artist is
+    already in the library, falling back to all album titles."""
     from sqlalchemy import distinct as _distinct
+
     genre_rows = (await session.execute(
         select(_distinct(Track.genre)).where(Track.genre.isnot(None)).order_by(Track.genre)
     )).scalars().all()
     genres = [g for g in genre_rows if g]
 
-    # Artist name autocomplete
     artist_name_rows = (await session.execute(
         select(_distinct(Artist.name)).order_by(Artist.name)
     )).scalars().all()
     artist_names = [n for n in artist_name_rows if n]
 
-    # Album name autocomplete — scoped to the current artist where possible
     current_aa = (meta.get("albumartist") or meta.get("artist") or "").strip()
     if current_aa:
         scoped = (await session.execute(
@@ -621,19 +602,32 @@ async def _review_card_ctx(
             select(_distinct(Album.title)).order_by(Album.title)
         )).scalars().all()
         album_names = [t for t in all_albums if t]
+    return genres, artist_names, album_names
 
-    # Expected track number from the original candidate (for album batch reference)
+
+async def _album_batch_review_ctx(
+    session: AsyncSession,
+    job_id: str,
+    row: AcquisitionJobRow,
+    meta: dict,
+    is_enrichment: bool,
+) -> tuple[int | None, str | None, str | None]:
+    """Album-batch extras for a review card:
+    (expected track number from the original candidate, albumartist-consistency
+    warning against sibling tracks still in review, batch label)."""
+    if not row.album_job_id:
+        return None, None, None
+
     candidate_track_number: int | None = None
-    if row.album_job_id and row.candidate_json:
+    if row.candidate_json:
         try:
             from service.core.models import TrackCandidate as _TC
-            _cand = _TC.model_validate_json(row.candidate_json)
-            candidate_track_number = _cand.track_number
+            candidate_track_number = _TC.model_validate_json(row.candidate_json).track_number
         except Exception as exc:
             logger.debug("candidate_json parse for track number failed: %s", exc)
 
     album_consistency_warning: str | None = None
-    if row.album_job_id and not is_enrichment:
+    if not is_enrichment:
         siblings = (await session.execute(
             select(AcquisitionJobRow.resolved_metadata_json)
             .where(
@@ -661,27 +655,52 @@ async def _review_card_ctx(
                     f" but {len(other_aas)} other track(s) in this batch differ."
                 )
 
-    from service.library.tagger import parse_artists as _parse_artists
-    parsed_artists = _parse_artists(meta.get("artist") or "")
-    show_multi_artists = len(parsed_artists) > 1
-
     album_batch_label: str | None = None
-    if row.album_job_id:
-        from service.db.schema import AlbumAcquisitionJob as _AlbumJob
-        album_job = await session.get(_AlbumJob, row.album_job_id)
-        if album_job:
-            parts = [p for p in [album_job.album_artist, album_job.album_title] if p]
-            album_batch_label = " — ".join(parts) if parts else row.album_job_id[:8]
+    from service.db.schema import AlbumAcquisitionJob as _AlbumJob
+    album_job = await session.get(_AlbumJob, row.album_job_id)
+    if album_job:
+        parts = [p for p in [album_job.album_artist, album_job.album_title] if p]
+        album_batch_label = " — ".join(parts) if parts else row.album_job_id[:8]
 
-    # Link to the actual media the audio came from so the user can validate the
-    # pick at a glance (catches wrong-artist auto-picks). Prefer the canonical URL
-    # captured at fetch time; fall back to provider_ref when it's already a real URL
-    # (ghost/legacy rows) but never expose a bare `ytsearch1:` query.
+    return candidate_track_number, album_consistency_warning, album_batch_label
+
+
+def _source_link(row: AcquisitionJobRow, meta: dict) -> str:
+    """Link to the actual media the audio came from so the user can validate the
+    pick at a glance (catches wrong-artist auto-picks). Prefer the canonical URL
+    captured at fetch time; fall back to provider_ref when it's already a real URL
+    (ghost/legacy rows) but never expose a bare `ytsearch1:` query."""
     source_url = (meta.get("source_url") or "").strip()
     if not source_url:
         pr = (row.provider_ref or "").strip()
         if pr.startswith(("http://", "https://")):
             source_url = pr
+    return source_url
+
+
+async def _review_card_ctx(
+    request: Request,
+    session: AsyncSession,
+    job_id: str,
+    row: AcquisitionJobRow,
+    meta: dict,
+    *,
+    show_mb_search: bool = False,
+) -> dict:
+    """Build complete template context for review_card.html."""
+    staging_exists = bool(row.staging_path and Path(row.staging_path).exists())
+    is_enrichment = bool(meta.get("is_enrichment"))
+
+    genres, artist_names, album_names = await _review_autocomplete_names(session, meta)
+    candidate_track_number, album_consistency_warning, album_batch_label = (
+        await _album_batch_review_ctx(session, job_id, row, meta, is_enrichment)
+    )
+
+    from service.library.tagger import parse_artists as _parse_artists
+    parsed_artists = _parse_artists(meta.get("artist") or "")
+    show_multi_artists = len(parsed_artists) > 1
+
+    source_url = _source_link(row, meta)
 
     force_reason = meta.get("force_staging_reason") or ""
     show_src_panel = not is_enrichment and (
@@ -1113,11 +1132,8 @@ async def jobs_bulk_action(
                 row.staging_path = None
             elif action == "cancel" and row.state in ("queued", "waiting", "downloading", "processing", "tagging", "importing"):
                 try:
-                    from arq import create_pool
-                    from arq.connections import RedisSettings
-                    redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-                    await redis.zrem("arq:queue", f"acquire:{jid}")
-                    await redis.aclose()
+                    async with arq_pool() as redis:
+                        await redis.zrem("arq:queue", f"acquire:{jid}")
                 except Exception as exc:
                     logger.debug("best-effort dequeue failed: %s", exc)
                 row.state = "cancelled"
@@ -1168,20 +1184,13 @@ async def requeue_job(
             logger.debug("carrying resolved MB id into candidate_json failed: %s", exc)
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name=row.provider,
-            provider_ref=row.provider_ref,
-            candidate_json=candidate_json,
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name=row.provider,
+                provider_ref=row.provider_ref,
+                candidate_json=candidate_json,
+            )
         row.state = "queued"
         row.staging_path = None
         row.resolved_metadata_json = None
@@ -1319,25 +1328,18 @@ async def retry_all_failed(
 
     if rows:
         try:
-            from arq import create_pool
-            from arq.connections import RedisSettings
-            redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-            for row in rows:
-                retry_suffix = uuid.uuid4().hex[:8]
-                await redis.enqueue_job(
-                    "acquire_track",
-                    job_id=row.id,
-                    provider_name=row.provider,
-                    provider_ref=row.provider_ref,
-                    candidate_json=row.candidate_json,
-                    music_dir=str(settings.music_dir),
-                    tmp_acquire_dir=str(settings.tmp_acquire_dir),
-                    _job_id=f"acquire:{row.id}:{retry_suffix}",
-                )
-                row.state = "queued"
-                row.failure_class = None
-                row.error = None
-            await redis.aclose()
+            async with arq_pool() as redis:
+                for row in rows:
+                    await enqueue_acquire_track(
+                        redis, row.id,
+                        provider_name=row.provider,
+                        provider_ref=row.provider_ref,
+                        candidate_json=row.candidate_json,
+                        unique_retry=True,
+                    )
+                    row.state = "queued"
+                    row.failure_class = None
+                    row.error = None
             await session.commit()
         except Exception as exc:
             raise HTTPException(503, str(exc)) from exc
@@ -1505,20 +1507,13 @@ async def replace_job_source(
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     await session.flush()
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name=row.provider,
-            provider_ref=provider_ref,
-            candidate_json=row.candidate_json or "{}",
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name=row.provider,
+                provider_ref=provider_ref,
+                candidate_json=row.candidate_json or "{}",
+            )
         await session.commit()
     except Exception as exc:
         raise HTTPException(503, str(exc)) from exc

@@ -19,6 +19,7 @@ from service.library.writer import trash_empty_album_dir as _trash_empty_album_d
 from service.providers.ytdlp import explicit_score as _explicit_score
 
 from service.api.routes.artwork import _fetch_user_art
+from service.acquisition.queue import arq_pool, enqueue_acquire_track
 from service.api.shared import _do_scans, _error_badge, _get_track_with_file, _mb_recording_search, _resize_cover, templates
 
 logger = logging.getLogger(__name__)
@@ -423,6 +424,97 @@ async def track_edit_card(
     return templates.TemplateResponse(request, "partials/track_edit_card.html", ctx)
 
 
+async def _apply_tag_edit_to_db(
+    session: AsyncSession,
+    row: Track,
+    *,
+    title_val: str,
+    artist_val: str,
+    album_val: str | None,
+    year_val: int | None,
+    track_num_val: int | None,
+    mbid_val: str | None,
+    genre_val: str | None,
+    file_path: Path,
+) -> tuple[str | None, str | None]:
+    """Mirror a successful tag-file write into the DB rows (in place, no hash
+    ID churn) and recompute the quality score. Returns (old_artist_id,
+    old_album_id) — non-None when the edit moved the track to a different
+    artist/album, so the caller can prune emptied rows. Commits."""
+    from service.index.scanner import upsert_album, upsert_artist
+    from service.library.tagger import has_cover_art as _has_cover_art
+    from service.metadata.quality import compute_quality_score
+
+    row.title = title_val
+    row.track_number = track_num_val
+    row.musicbrainz_recording_id = mbid_val
+    row.genre = genre_val
+
+    old_artist_id: str | None = None
+    old_album_id: str | None = row.album_id
+    if artist_val != row.artist.name:
+        old_artist_id = row.artist_id
+        row.artist_id = await upsert_artist(session, artist_val)
+
+    if album_val:
+        # Re-upsert album whenever artist OR album title changed so the album
+        # stays associated with the correct artist.
+        artist_changed = old_artist_id is not None
+        album_changed = not row.album or album_val != row.album.title
+        if artist_changed or album_changed:
+            row.album_id = await upsert_album(session, row.artist_id, album_val, year_val, artist_val)
+    else:
+        row.album_id = None
+
+    hca = await asyncio.to_thread(_has_cover_art, file_path)
+    if row.file:
+        row.file.has_cover_art = hca
+    row.tag_quality_score = compute_quality_score(
+        title=title_val, artist=artist_val, album=album_val, year=year_val,
+        track_number=track_num_val, musicbrainz_recording_id=mbid_val, has_cover_art=hca,
+    )
+    await session.commit()
+    return old_artist_id, old_album_id if old_album_id != row.album_id else None
+
+
+async def _prune_emptied_rows(
+    session: AsyncSession,
+    old_artist_id: str | None,
+    old_album_id: str | None,
+) -> None:
+    """Delete Album/Artist rows a tag edit emptied out.
+
+    Leaving an empty Album row behind inflates the library album count until a
+    manual rescan; an empty artist's albums must go first or the FK blocks the
+    artist delete."""
+    if old_album_id:
+        remaining_album = (await session.execute(
+            select(func.count(Track.id)).where(Track.album_id == old_album_id)
+        )).scalar_one()
+        if remaining_album == 0:
+            await session.execute(sa_delete(Album).where(Album.id == old_album_id))
+            await session.commit()
+
+    if old_artist_id:
+        remaining = (await session.execute(
+            select(func.count(Track.id)).where(Track.artist_id == old_artist_id)
+        )).scalar_one()
+        if remaining == 0:
+            old_albums = (await session.execute(
+                select(Album).where(Album.artist_id == old_artist_id)
+            )).scalars().all()
+            for alb in old_albums:
+                alb_tracks = (await session.execute(
+                    select(func.count(Track.id)).where(Track.album_id == alb.id)
+                )).scalar_one()
+                if alb_tracks == 0:
+                    await session.execute(sa_delete(Album).where(Album.id == alb.id))
+            old_artist = await session.get(Artist, old_artist_id)
+            if old_artist:
+                await session.delete(old_artist)
+            await session.commit()
+
+
 @router.post("/{internal_id}/save-tags", response_class=HTMLResponse)
 async def save_track_tags(
     request: Request,
@@ -437,9 +529,7 @@ async def save_track_tags(
     source_album_id: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from service.library.tagger import write_tags as _write_tags, has_cover_art as _has_cover_art
-    from service.metadata.quality import compute_quality_score
-    from service.index.scanner import _upsert_artist, _upsert_album
+    from service.library.tagger import write_tags as _write_tags
 
     stmt = (
         select(Track)
@@ -454,7 +544,7 @@ async def save_track_tags(
     if not file_path.exists():
         raise HTTPException(404, "File not found on disk")
 
-    # Parse inputs
+    # Parse inputs — empty fields keep the current value
     year_val: int | None = int(year) if year.strip().isdigit() else None
     track_num_val: int | None = int(track_number) if track_number.strip().isdigit() else None
     title_val = title.strip() or row.title
@@ -487,100 +577,22 @@ async def save_track_tags(
             f'✗ Tag write failed — nothing was saved: {_html.escape(str(exc))}</div>'
         )
 
-    # Update DB — update existing rows in-place to avoid hash ID churn
-    row.title = title_val
-    row.track_number = track_num_val
-    row.musicbrainz_recording_id = mbid_val
-    row.genre = genre_val
-
-    old_artist_id: str | None = None
-    old_album_id: str | None = row.album_id
-    if artist_val != row.artist.name:
-        old_artist_id = row.artist_id
-        new_artist_id = await _upsert_artist(session, artist_val)
-        row.artist_id = new_artist_id
-
-    if album_val:
-        # Re-upsert album whenever artist OR album title changed so the album
-        # stays associated with the correct artist.
-        artist_changed = old_artist_id is not None
-        album_changed = not row.album or album_val != row.album.title
-        if artist_changed or album_changed:
-            artist_id_for_album = row.artist_id
-            new_album_id = await _upsert_album(session, artist_id_for_album, album_val, year_val, artist_val)
-            row.album_id = new_album_id
-    elif not album_val:
-        row.album_id = None
-
-    hca = await asyncio.to_thread(_has_cover_art, file_path)
-    if row.file:
-        row.file.has_cover_art = hca
-    row.tag_quality_score = compute_quality_score(
-        title=title_val, artist=artist_val, album=album_val, year=year_val,
-        track_number=track_num_val, musicbrainz_recording_id=mbid_val, has_cover_art=hca,
+    old_artist_id, old_album_id = await _apply_tag_edit_to_db(
+        session, row,
+        title_val=title_val, artist_val=artist_val, album_val=album_val,
+        year_val=year_val, track_num_val=track_num_val,
+        mbid_val=mbid_val, genre_val=genre_val, file_path=file_path,
     )
-    await session.commit()
-
-    # Prune the old album if the edit moved this track's last occupant out of it
-    # (album-only change, where the old-artist block below wouldn't run). Leaving
-    # the empty Album row behind is what inflated the library album count until a
-    # manual Rescan.
-    if old_album_id and old_album_id != row.album_id:
-        remaining_album = (await session.execute(
-            select(func.count(Track.id)).where(Track.album_id == old_album_id)
-        )).scalar_one()
-        if remaining_album == 0:
-            await session.execute(sa_delete(Album).where(Album.id == old_album_id))
-            await session.commit()
-
-    # Prune old artist: delete its empty albums first, then delete artist if it
-    # now has 0 tracks.  Empty albums must be removed first or the FK prevents
-    # the artist delete.
-    if old_artist_id:
-        remaining = (await session.execute(
-            select(func.count(Track.id)).where(Track.artist_id == old_artist_id)
-        )).scalar_one()
-        if remaining == 0:
-            from sqlalchemy import delete as _sa_del_artist
-            # Remove albums that now have no tracks
-            old_albums = (await session.execute(
-                select(Album).where(Album.artist_id == old_artist_id)
-            )).scalars().all()
-            for alb in old_albums:
-                alb_tracks = (await session.execute(
-                    select(func.count(Track.id)).where(Track.album_id == alb.id)
-                )).scalar_one()
-                if alb_tracks == 0:
-                    await session.execute(_sa_del_artist(Album).where(Album.id == alb.id))
-            old_artist = await session.get(Artist, old_artist_id)
-            if old_artist:
-                await session.delete(old_artist)
-            await session.commit()
-
+    await _prune_emptied_rows(session, old_artist_id, old_album_id)
     await _do_scans()
 
     # When called from album detail view, reload the whole album card so the
     # track list reflects the updated metadata immediately.
     if source_album_id:
-        from sqlalchemy.orm import joinedload as _jl2
-        album_row = (await session.execute(
-            select(Album)
-            .options(_jl2(Album.artist), _jl2(Album.tracks).joinedload(Track.file))
-            .where(Album.id == source_album_id)
-        )).unique().scalar_one_or_none()
-        if album_row:
+        from service.api.routes.albums import render_album_detail
+        resp = await render_album_detail(request, session, source_album_id, saved=True)
+        if resp is not None:
             safe_aid = source_album_id.replace(":", "_")
-            sorted_tracks = sorted(
-                album_row.tracks, key=lambda t: (t.track_number is None, t.track_number or 0)
-            )
-            cover_track = next(
-                (t for t in album_row.tracks if t.file and Path(t.file.path).exists()), None
-            )
-            resp = templates.TemplateResponse(
-                request, "partials/album_detail.html",
-                {"album": album_row, "sorted_tracks": sorted_tracks,
-                 "cover_track": cover_track, "saved": True},
-            )
             resp.headers["HX-Retarget"] = f"#album-{safe_aid}"
             resp.headers["HX-Reswap"] = "outerHTML"
             return resp
@@ -835,20 +847,13 @@ async def reacquire_track(
     await session.commit()
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name=candidate.provider,
-            provider_ref=candidate.provider_ref,
-            candidate_json=candidate.model_dump_json(),
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name=candidate.provider,
+                provider_ref=candidate.provider_ref,
+                candidate_json=candidate.model_dump_json(),
+            )
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 
@@ -971,20 +976,13 @@ async def queue_replacement_track(
     await session.commit()
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name=locked.provider,
-            provider_ref=provider_ref,
-            candidate_json=locked.model_dump_json(),
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name=locked.provider,
+                provider_ref=provider_ref,
+                candidate_json=locked.model_dump_json(),
+            )
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 
@@ -1043,20 +1041,13 @@ async def queue_url_replacement(
     await session.commit()
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name=candidate.provider,
-            provider_ref=candidate.provider_ref,
-            candidate_json=candidate.model_dump_json(),
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await enqueue_acquire_track(
+                redis, job_id,
+                provider_name=candidate.provider,
+                provider_ref=candidate.provider_ref,
+                candidate_json=candidate.model_dump_json(),
+            )
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 
@@ -1233,11 +1224,8 @@ async def enrich_track_now(
         raise HTTPException(404)
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job("enrich_track", track_id=track_id)
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await redis.enqueue_job("enrich_track", track_id=track_id)
     except Exception as exc:
         return _error_badge(f"Error: {exc}", level="fail")
 

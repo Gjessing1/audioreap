@@ -18,6 +18,7 @@ from service.core.models import TrackCandidate
 from service.db.schema import Artist, PlaylistImport, Track
 from service.db.session import get_session
 
+from service.acquisition.queue import arq_pool, enqueue_acquire_track
 from service.api.shared import _acquire_ctx, templates
 
 logger = logging.getLogger(__name__)
@@ -186,21 +187,14 @@ async def acquire_playlist(
     await session.commit()
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        for job_id, candidate_json, candidate in job_data:
-            await redis.enqueue_job(
-                "acquire_track",
-                job_id=job_id,
-                provider_name=candidate.provider,
-                provider_ref=candidate.provider_ref,
-                candidate_json=candidate_json,
-                music_dir=str(settings.music_dir),
-                tmp_acquire_dir=str(settings.tmp_acquire_dir),
-                _job_id=f"acquire:{job_id}",
-            )
-        await redis.aclose()
+        async with arq_pool() as redis:
+            for job_id, candidate_json, candidate in job_data:
+                await enqueue_acquire_track(
+                    redis, job_id,
+                    provider_name=candidate.provider,
+                    provider_ref=candidate.provider_ref,
+                    candidate_json=candidate_json,
+                )
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 

@@ -13,6 +13,7 @@ from service.config import settings
 from service.db.schema import AcquisitionJobRow, Album, Artist, Track, TrackFile
 from service.db.session import get_session
 
+from service.acquisition.queue import arq_pool
 from service.api.shared import _BROWSE_PAGE, _do_scans, _error_badge, templates
 
 logger = logging.getLogger(__name__)
@@ -547,12 +548,9 @@ async def library_enrich_filtered(
         return HTMLResponse('<p class="empty" style="font-size:12px;padding:4px 0">No matching tracks without a MB Recording ID.</p>')
 
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        for track in rows:
-            await redis.enqueue_job("enrich_track", track_id=track.id)
-        await redis.aclose()
+        async with arq_pool() as redis:
+            for track in rows:
+                await redis.enqueue_job("enrich_track", track_id=track.id)
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 

@@ -16,6 +16,7 @@ from service.library.writer import safe_trash
 from service.db.session import get_session
 from service.library.writer import trash_empty_album_dir as _trash_empty_album_dir
 
+from service.acquisition.queue import arq_pool
 from service.api.shared import _error_badge, _get_track_with_file, templates
 
 logger = logging.getLogger(__name__)
@@ -573,11 +574,8 @@ async def fix_all_artist_credits(
 async def fetch_missing_covers(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """Enqueue a background arq job to fetch cover art for all albums missing it."""
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job("fetch_missing_covers")
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await redis.enqueue_job("fetch_missing_covers")
     except Exception as exc:
         return _error_badge(f"Queue unavailable: {exc}")
     return HTMLResponse('<span class="badge-ok">Cover art fetch queued — check back in a few minutes</span>')
@@ -591,11 +589,8 @@ async def backfill_replaygain_route(request: Request, full: bool = False, sessio
     already carry ReplayGain info — use after changing the target loudness.
     """
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job("backfill_replaygain", full=full)
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await redis.enqueue_job("backfill_replaygain", full=full)
     except Exception as exc:
         return _error_badge(f"Queue unavailable: {exc}")
     label = "Full ReplayGain retag" if full else "ReplayGain backfill"
@@ -606,11 +601,8 @@ async def backfill_replaygain_route(request: Request, full: bool = False, sessio
 async def fetch_missing_lyrics(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """Enqueue a background arq job to fetch LRCLIB lyrics for tracks missing them."""
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job("fetch_missing_lyrics")
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await redis.enqueue_job("fetch_missing_lyrics")
     except Exception as exc:
         return _error_badge(f"Queue unavailable: {exc}")
     return HTMLResponse('<span class="badge-ok">Lyrics fetch queued — runs in the background (large libraries take a while)</span>')
@@ -620,11 +612,8 @@ async def fetch_missing_lyrics(request: Request, session: AsyncSession = Depends
 async def upgrade_plain_lyrics(request: Request) -> HTMLResponse:
     """Enqueue a job that upgrades plain-text .lrc sidecars to synced when LRCLIB has one."""
     try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job("fetch_missing_lyrics", upgrade_plain=True)
-        await redis.aclose()
+        async with arq_pool() as redis:
+            await redis.enqueue_job("fetch_missing_lyrics", upgrade_plain=True)
     except Exception as exc:
         return _error_badge(f"Queue unavailable: {exc}")
     return HTMLResponse('<span class="badge-ok">Synced-lyrics upgrade queued — re-checks plain tracks in the background</span>')
