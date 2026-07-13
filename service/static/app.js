@@ -4,20 +4,101 @@ const playerBar= document.getElementById("player-bar");
 const playerTitle = document.getElementById("player-title");
 const playerPlayBtn = document.getElementById("player-play");
 const playerProgress = document.getElementById("player-progress");
+const playerArt    = document.getElementById("player-art");
+const playerArtImg = document.getElementById("player-art-img");
+const playerPrev   = document.getElementById("player-prev");
+const playerNext   = document.getElementById("player-next");
 
 let currentId = null;
 
-window.playTrack = function(internalId, title) {
-  if (currentId === internalId) {
+/* ── Play queue (derived from the DOM, never stored) ─────────────────────────
+ * A "context" is the nearest [data-play-scope] ancestor of the play button that
+ * matches the currently-playing id; the queue is every .play-btn[data-id] inside
+ * it, in DOM order. Buttons are re-resolved fresh on every skip, so HTMX poll
+ * swaps can't leave stale element references — if the current button vanished
+ * (list re-rendered without it), there is simply no queue and playback just
+ * stops at the end of the track, same as before queues existed.
+ */
+function _btnFor(id) {
+  return Array.from(document.querySelectorAll(".play-btn[data-id]"))
+    .find((b) => b.dataset.id === id) || null;
+}
+
+function _queueState() {
+  const cur = currentId !== null ? _btnFor(currentId) : null;
+  const scope = cur ? cur.closest("[data-play-scope]") : null;
+  if (!scope) return { btns: [], idx: -1 };
+  const btns = Array.from(scope.querySelectorAll(".play-btn[data-id]"))
+    .filter((b) => !b.disabled);
+  return { btns, idx: btns.indexOf(cur) };
+}
+
+function _updateSkipBtns() {
+  if (!playerPrev || !playerNext) return;
+  const { btns, idx } = _queueState();
+  const inQueue = idx >= 0 && btns.length > 1;
+  playerPrev.classList.toggle("hidden", !inQueue);
+  playerNext.classList.toggle("hidden", !inQueue);
+  if (inQueue) {
+    playerPrev.disabled = idx === 0;
+    playerNext.disabled = idx === btns.length - 1;
+  }
+}
+
+/* Clicking the neighbour button re-enters the exact same inline handler the
+ * user would have clicked, so per-kind behaviour (track/staged/preview) and
+ * template escaping are reused rather than re-implemented here. */
+function playerSkip(dir) {
+  const { btns, idx } = _queueState();
+  if (idx < 0) return false;
+  const next = btns[idx + dir];
+  if (!next) return false;
+  next.click();
+  return true;
+}
+
+function _setPlayerArt(url) {
+  if (!playerArt || !playerArtImg) return;
+  if (url) {
+    playerArt.classList.remove("hidden");
+    playerArtImg.src = url;   // onerror re-hides the container if it 404s
+  } else {
+    playerArt.classList.add("hidden");
+    playerArtImg.removeAttribute("src");
+  }
+}
+
+function _setMediaSession(title, artUrl) {
+  if (!("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: title,
+      artwork: artUrl ? [{ src: artUrl }] : [],
+    });
+    navigator.mediaSession.setActionHandler("previoustrack", () => playerSkip(-1));
+    navigator.mediaSession.setActionHandler("nexttrack", () => playerSkip(1));
+  } catch (e) { /* metadata is best-effort */ }
+}
+
+function _startPlayback(key, src, title, artUrl) {
+  if (currentId === key) {
     togglePlay();
     return;
   }
-  currentId = internalId;
-  audio.src = "/api/stream/" + internalId;
+  currentId = key;
+  audio.src = src;
   playerTitle.textContent = title;
   playerBar.classList.remove("hidden");
+  _setPlayerArt(artUrl);
   audio.play().catch(() => {});
   updatePlayBtns();
+  _updateSkipBtns();
+  _setMediaSession(title, artUrl);
+}
+
+window.playTrack = function(internalId, title) {
+  _startPlayback(internalId, "/api/stream/" + internalId, title,
+    "/library/tracks/" + internalId + "/cover-art?size=144");
 };
 
 function togglePlay() {
@@ -28,6 +109,11 @@ function togglePlay() {
 if (playerPlayBtn) {
   playerPlayBtn.addEventListener("click", togglePlay);
 }
+if (playerPrev) playerPrev.addEventListener("click", () => playerSkip(-1));
+if (playerNext) playerNext.addEventListener("click", () => playerSkip(1));
+if (playerArtImg) {
+  playerArtImg.addEventListener("error", () => playerArt.classList.add("hidden"));
+}
 
 if (audio) {
   audio.addEventListener("play", () => {
@@ -36,6 +122,7 @@ if (audio) {
   });
   audio.addEventListener("pause", () => {
     playerPlayBtn && (playerPlayBtn.textContent = "▶");
+    updatePlayBtns();
   });
   audio.addEventListener("timeupdate", () => {
     if (audio.duration && playerProgress) {
@@ -43,8 +130,10 @@ if (audio) {
     }
   });
   audio.addEventListener("ended", () => {
+    if (playerSkip(1)) return;   // advance within the current context
     currentId = null;
     updatePlayBtns();
+    _updateSkipBtns();
   });
 }
 
@@ -62,33 +151,23 @@ function updatePlayBtns() {
 }
 
 /* Re-attach after HTMX swaps */
-document.body.addEventListener("htmx:afterSwap", () => updatePlayBtns());
+document.body.addEventListener("htmx:afterSwap", () => {
+  updatePlayBtns();
+  _updateSkipBtns();
+});
 
 window.playPreview = function(ref, title) {
-  const previewUrl = "/api/preview?ref=" + encodeURIComponent(ref);
-  if (currentId === "preview:" + ref) {
-    togglePlay();
-    return;
-  }
-  currentId = "preview:" + ref;
-  audio.src = previewUrl;
-  playerTitle.textContent = title + " (preview)";
-  playerBar.classList.remove("hidden");
-  audio.play().catch(() => {});
-  updatePlayBtns();
+  const key = "preview:" + ref;
+  const btn = _btnFor(key);   // preview art (YT thumbnail) rides on the button
+  _startPlayback(key, "/api/preview?ref=" + encodeURIComponent(ref),
+    title + " (preview)", (btn && btn.dataset.art) || null);
 };
 
 
 /* ── Play staged (review) files ─────────────────────────────────────────── */
 window.playJobStaged = function(jobId, title) {
-  const key = 'staged:' + jobId;
-  if (currentId === key) { togglePlay(); return; }
-  currentId = key;
-  audio.src = '/jobs/' + jobId + '/stream';
-  playerTitle.textContent = title + ' (staged)';
-  playerBar.classList.remove('hidden');
-  audio.play().catch(() => {});
-  updatePlayBtns();
+  _startPlayback("staged:" + jobId, "/jobs/" + jobId + "/stream",
+    title + " (staged)", "/jobs/" + jobId + "/cover-art");
 };
 
 /* ── Toggle panels mutually exclusive ───────────────────────────────────── */

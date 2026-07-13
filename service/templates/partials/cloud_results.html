@@ -13,7 +13,9 @@
     </div>
   </div>
   <div class="card-actions">
-    <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
+    <button class="play-btn" data-id="preview:{{ c.provider_ref|e }}"
+            {% if c.thumbnail_url %}data-art="{{ c.thumbnail_url|e }}"{% endif %}
+            onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
     <a href="{{ c.provider_ref|e }}" target="_blank" class="btn btn-sm btn-ghost" title="Open on YouTube" style="font-size:11px">↗</a>
     <form hx-post="/api/acquire"
           hx-target="#cloud-{{ (offset|default(0)) + loop.index }}"

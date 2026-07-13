@@ -89,7 +89,7 @@
   <div id="bulk-edit-result" style="margin-top:6px"></div>
 </div>
 
-<div id="browse-results"
+<div id="browse-results" data-play-scope
      hx-get="/library/browse/results?q={{ q|urlencode }}&f={{ f|urlencode }}&sort={{ sort or 'artist' }}{% if genre %}&genre={{ genre|urlencode }}{% endif %}"
      hx-trigger="load"
      hx-swap="innerHTML">

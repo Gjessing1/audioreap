@@ -1,5 +1,6 @@
 {% set safe_id = track.id | replace(':', '_') %}
 {% if candidates %}
+<div data-play-scope>
 {% for c in candidates %}
 <div class="card" style="gap:10px" id="replace-candidate-{{ loop.index }}">
   {% if c.thumbnail_url %}
@@ -14,7 +15,9 @@
     </div>
   </div>
   <div class="card-actions">
-    <button class="play-btn" onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
+    <button class="play-btn" data-id="preview:{{ c.provider_ref|e }}"
+            {% if c.thumbnail_url %}data-art="{{ c.thumbnail_url|e }}"{% endif %}
+            onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
     <a href="{{ c.provider_ref|e }}" target="_blank" class="btn btn-sm btn-ghost" title="Open on YouTube" style="font-size:11px">↗</a>
     <form hx-post="/library/tracks/{{ track.id }}/queue-replacement"
           hx-target="#replace-status-{{ safe_id }}"
@@ -27,6 +30,7 @@
   </div>
 </div>
 {% endfor %}
+</div>
 {% elif q %}
 <p class="muted" style="font-size:13px;padding:8px 0">No results for "{{ q }}".</p>
 {% endif %}

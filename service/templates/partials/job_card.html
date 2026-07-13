@@ -82,6 +82,7 @@
 
     {% if job.state == 'needs_review' %}
     <button class="play-btn"
+            data-id="staged:{{ job.id }}"
             onclick="playJobStaged('{{ job.id }}','{{ job.track_ref.title|e }}')"
             title="Preview staged file">▶</button>
     <button class="btn btn-sm"

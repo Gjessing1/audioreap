@@ -39,7 +39,7 @@
   <div class="search-columns">
     <div class="search-col">
       <div class="section-title">Library</div>
-      <div id="local-results">
+      <div id="local-results" data-play-scope>
         {% if q %}
           {% include "partials/local_results.html" %}
         {% else %}
@@ -49,7 +49,7 @@
     </div>
     <div class="search-col">
       <div class="section-title">YouTube</div>
-      <div id="cloud-results">
+      <div id="cloud-results" data-play-scope>
         {% if q %}
           {% include "partials/cloud_results.html" %}
         {% else %}

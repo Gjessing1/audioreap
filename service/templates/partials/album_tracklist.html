@@ -43,7 +43,7 @@
 {% endif %}
 
 {# ── The list ──────────────────────────────────────────────────────────────── #}
-<div class="track-list">
+<div class="track-list" data-play-scope>
   {% for r in rows %}
   {% if show_discs and r.disc and (loop.previtem is undefined or loop.previtem.disc != r.disc) %}
   <div style="font-size:10px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;margin:{% if loop.first %}0{% else %}8px{% endif %} 0 4px">Disc {{ r.disc }}</div>
@@ -70,7 +70,7 @@
         {% if t.file and t.file.bitrate_kbps %}{{ t.file.bitrate_kbps }}k{% endif %}
       </span>
       {% if t.file %}
-      <button class="play-btn" style="width:26px;height:26px;min-width:26px;min-height:26px;font-size:10px;flex-shrink:0"
+      <button class="play-btn" data-id="{{ t.id }}" style="width:26px;height:26px;min-width:26px;min-height:26px;font-size:10px;flex-shrink:0"
               onclick="playTrack('{{ t.id }}', '{{ t.title|e }}')">▶</button>
       {% endif %}
 

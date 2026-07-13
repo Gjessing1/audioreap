@@ -49,11 +49,16 @@
 <main>{% block content %}{% endblock %}</main>
 
 <div id="player-bar" class="hidden">
+  <div id="player-art" class="hidden">
+    <img id="player-art-img" alt="">
+  </div>
   <div id="player-info">
     <span id="player-title">—</span>
   </div>
   <div id="player-controls">
+    <button id="player-prev" class="player-btn player-skip hidden" title="Previous in list">⏮︎</button>
     <button id="player-play" class="player-btn">▶</button>
+    <button id="player-next" class="player-btn player-skip hidden" title="Next in list">⏭︎</button>
     <input id="player-progress" type="range" min="0" max="100" value="0" step="0.1">
   </div>
 </div>
