@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -58,6 +60,20 @@ from service.library.writer import trash_empty_album_dir as _trash_empty_album_d
 _JOBS_COMPLETED_PAGE = 50
 _BROWSE_PAGE = 75
 _COMPLETED_STATES = ("done", "failed", "cancelled")
+
+
+def _error_badge(message: str, *, level: str = "warn") -> HTMLResponse:
+    """Shared inline error partial for HTMX swap targets.
+
+    The one error-presentation pattern for routes whose hx-target is a small
+    inline element (spans/badges) — full-page routes should keep raising
+    HTTPException instead. level="warn" for user-fixable conditions,
+    "fail" for operations that errored. Always 200: htmx does not swap
+    non-2xx responses into the target, so the message would never be seen.
+    Escapes the message — exception text can embed file/MB-derived strings.
+    """
+    cls = "badge badge-fail" if level == "fail" else "badge badge-warn"
+    return HTMLResponse(f'<span class="{cls}">{html.escape(str(message))}</span>')
 _ACTIVE_STATES_EXCLUDE = _COMPLETED_STATES  # states NOT in active list
 
 _scan_task: asyncio.Task | None = None  # deduplicate concurrent auto-scans
@@ -106,8 +122,8 @@ async def _do_scans() -> None:
     from service.navidrome.client import trigger_scan as _nv
     try:
         await _nv()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("best-effort Navidrome scan trigger failed: %s", exc)
     _schedule_auto_scan()
 
 
@@ -345,7 +361,8 @@ def _row_resolved_meta(row: AcquisitionJobRow) -> dict:
         return {}
     try:
         return json.loads(row.resolved_metadata_json)
-    except Exception:
+    except Exception as exc:
+        logger.debug("corrupt resolved_metadata_json on job %s: %s", row.id, exc)
         return {}
 
 
@@ -511,8 +528,8 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
     if row.candidate_json:
         try:
             candidate = TrackCandidate.model_validate_json(row.candidate_json)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("unparseable candidate_json on job row: %s", exc)
 
     title = (tagged.title if tagged else None) or (candidate.title if candidate else None) or row.query or "Unknown"
     artist = (tagged.artist if tagged else None) or (candidate.artist if candidate else None) or "Unknown"
@@ -702,8 +719,8 @@ async def cancel_job(
         redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
         await redis.zrem("arq:queue", f"acquire:{job_id}")
         await redis.aclose()
-    except Exception:
-        pass  # best-effort dequeue
+    except Exception as exc:
+        logger.debug("best-effort dequeue failed: %s", exc)
 
     row.state = "cancelled"
     row.error = "Cancelled by user"
@@ -734,6 +751,41 @@ async def nav_review_count(
     if count:
         return HTMLResponse(f'<span class="nav-badge" hx-get="/nav/review-count" hx-trigger="every 30s" hx-swap="outerHTML">{count}</span>')
     return HTMLResponse('<span hx-get="/nav/review-count" hx-trigger="every 30s" hx-swap="outerHTML"></span>')
+
+
+# (monotonic timestamp, total) — the attention rollup runs several aggregate
+# queries (splits/dupes group-bys scan every album), too heavy to recompute on
+# every nav poll from every open tab.
+_attention_cache: tuple[float, int] | None = None
+_ATTENTION_TTL_S = 300.0
+
+
+@router.get("/nav/attention-count", response_class=HTMLResponse)
+async def nav_attention_count(
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Badge span rolling up every library item needing attention.
+
+    Sum of the Library Health categories (low bitrate, missing covers, no MB
+    ID, duplicates, split albums, artist-credit mismatches). needs_review jobs
+    are deliberately NOT included — the Jobs badge next to it already shows
+    them, and one item counted in two adjacent badges reads as two problems.
+    """
+    global _attention_cache
+    now = time.monotonic()
+    if _attention_cache is not None and now - _attention_cache[0] < _ATTENTION_TTL_S:
+        total = _attention_cache[1]
+    else:
+        counts = await _library_attention_counts(session)
+        total = sum(counts.values())
+        _attention_cache = (now, total)
+
+    poll = 'hx-get="/nav/attention-count" hx-trigger="every 120s" hx-swap="outerHTML"'
+    if total:
+        return HTMLResponse(
+            f'<span class="nav-badge nav-badge-attention" title="{total} library item(s) need attention — see Library Health" {poll}>{total}</span>'
+        )
+    return HTMLResponse(f"<span {poll}></span>")
 
 
 # ── Review workflow (needs_review state) ─────────────────────────────────────
@@ -816,8 +868,8 @@ async def _review_card_ctx(
             from service.core.models import TrackCandidate as _TC
             _cand = _TC.model_validate_json(row.candidate_json)
             candidate_track_number = _cand.track_number
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("candidate_json parse for track number failed: %s", exc)
 
     album_consistency_warning: str | None = None
     if row.album_job_id and not is_enrichment:
@@ -839,8 +891,8 @@ async def _review_card_ctx(
                     sib_aa = (sib_meta.get("albumartist") or "").lower().strip()
                     if sib_aa:
                         sibling_aas.add(sib_aa)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("sibling metadata parse failed: %s", exc)
             other_aas = sibling_aas - {this_aa}
             if other_aas:
                 album_consistency_warning = (
@@ -923,7 +975,8 @@ async def job_dest_preview(
         return HTMLResponse("")
     try:
         meta = json.loads(row.resolved_metadata_json)
-    except Exception:
+    except Exception as exc:
+        logger.debug("corrupt resolved_metadata_json on job %s: %s", job_id, exc)
         return HTMLResponse("")
 
     # Enrichment edits a file already in /music — no move/grouping preview applies.
@@ -1011,8 +1064,8 @@ async def _approval_redis() -> AsyncIterator[object | None]:
         if pool is not None:
             try:
                 await pool.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("redis pool close failed: %s", exc)
 
 
 @asynccontextmanager
@@ -1043,8 +1096,8 @@ async def _approval_lock(redis, job_id: str) -> AsyncIterator[bool]:
         if locked:
             try:
                 await redis.delete(key)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("approval lock release failed: %s", exc)
 
 
 async def _rollback_failed_approval(
@@ -1106,8 +1159,8 @@ async def batch_approve(
                             _aa = (_m.get("albumartist") or _m.get("artist") or "").strip()
                             if _alb and _aa:
                                 heal_targets.add((_alb, _aa))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("heal-target metadata parse failed: %s", exc)
                     done_count += 1
                 except Exception as exc:
                     logger.error("Batch approve failed for %s: %s", jid, exc)
@@ -1129,8 +1182,8 @@ async def batch_approve(
                 logger.warning("Auto-heal failed for %r / %r: %s", _alb, _aa, exc)
                 try:
                     await session.rollback()
-                except Exception:
-                    pass
+                except Exception as rb_exc:
+                    logger.debug("rollback after auto-heal failure also failed: %s", rb_exc)
         if healed:
             await _do_scans()
             scanned = True
@@ -1205,8 +1258,8 @@ async def approve_job(
     if row and row.resolved_metadata_json:
         try:
             meta = json.loads(row.resolved_metadata_json)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("resolved_metadata_json parse for confirmation banner failed: %s", exc)
     import html as _html
     # Title/album originate from free-text search or the downloaded file's own
     # tags — escape before interpolating into HTML.
@@ -1234,8 +1287,8 @@ async def reject_job(
     if row.resolved_metadata_json:
         try:
             is_enrichment = bool(json.loads(row.resolved_metadata_json).get("is_enrichment"))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("is_enrichment probe failed: %s", exc)
 
     if row.staging_path and not is_enrichment:
         try:
@@ -1283,15 +1336,15 @@ async def jobs_bulk_action(
                 if row.resolved_metadata_json:
                     try:
                         is_enrichment = bool(json.loads(row.resolved_metadata_json).get("is_enrichment"))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("is_enrichment probe failed: %s", exc)
                 if row.staging_path and not is_enrichment:
                     try:
                         p = Path(row.staging_path)
                         if p.exists():
                             safe_trash(p, settings.staging_dir / ".trash")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("trashing staged file on reject failed: %s", exc)
                 row.state = "failed"
                 row.failure_class = "permanent"
                 row.error = "Rejected (bulk)"
@@ -1303,8 +1356,8 @@ async def jobs_bulk_action(
                     redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
                     await redis.zrem("arq:queue", f"acquire:{jid}")
                     await redis.aclose()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("best-effort dequeue failed: %s", exc)
                 row.state = "cancelled"
                 row.error = "Cancelled (bulk)"
             elif action == "dismiss" and row.state in _COMPLETED_STATES:
@@ -1315,8 +1368,8 @@ async def jobs_bulk_action(
             logger.error("Bulk action %s failed for %s: %s", action, jid, exc)
             try:
                 await session.rollback()
-            except Exception:
-                pass
+            except Exception as rb_exc:
+                logger.debug("rollback after bulk-action failure also failed: %s", rb_exc)
 
     await session.commit()
     return templates.TemplateResponse(
@@ -1349,8 +1402,8 @@ async def requeue_job(
                 cand = _TC.model_validate_json(candidate_json)
                 cand = cand.model_copy(update={"musicbrainz_recording_id": mb_id})
                 candidate_json = cand.model_dump_json()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("carrying resolved MB id into candidate_json failed: %s", exc)
 
     try:
         from arq import create_pool
@@ -1902,8 +1955,8 @@ async def job_search_source(
             want_artist = want_artist or (cand.artist or "")
             want_title = want_title or (cand.title or "")
             want_dur = want_dur or cand.duration_seconds
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("candidate_json parse for source-search hints failed: %s", exc)
 
     # The source currently in use — mark it so it isn't offered as a "swap to".
     current_url = (meta.get("source_url") or "").strip()
@@ -1952,8 +2005,8 @@ async def replace_job_source(
             p = Path(row.staging_path)
             if p.exists():
                 safe_trash(p, settings.staging_dir / ".trash")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("trashing previous staged file failed: %s", exc)
     # Preserve the ORIGINAL candidate's identity (locked recording ID, album,
     # track number, release group) and swap only the download pointer. Overwriting
     # candidate_json wholesale with the raw YouTube search result dropped the album
@@ -1974,8 +2027,8 @@ async def replace_job_source(
                 picked = _TC.model_validate_json(candidate_json)
                 update["thumbnail_url"] = picked.thumbnail_url
                 update["raw_metadata"] = picked.raw_metadata
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("carrying thumbnail/raw_metadata from picked source failed: %s", exc)
         row.candidate_json = base.model_copy(update=update).model_dump_json()
     elif candidate_json:
         # No original candidate to anchor to — fall back to the picked source.
@@ -2043,8 +2096,8 @@ async def fix_failed_source(
             cand = _TC.model_validate_json(row.candidate_json)
             want_artist = want_artist or (cand.artist or "")
             want_title = want_title or (cand.title or "")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("candidate_json parse for source-search hints failed: %s", exc)
 
     source_url = (meta.get("source_url") or "").strip()
     if not source_url:
@@ -2543,7 +2596,7 @@ async def move_track_to_album(
 
     src = Path(track.file.path)
     if not src.exists():
-        return HTMLResponse('<span style="color:var(--danger);font-size:12px">File not found on disk</span>')
+        return _error_badge("File not found on disk", level="fail")
 
     artist_name = target_album.artist.name if target_album.artist else "Unknown"
     ext = src.suffix.lstrip(".")
@@ -2563,7 +2616,7 @@ async def move_track_to_album(
         return HTMLResponse('<span style="color:var(--success);font-size:12px">Already in place</span>')
 
     if dst.exists():
-        return HTMLResponse(f'<span style="color:var(--danger);font-size:12px">Collision: {dst.name} already exists in target</span>')
+        return _error_badge(f"Collision: {dst.name} already exists in target", level="fail")
 
     # Fix tags on the file
     try:
@@ -2624,7 +2677,7 @@ async def album_fix_discs(
     if album is None:
         raise HTTPException(404)
     if not (album.mb_release_group_id or album.musicbrainz_release_id):
-        return HTMLResponse('<span class="badge badge-warn">Not linked to MusicBrainz — link the album first</span>')
+        return _error_badge("Not linked to MusicBrainz — link the album first")
 
     try:
         if album.mb_release_group_id:
@@ -2638,7 +2691,7 @@ async def album_fix_discs(
                 _get_rel, album.musicbrainz_release_id, settings.cache_dir
             )
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge badge-warn">MusicBrainz unavailable: {exc}</span>')
+        return _error_badge(f"MusicBrainz unavailable: {exc}")
 
     if not any(t.disc for t in mb_tracks):
         return HTMLResponse('<span class="badge badge-done">MusicBrainz lists a single disc — nothing to fix ✓</span>')
@@ -2670,7 +2723,7 @@ async def album_fix_discs(
             matches.append((track, best))
 
     if not matches:
-        return HTMLResponse('<span class="badge badge-warn">No owned track matched the MB tracklist</span>')
+        return _error_badge("No owned track matched the MB tracklist")
 
     albumartist = album.artist.name if album.artist else "Unknown"
     fixed = moved = 0
@@ -2759,7 +2812,7 @@ async def library_rescan(
         await session.commit()
     except Exception as exc:
         logger.error("Library rescan failed: %s", exc)
-        return HTMLResponse(f'<span class="badge badge-fail">Rescan failed: {exc}</span>')
+        return _error_badge(f"Rescan failed: {exc}", level="fail")
 
     await _do_scans()
 
@@ -2775,12 +2828,54 @@ async def library_rescan(
     return HTMLResponse(badge + oob)
 
 
+def _resize_cover(art: bytes, size: int, dest: Path) -> bytes | None:
+    """Downscale cover art to `size` px wide via ffmpeg and cache it at dest.
+
+    ffmpeg is used instead of Pillow so no new dependency enters the image.
+    Never upscales (min(size, iw)). Returns None on any failure — callers
+    fall back to serving the full-size art.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", "pipe:0",
+                "-vf", f"scale='min({size},iw)':-1",
+                "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "pipe:1",
+            ],
+            input=art, capture_output=True, timeout=20,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            logger.debug(
+                "cover thumbnail resize failed (rc=%s): %s",
+                proc.returncode, (proc.stderr or b"")[-200:],
+            )
+            return None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".tmp")
+        tmp.write_bytes(proc.stdout)
+        tmp.replace(dest)
+        return proc.stdout
+    except Exception as exc:
+        logger.debug("cover thumbnail resize failed: %s", exc)
+        return None
+
+
 @router.get("/library/tracks/{internal_id}/cover-art")
 async def track_cover_art(
     internal_id: str,
+    size: int | None = Query(None, ge=32, le=512),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Return cover art for a track: embedded first, then sidecar cover.jpg."""
+    """Return cover art for a track: embedded first, then sidecar cover.jpg.
+
+    ?size=N serves a disk-cached thumbnail (max-width N px) instead of the
+    full embedded art — list rows and any future grid view must use it so a
+    screenful of cells doesn't re-download full-size art per track. The cache
+    entry is regenerated whenever the audio file or sidecar is newer than it;
+    browsers revalidate after 10 min so replaced art propagates same-session.
+    """
     from fastapi.responses import Response as Resp
     from service.library.tagger import read_cover_art_bytes
 
@@ -2796,6 +2891,18 @@ async def track_cover_art(
     if not path.exists():
         raise HTTPException(404)
 
+    thumb_headers = {"Cache-Control": "public, max-age=600"}
+    thumb_path: Path | None = None
+    if size is not None:
+        thumb_path = settings.cache_dir / "thumbs" / f"{internal_id}_{size}.jpg"
+        cover_jpg = path.parent / "cover.jpg"
+        src_mtime = path.stat().st_mtime
+        if cover_jpg.exists():
+            src_mtime = max(src_mtime, cover_jpg.stat().st_mtime)
+        if thumb_path.exists() and thumb_path.stat().st_mtime >= src_mtime:
+            data = await asyncio.to_thread(thumb_path.read_bytes)
+            return Resp(content=data, media_type="image/jpeg", headers=thumb_headers)
+
     art = await asyncio.to_thread(read_cover_art_bytes, path)
 
     if not art:
@@ -2806,6 +2913,13 @@ async def track_cover_art(
 
     if not art:
         raise HTTPException(404)
+
+    if thumb_path is not None:
+        data = await asyncio.to_thread(_resize_cover, art, size, thumb_path)
+        if data:
+            return Resp(content=data, media_type="image/jpeg", headers=thumb_headers)
+        # resize failed — fall through to full-size art
+
     return Resp(content=art, media_type="image/jpeg",
                 headers={"Cache-Control": "no-cache"})
 
@@ -2842,9 +2956,9 @@ async def _fetch_user_art(art_url: str) -> tuple[bytes | None, HTMLResponse | No
 
     art = await fetch_from_url(art_url)
     if not art:
-        return None, HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
+        return None, _error_badge("Could not download image")
     if _image_too_small(art, _MIN_USER_COVER_PX):
-        return None, HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
+        return None, _error_badge("Image too small (< 300×300)")
     return art, None
 
 
@@ -3313,7 +3427,7 @@ async def artist_mb_search(
                 "disambiguation": a.get("disambiguation", ""),
             })
     except Exception as exc:
-        return HTMLResponse(f'<p class="muted" style="font-size:12px">MB search failed: {exc}</p>')
+        return _error_badge(f"MB search failed: {exc}")
 
     if not candidates:
         return HTMLResponse('<p class="muted" style="font-size:12px">No results.</p>')
@@ -3350,7 +3464,7 @@ async def artist_image_search(
             resp.raise_for_status()
             data = resp.json()
     except Exception as exc:
-        return HTMLResponse(f'<p class="muted" style="font-size:12px">Image search failed: {exc}</p>')
+        return _error_badge(f"Image search failed: {exc}")
 
     results = [
         {"name": item["name"], "image_url": item.get("picture_xl") or item.get("picture_medium", ""), "deezer_id": item["id"]}
@@ -3396,7 +3510,7 @@ async def save_artist_image(
             resp.raise_for_status()
             img_path.write_bytes(resp.content)
     except Exception as exc:
-        return HTMLResponse(f'<p style="font-size:12px;color:var(--danger)">Download failed: {exc}</p>')
+        return _error_badge(f"Download failed: {exc}", level="fail")
 
     # Trigger Navidrome rescan so the new image is picked up
     await _do_scans()
@@ -3421,12 +3535,12 @@ async def upload_artist_image(
     from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small
 
     if not image.content_type or not image.content_type.startswith("image/"):
-        return HTMLResponse('<p style="font-size:12px;color:var(--danger)">Not an image file</p>')
+        return _error_badge("Not an image file", level="fail")
     art = await image.read()
     if not art:
-        return HTMLResponse('<p style="font-size:12px;color:var(--danger)">Empty file</p>')
+        return _error_badge("Empty file", level="fail")
     if _image_too_small(art, _MIN_USER_COVER_PX):
-        return HTMLResponse('<p style="font-size:12px;color:var(--danger)">Image too small — must be at least 300×300 px</p>')
+        return _error_badge("Image too small — must be at least 300×300 px", level="fail")
 
     artist = await session.get(Artist, artist_id)
     if artist is None:
@@ -3437,7 +3551,7 @@ async def upload_artist_image(
     try:
         await asyncio.to_thread((artist_dir / "artist.jpg").write_bytes, art)
     except OSError as exc:
-        return HTMLResponse(f'<p style="font-size:12px;color:var(--danger)">Save failed: {exc}</p>')
+        return _error_badge(f"Save failed: {exc}", level="fail")
 
     # Trigger Navidrome rescan so the new image is picked up
     await _do_scans()
@@ -3470,7 +3584,7 @@ async def artist_acquire_missing(
             get_artist_release_groups, artist.musicbrainz_artist_id, settings.cache_dir
         )
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">MB lookup failed: {exc}</span>')
+        return _error_badge(f"MB lookup failed: {exc}")
 
     # Find which release groups are already owned
     owned_albums = (await session.execute(
@@ -3499,7 +3613,7 @@ async def artist_acquire_missing(
             )
         await redis.aclose()
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Queue error: {exc}</span>')
+        return _error_badge(f"Queue error: {exc}")
 
     return HTMLResponse(
         f'<span class="badge-ok">Queued {len(unowned)} album{"s" if len(unowned) != 1 else ""} → <a href="/jobs">Jobs</a></span>'
@@ -3586,7 +3700,7 @@ async def genre_rename(
     old_genre = (form.get("old_genre") or "").strip()
     new_genre = (form.get("new_genre") or "").strip()
     if not old_genre:
-        return HTMLResponse('<span class="badge badge-warn">Missing genre name</span>')
+        return _error_badge("Missing genre name")
 
     target_genre = new_genre if new_genre else None  # empty new = remove genre
 
@@ -3631,7 +3745,7 @@ async def genre_remove(
     form = await request.form()
     genre = (form.get("genre") or "").strip()
     if not genre:
-        return HTMLResponse('<span class="badge badge-warn">Missing genre name</span>')
+        return _error_badge("Missing genre name")
     # Delegate to rename with empty new_genre
     # Reconstruct form-like data and call rename logic inline
     from service.library.tagger import write_tags as _write_tags
@@ -3802,9 +3916,9 @@ async def library_bulk_edit(
     year_val: int | None = int(year_str) if year_str.isdigit() else None  # type: ignore[arg-type]
 
     if not track_ids:
-        return HTMLResponse('<span class="badge-warn">No tracks selected</span>')
+        return _error_badge("No tracks selected")
     if genre_val is None and year_val is None:
-        return HTMLResponse('<span class="badge-warn">Enter at least one field to update</span>')
+        return _error_badge("Enter at least one field to update")
 
     updated = 0
     # Batch-fetch all selected tracks in one query
@@ -4732,9 +4846,7 @@ async def fetch_track_art(
         cache_dir=settings.cache_dir,
     )
     if not art:
-        return HTMLResponse(
-            '<span class="badge badge-warn">No artwork found on Cover Art Archive</span>'
-        )
+        return _error_badge("No artwork found on Cover Art Archive")
 
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
     hca = await asyncio.to_thread(_has_cover_art, file_path)
@@ -4840,8 +4952,8 @@ async def _fetch_caa_for_rg(client: "Any", rg_id: str) -> list[dict]:
                 full_url = full.headers.get("location", f"https://coverartarchive.org/release/{rel_id}/front")
                 return {"thumb": f"https://coverartarchive.org/release/{rel_id}/front-250",
                         "full": full_url, "label": rel_label, "source": "CAA"}
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("CAA art probe failed: %s", exc)
         return None
 
     import asyncio as _asyncio
@@ -5036,13 +5148,13 @@ async def upload_track_art(
         raise HTTPException(404, "File not on disk")
 
     if not cover.content_type or not cover.content_type.startswith("image/"):
-        return HTMLResponse('<span class="badge badge-warn">Not an image file</span>')
+        return _error_badge("Not an image file")
 
     art = await cover.read()
     if not art:
-        return HTMLResponse('<span class="badge badge-warn">Empty file</span>')
+        return _error_badge("Empty file")
     if _image_too_small(art, _MIN_USER_COVER_PX):
-        return HTMLResponse('<span class="badge badge-warn">Image too small — must be at least 300×300 px</span>')
+        return _error_badge("Image too small — must be at least 300×300 px")
 
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
     write_cover_jpg(file_path.parent, art)
@@ -5068,13 +5180,13 @@ async def upload_album_cover(
     from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small
 
     if not cover.content_type or not cover.content_type.startswith("image/"):
-        return HTMLResponse('<span class="badge badge-warn">Not an image file</span>')
+        return _error_badge("Not an image file")
 
     art = await cover.read()
     if not art:
-        return HTMLResponse('<span class="badge badge-warn">Empty file</span>')
+        return _error_badge("Empty file")
     if _image_too_small(art, _MIN_USER_COVER_PX):
-        return HTMLResponse('<span class="badge badge-warn">Image too small — must be at least 300×300 px</span>')
+        return _error_badge("Image too small — must be at least 300×300 px")
 
     embedded = await _embed_album_art(session, album_id, art)
     return HTMLResponse(f'<span class="badge badge-done">Cover saved to {embedded} track(s) ✓</span>')
@@ -5102,8 +5214,8 @@ async def health_page(
                 params={"u": "x", "p": "x", "v": "1.16.1", "c": "audioreap", "f": "json"},
             )
             navidrome_ok = r.status_code < 500
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Navidrome ping failed: %s", exc)
 
     redis_ok = False
     worker_ok = False
@@ -5119,8 +5231,8 @@ async def health_page(
             hb_time = _dt.fromisoformat(hb.decode())
             worker_ok = (_dt.utcnow() - hb_time) < timedelta(minutes=2)
         await rc.aclose()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("worker heartbeat probe failed: %s", exc)
 
     active_jobs = (
         await session.execute(
@@ -5838,7 +5950,7 @@ async def discography_acquire_album(
         await redis.aclose()
     except Exception as exc:
         logger.error("Discography acquire failed: %s", exc)
-        return HTMLResponse(f'<span class="badge-warn">Error: {exc}</span>')
+        return _error_badge(f"Error: {exc}")
 
     return HTMLResponse(
         f'<span id="disco-status-{album_job_id}"'
@@ -5861,7 +5973,7 @@ async def discography_album_status(
 
     album = await session.get(_AlbumJob, album_job_id)
     if album is None:
-        return HTMLResponse('<span class="badge badge-fail">Not found</span>')
+        return _error_badge("Not found", level="fail")
 
     # Count child track jobs
     child_counts = (await session.execute(
@@ -5876,7 +5988,7 @@ async def discography_album_status(
     active = total - review - done - counts.get("failed", 0) - counts.get("cancelled", 0)
 
     if album.state in ("failed", "cancelled"):
-        return HTMLResponse('<span class="badge badge-fail">Failed</span>')
+        return _error_badge("Failed", level="fail")
 
     if review > 0 or done > 0:
         # Terminal or near-terminal: stop polling by not including hx-trigger
@@ -6014,12 +6126,46 @@ from service.library.tagger import read_mb_release_id as _read_mb_release_id
 # ── Library Health / Management ───────────────────────────────────────────
 
 
-@router.get("/library/health", response_class=HTMLResponse)
-async def library_health_page(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Library health overview — duplicates, split albums, missing covers."""
+async def _album_split_groups(session: AsyncSession) -> list[list[dict]]:
+    """Albums split across multiple rows due to artist/title name variants.
+
+    Each group is sorted most-tracks-first (canonical candidate first).
+    """
+    from collections import defaultdict
+    from service.core.normalize import normalize
+
+    rows = (await session.execute(
+        select(
+            Album.id, Album.title, Album.year, Artist.name,
+            func.count(Track.id).label("ntracks"),
+        )
+        .join(Artist, Artist.id == Album.artist_id)
+        .join(Track, Track.album_id == Album.id)
+        .group_by(Album.id, Album.title, Album.year, Artist.name)
+    )).all()
+
+    key_to_albums: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for album_id, title, year, artist_name, ntracks in rows:
+        key = (normalize(title), normalize(artist_name))
+        key_to_albums[key].append({
+            "id": album_id,
+            "title": title,
+            "year": year,
+            "artist": artist_name,
+            "ntracks": ntracks,
+        })
+
+    split_groups = [albums for albums in key_to_albums.values() if len(albums) > 1]
+    for g in split_groups:
+        g.sort(key=lambda a: a["ntracks"], reverse=True)
+    return split_groups
+
+
+async def _library_attention_counts(session: AsyncSession) -> dict[str, int]:
+    """Per-category counts of library items needing attention.
+
+    Shared by the Library Health page and the nav attention badge.
+    """
     dupe_count = (await session.execute(
         select(func.count()).select_from(
             select(Track.musicbrainz_recording_id)
@@ -6062,17 +6208,37 @@ async def library_health_page(
         )
     )).scalar_one()
 
-    artist_credit_count = len(await _artist_credit_mismatches(session))
+    return {
+        "dupes": dupe_count,
+        "no_cover": no_cover_count,
+        "no_mbid": no_mbid_count,
+        "low_bitrate": low_bitrate_count,
+        "splits": len(await _album_split_groups(session)),
+        "artist_credits": len(await _artist_credit_mismatches(session)),
+    }
+
+
+@router.get("/library/health", response_class=HTMLResponse)
+async def library_health_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Library health overview — duplicates, split albums, missing covers."""
+    global _attention_cache
+    counts = await _library_attention_counts(session)
+    # Fresh numbers were just computed — keep the nav badge consistent with
+    # what this page shows instead of waiting out the TTL.
+    _attention_cache = (time.monotonic(), sum(counts.values()))
 
     return templates.TemplateResponse(
         request, "library_health.html",
         {
             "active": "lib-health",
-            "dupe_count": dupe_count,
-            "no_cover_count": no_cover_count,
-            "no_mbid_count": no_mbid_count,
-            "low_bitrate_count": low_bitrate_count,
-            "artist_credit_count": artist_credit_count,
+            "dupe_count": counts["dupes"],
+            "no_cover_count": counts["no_cover"],
+            "no_mbid_count": counts["no_mbid"],
+            "low_bitrate_count": counts["low_bitrate"],
+            "artist_credit_count": counts["artist_credits"],
             "min_bitrate_kbps": settings.min_bitrate_kbps,
         },
     )
@@ -6175,41 +6341,9 @@ async def library_health_splits(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """HTMX partial: albums split across multiple folders due to artist name variants."""
-    from collections import defaultdict
-    from service.core.normalize import normalize
-
-    rows = (await session.execute(
-        select(
-            Album.id, Album.title, Album.year, Artist.name,
-            func.count(Track.id).label("ntracks"),
-        )
-        .join(Artist, Artist.id == Album.artist_id)
-        .join(Track, Track.album_id == Album.id)
-        .group_by(Album.id, Album.title, Album.year, Artist.name)
-    )).all()
-
-    # Group by normalized (title, artist)
-    key_to_albums: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    for album_id, title, year, artist_name, ntracks in rows:
-        key = (normalize(title), normalize(artist_name))
-        key_to_albums[key].append({
-            "id": album_id,
-            "title": title,
-            "year": year,
-            "artist": artist_name,
-            "ntracks": ntracks,
-        })
-
-    split_groups = [
-        albums for albums in key_to_albums.values()
-        if len(albums) > 1
-    ]
-    # Sort each group: most tracks first (canonical candidate)
-    for g in split_groups:
-        g.sort(key=lambda a: a["ntracks"], reverse=True)
-
     return templates.TemplateResponse(
-        request, "partials/health_splits.html", {"groups": split_groups}
+        request, "partials/health_splits.html",
+        {"groups": await _album_split_groups(session)},
     )
 
 
@@ -6473,8 +6607,8 @@ async def fix_artist_credit(
     try:
         from service.navidrome.client import trigger_scan
         await trigger_scan()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("best-effort Navidrome scan trigger failed: %s", exc)
     return HTMLResponse("")  # row disappears from the list
 
 
@@ -6496,8 +6630,8 @@ async def fix_all_artist_credits(
         try:
             from service.navidrome.client import trigger_scan
             await trigger_scan()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("best-effort Navidrome scan trigger failed: %s", exc)
     # Re-render the list (anything that failed stays visible)
     return await library_health_artist_credits(request, session)
 
@@ -6519,7 +6653,7 @@ async def enrich_track_now(
         await redis.enqueue_job("enrich_track", track_id=track_id)
         await redis.aclose()
     except Exception as exc:
-        return HTMLResponse(f'<span style="color:var(--danger);font-size:12px">Error: {exc}</span>')
+        return _error_badge(f"Error: {exc}", level="fail")
 
     return HTMLResponse('<span style="color:var(--success);font-size:12px">✓ Enrichment queued — check the Jobs page</span>')
 
@@ -6654,22 +6788,22 @@ async def fetch_album_cover(
             _, release_id, _, _ = await asyncio.to_thread(
                 get_release_group_tracks, album.mb_release_group_id, settings.cache_dir
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("release-group tracklist lookup for release id failed: %s", exc)
 
     if not release_id:
-        return HTMLResponse('<span class="badge-warn">No MusicBrainz release ID — cannot fetch cover</span>')
+        return _error_badge("No MusicBrainz release ID — cannot fetch cover")
     if album_dir is None:
-        return HTMLResponse('<span class="badge-warn">No files found for this album</span>')
+        return _error_badge("No files found for this album")
 
     art = await fetch_from_caa(release_id)
     if art is None:
-        return HTMLResponse('<span class="badge-warn">Cover not found on Cover Art Archive</span>')
+        return _error_badge("Cover not found on Cover Art Archive")
 
     try:
         write_cover_jpg(album_dir, art)
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Write failed: {exc}</span>')
+        return _error_badge(f"Write failed: {exc}")
 
     # Embed art in every track file and update DB
     embedded = 0
@@ -6754,8 +6888,8 @@ def _list_trash(trash_dir: Path) -> list[dict]:
             if restore_path_file.exists():
                 try:
                     original_path = restore_path_file.read_text(encoding="utf-8").strip()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("reading restore_path sidecar failed: %s", exc)
             try:
                 size_bytes = f.stat().st_size
             except OSError:
@@ -6818,8 +6952,8 @@ async def trash_restore(
         from service.index.scanner import index_file
         await index_file(session, dest)
         await session.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("post-restore indexing failed (file restored, will appear on next scan): %s", exc)
 
     await _do_scans()
 
@@ -6862,7 +6996,7 @@ async def fetch_missing_covers(request: Request, session: AsyncSession = Depends
         await redis.enqueue_job("fetch_missing_covers")
         await redis.aclose()
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
+        return _error_badge(f"Queue unavailable: {exc}")
     return HTMLResponse('<span class="badge-ok">Cover art fetch queued — check back in a few minutes</span>')
 
 
@@ -6883,7 +7017,7 @@ async def backfill_replaygain_route(request: Request, full: bool = False, sessio
         await redis.enqueue_job("backfill_replaygain", full=full)
         await redis.aclose()
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
+        return _error_badge(f"Queue unavailable: {exc}")
     label = "Full ReplayGain retag" if full else "ReplayGain backfill"
     return HTMLResponse(f'<span class="badge-ok">{label} queued — check back in a few minutes</span>')
 
@@ -6901,7 +7035,7 @@ async def fetch_missing_lyrics(request: Request, session: AsyncSession = Depends
         await redis.enqueue_job("fetch_missing_lyrics")
         await redis.aclose()
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
+        return _error_badge(f"Queue unavailable: {exc}")
     return HTMLResponse('<span class="badge-ok">Lyrics fetch queued — runs in the background (large libraries take a while)</span>')
 
 
@@ -6915,7 +7049,7 @@ async def upgrade_plain_lyrics(request: Request) -> HTMLResponse:
         await redis.enqueue_job("fetch_missing_lyrics", upgrade_plain=True)
         await redis.aclose()
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Queue unavailable: {exc}</span>')
+        return _error_badge(f"Queue unavailable: {exc}")
     return HTMLResponse('<span class="badge-ok">Synced-lyrics upgrade queued — re-checks plain tracks in the background</span>')
 
 
@@ -6948,7 +7082,7 @@ async def reset_lyrics_misses(request: Request) -> HTMLResponse:
             return n
         cleared = await asyncio.to_thread(_purge)
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Reset failed: {exc}</span>')
+        return _error_badge(f"Reset failed: {exc}")
     return HTMLResponse(
         f'<span class="badge-ok">Cleared {cleared} cached miss marker'
         f'{"" if cleared == 1 else "s"} — run “Fetch all” to retry those tracks</span>'
@@ -7105,8 +7239,8 @@ async def track_lyrics_action(
         try:
             from service.navidrome.client import trigger_scan
             await trigger_scan()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("best-effort Navidrome scan trigger failed: %s", exc)
 
     return templates.TemplateResponse(
         request, "partials/lyrics_panel.html",
@@ -7131,9 +7265,9 @@ async def admin_update_ytdlp(request: Request) -> HTMLResponse:
                 if "yt-dlp" in line.lower() and ("successfully installed" in line.lower() or "already" in line.lower()):
                     return HTMLResponse(f'<span class="badge-ok">yt-dlp updated: {line.strip()}</span>')
             return HTMLResponse('<span class="badge-ok">yt-dlp updated ✓</span>')
-        return HTMLResponse(f'<span class="badge-warn">pip failed (exit {result.returncode}): {result.stderr[:200]}</span>')
+        return _error_badge(f"pip failed (exit {result.returncode}): {result.stderr[:200]}")
     except Exception as exc:
-        return HTMLResponse(f'<span class="badge-warn">Update failed: {exc}</span>')
+        return _error_badge(f"Update failed: {exc}")
 
 
 def _admin_config_ctx(*, saved: bool = False) -> dict:
@@ -7175,7 +7309,7 @@ async def admin_cookies_save(request: Request) -> HTMLResponse:
         try:
             managed.unlink(missing_ok=True)
         except OSError as exc:
-            return HTMLResponse(f'<span class="badge-warn">Clear failed: {exc}</span>')
+            return _error_badge(f"Clear failed: {exc}")
         return HTMLResponse('<span class="badge-ok">Cookies cleared — downloads run anonymously.</span>')
 
     # Content can come from a file input or a pasted textarea.
@@ -7189,7 +7323,7 @@ async def admin_cookies_save(request: Request) -> HTMLResponse:
         content = str(form.get("cookies") or "")
     content = content.strip()
     if not content:
-        return HTMLResponse('<span class="badge-warn">Nothing to save — paste a cookies.txt or choose a file.</span>')
+        return _error_badge("Nothing to save — paste a cookies.txt or choose a file.")
 
     def _is_cookie(ln: str) -> bool:
         return bool(ln.strip()) and not ln.strip().startswith("#") and "\t" in ln
@@ -7197,10 +7331,10 @@ async def admin_cookies_save(request: Request) -> HTMLResponse:
     lines = content.splitlines()
     n = sum(1 for ln in lines if _is_cookie(ln))
     if n == 0:
-        return HTMLResponse(
-            '<span class="badge-warn">That doesn’t look like a Netscape cookies.txt '
-            '(no tab-separated cookie lines). Export it with a “Get cookies.txt” browser '
-            'extension on youtube.com and paste the whole file.</span>'
+        return _error_badge(
+            "That doesn’t look like a Netscape cookies.txt (no tab-separated cookie "
+            "lines). Export it with a “Get cookies.txt” browser extension on "
+            "youtube.com and paste the whole file."
         )
     if not lines[0].startswith(("# Netscape", "# HTTP Cookie")):
         content = "# Netscape HTTP Cookie File\n" + content
@@ -7210,7 +7344,7 @@ async def admin_cookies_save(request: Request) -> HTMLResponse:
         tmp.write_text(content + "\n", encoding="utf-8")
         tmp.replace(managed)
     except OSError as exc:
-        return HTMLResponse(f'<span class="badge-warn">Save failed: {exc}</span>')
+        return _error_badge(f"Save failed: {exc}")
     return HTMLResponse(
         f'<span class="badge-ok">Saved {n} cookie{"" if n == 1 else "s"} to /data/cookies.txt — '
         f'age-gated downloads will use them. No restart needed.</span>'
@@ -7231,8 +7365,8 @@ async def admin_config_save(request: Request) -> HTMLResponse:
             else:
                 try:
                     overrides[key] = field_type(val)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("config override value not coercible, skipped: %s", exc)
     save_config_overrides(overrides)
     return templates.TemplateResponse(
         request, "admin_config.html", _admin_config_ctx(saved=True)

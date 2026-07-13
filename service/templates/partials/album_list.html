@@ -5,7 +5,7 @@
   <div class="album-row" style="cursor:pointer">
     <div class="album-art">
       {% if singles_cover_id %}
-      <img src="/library/tracks/{{ singles_cover_id }}/cover-art"
+      <img src="/library/tracks/{{ singles_cover_id }}/cover-art?size=96"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
            class="album-art-img" loading="lazy" alt="">
       <div class="album-art-ph" style="display:none">♪</div>
@@ -46,7 +46,7 @@
          hx-push-url="{{ push_url }}"
          style="cursor:pointer">
       {% if cover_track.value %}
-      <img src="/library/tracks/{{ cover_track.value.id }}/cover-art"
+      <img src="/library/tracks/{{ cover_track.value.id }}/cover-art?size=96"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
            class="album-art-img" loading="lazy" alt="">
       <div class="album-art-ph" style="display:none">♪</div>

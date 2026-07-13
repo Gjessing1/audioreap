@@ -244,6 +244,13 @@ a:hover { text-decoration: underline; }
   font-family: var(--font-ui);
 }
 
+/* Library-health rollup badge — amber, so it isn't mistaken for the
+   review-queue count next to it. */
+.nav-badge-attention {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 button, .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;

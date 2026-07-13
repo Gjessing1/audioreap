@@ -140,24 +140,134 @@ def _vorbis_str(tags: object, key: str) -> str | None:
     return text or None
 
 
-def _check_cover_art(audio: object, tags: object) -> bool:
-    """Return True if the file has embedded cover art."""
+# ── Container adapter ─────────────────────────────────────────────────────────
+# The single place that knows how each tag family (MP4 atoms, ID3 frames,
+# Vorbis comments) stores every normalized field. All read/write functions
+# dispatch through _tag_format + _get_field/_set_field instead of
+# reimplementing isinstance checks and key literals per function — the
+# per-function branches had diverged twice before this existed (MP4 write
+# silently dropped disc_number; read_mb_release_id substring-matched ID3
+# frame keys while read_tags matched exactly).
+
+_MP4, _ID3, _VORBIS = "mp4", "id3", "vorbis"
+_FMT_INDEX = {_MP4: 0, _ID3: 1, _VORBIS: 2}
+
+# field → (MP4 atom, ID3 frame key, Vorbis comment key); None = the format
+# has no representation for this field.
+_FIELD_KEYS: dict[str, tuple[str | None, str | None, str | None]] = {
+    "title": ("©nam", "TIT2", "title"),
+    "artist": ("©ART", "TPE1", "artist"),
+    "albumartist": ("aART", "TPE2", "albumartist"),
+    "album": ("©alb", "TALB", "album"),
+    "year": ("©day", "TDRC", "date"),
+    "original_year": (None, "TDOR", "originaldate"),
+    "track_number": ("trkn", "TRCK", "tracknumber"),
+    "disc_number": ("disk", "TPOS", "discnumber"),
+    "genre": ("©gen", "TCON", "genre"),
+    "artist_sort": ("soar", "TSOP", "artistsort"),
+    "compilation": ("cpil", "TCMP", "compilation"),
+    "isrc": ("----:com.apple.iTunes:ISRC", "TSRC", "isrc"),
+    "mb_recording_id": (
+        "----:com.apple.iTunes:MusicBrainz Track Id",
+        "TXXX:MusicBrainz Track Id",
+        "musicbrainz_trackid",
+    ),
+    "mb_release_id": (
+        "----:com.apple.iTunes:MusicBrainz Album Id",
+        "TXXX:MusicBrainz Album Id",
+        "musicbrainz_albumid",
+    ),
+    "mb_artist_id": (
+        "----:com.apple.iTunes:MusicBrainz Artist Id",
+        "TXXX:MusicBrainz Artist Id",
+        "musicbrainz_artistid",
+    ),
+}
+
+
+def _tag_format(audio: object, tags: object) -> str:
     if isinstance(audio, MP4):
-        return bool(tags and tags.get("covr"))  # type: ignore[union-attr]
-    elif isinstance(tags, ID3):
-        return any(k.startswith("APIC") for k in tags.keys())
+        return _MP4  # must be checked before ID3 — MP4 tags aren't an ID3 dict
+    if isinstance(tags, ID3):
+        return _ID3  # MP3, WAV, AIFF
+    return _VORBIS  # FLAC, OGG Vorbis, Opus
+
+
+def _field_key(fmt: str, field: str) -> str | None:
+    return _FIELD_KEYS[field][_FMT_INDEX[fmt]]
+
+
+def _get_field(fmt: str, tags: object, field: str) -> str | None:
+    """Read one normalized field as a stripped string, or None if absent."""
+    key = _field_key(fmt, field)
+    if key is None or tags is None:
+        return None
+    if fmt == _MP4:
+        val = getattr(tags, "get", lambda k, d=None: d)(key)
+        if not val:
+            return None
+        first = val[0] if isinstance(val, (list, tuple)) else val
+        if isinstance(first, tuple):  # trkn/disk atoms hold (number, total)
+            first = first[0]
+        if first is None:
+            return None
+        if isinstance(first, bytes):  # ----:freeform atoms hold bytes
+            first = first.decode(errors="replace")
+        text = str(first).strip()
+        return text or None
+    if fmt == _ID3:
+        return _id3_str(tags, key)
+    return _vorbis_str(tags, key)
+
+
+def _set_field(fmt: str, tags: object, field: str, value: str | int) -> None:
+    """Write one normalized field in the container's native representation.
+
+    compilation must be passed as 1 (it becomes cpil=True / "1" per format).
+    """
+    key = _field_key(fmt, field)
+    if key is None:
+        return
+    if fmt == _MP4:
+        if key in ("trkn", "disk"):
+            tags[key] = [(int(value), 0)]  # type: ignore[index]
+        elif key == "cpil":
+            tags[key] = bool(value)  # type: ignore[index]
+        elif key.startswith("----:"):
+            tags[key] = [str(value).encode()]  # type: ignore[index]
+        else:
+            tags[key] = [str(value)]  # type: ignore[index]
+    elif fmt == _ID3:
+        from mutagen import id3 as _id3
+
+        if key.startswith("TXXX:"):
+            desc = key.split(":", 1)[1]
+            tags[key] = _id3.TXXX(encoding=3, desc=desc, text=[str(value)])  # type: ignore[index]
+        else:
+            frame_cls = getattr(_id3, key)
+            tags[key] = frame_cls(encoding=3, text=[str(value)])  # type: ignore[index]
     else:
-        from mutagen.flac import FLAC
-        if isinstance(audio, FLAC):
-            return bool(audio.pictures)  # type: ignore[union-attr]
-        # OGG / Opus: METADATA_BLOCK_PICTURE vorbis comment
-        return bool(
-            tags
-            and (
-                tags.get("METADATA_BLOCK_PICTURE")  # type: ignore[union-attr]
-                or tags.get("metadata_block_picture")  # type: ignore[union-attr]
-            )
+        tags[key] = [str(value)]  # type: ignore[index]
+
+
+def _check_cover_art(audio: object, tags: object) -> bool:
+    """Return True if the file has embedded cover art (existence only — cheap)."""
+    fmt = _tag_format(audio, tags)
+    if fmt == _MP4:
+        return bool(tags and tags.get("covr"))  # type: ignore[union-attr]
+    if fmt == _ID3:
+        return any(k.startswith("APIC") for k in tags.keys())
+    from mutagen.flac import FLAC
+    if isinstance(audio, FLAC):
+        return bool(audio.pictures)  # type: ignore[union-attr]
+    # OGG / Opus: METADATA_BLOCK_PICTURE vorbis comment
+    return bool(
+        tags
+        and (
+            tags.get("METADATA_BLOCK_PICTURE")  # type: ignore[union-attr]
+            or tags.get("metadata_block_picture")  # type: ignore[union-attr]
         )
+    )
 
 
 def has_cover_art(path: Path) -> bool:
@@ -201,70 +311,22 @@ def read_tags(path: Path) -> TaggedFile | None:
         sample_rate = int(raw_sr) if raw_sr else None
 
     tags = audio.tags
+    fmt = _tag_format(audio, tags)
 
-    genre: str | None = None
-    artist_sort: str | None = None
-    mb_artist_id: str | None = None
-    mb_recording_id: str | None = None
-    mb_release_id: str | None = None
-
-    if isinstance(audio, MP4):
-        # note: MP4 check must come before ID3 check
-        title = (tags.get("©nam") or [None])[0] if tags else None
-        artist = (tags.get("©ART") or [None])[0] if tags else None
-        albumartist = (tags.get("aART") or [None])[0] if tags else None
-        album = (tags.get("©alb") or [None])[0] if tags else None
-        year = _parse_year(str((tags.get("©day") or [None])[0]) if tags and tags.get("©day") else None)
-        trkn = (tags.get("trkn") or [(None, None)])[0][0] if tags else None
-        track_number = int(trkn) if trkn is not None else None
-        disk = (tags.get("disk") or [(None, None)])[0][0] if tags else None
-        disc_number = int(disk) if disk is not None else None
-        genre_raw = (tags.get("©gen") or [None])[0] if tags else None
-        genre = str(genre_raw).strip() if genre_raw else None
-        soar_raw = (tags.get("soar") or [None])[0] if tags else None
-        artist_sort = str(soar_raw).strip() if soar_raw else None
-        mb_aid_raw = tags.get("----:com.apple.iTunes:MusicBrainz Artist Id") if tags else None
-        if mb_aid_raw and isinstance(mb_aid_raw, list) and mb_aid_raw:
-            val = mb_aid_raw[0]
-            mb_artist_id = val.decode() if isinstance(val, bytes) else str(val)
-        mb_rid_raw = tags.get("----:com.apple.iTunes:MusicBrainz Track Id") if tags else None
-        if mb_rid_raw and isinstance(mb_rid_raw, list) and mb_rid_raw:
-            val = mb_rid_raw[0]
-            mb_recording_id = val.decode() if isinstance(val, bytes) else str(val)
-        mb_relid_raw = tags.get("----:com.apple.iTunes:MusicBrainz Album Id") if tags else None
-        if mb_relid_raw and isinstance(mb_relid_raw, list) and mb_relid_raw:
-            val = mb_relid_raw[0]
-            mb_release_id = val.decode() if isinstance(val, bytes) else str(val)
-
-    elif isinstance(tags, ID3):
-        # MP3, WAV, AIFF — all have ID3-based tags regardless of audio FileType
-        title = _id3_str(tags, "TIT2")
-        artist = _id3_str(tags, "TPE1")
-        albumartist = _id3_str(tags, "TPE2")
-        album = _id3_str(tags, "TALB")
-        year = _parse_year(_id3_str(tags, "TDRC") or _id3_str(tags, "TYER"))
-        track_number = _parse_tracknum(_id3_str(tags, "TRCK"))
-        disc_number = _parse_tracknum(_id3_str(tags, "TPOS"))
-        genre = _id3_str(tags, "TCON")
-        artist_sort = _id3_str(tags, "TSOP")
-        mb_artist_id = _id3_str(tags, "TXXX:MusicBrainz Artist Id")
-        mb_recording_id = _id3_str(tags, "TXXX:MusicBrainz Track Id")
-        mb_release_id = _id3_str(tags, "TXXX:MusicBrainz Album Id")
-
-    else:
-        # Vorbis comment: FLAC, OGG Vorbis, Opus
-        title = _vorbis_str(tags, "title")
-        artist = _vorbis_str(tags, "artist")
-        albumartist = _vorbis_str(tags, "albumartist")
-        album = _vorbis_str(tags, "album")
-        year = _parse_year(_vorbis_str(tags, "date"))
-        track_number = _parse_tracknum(_vorbis_str(tags, "tracknumber"))
-        disc_number = _parse_tracknum(_vorbis_str(tags, "discnumber"))
-        genre = _vorbis_str(tags, "genre")
-        artist_sort = _vorbis_str(tags, "artistsort")
-        mb_artist_id = _vorbis_str(tags, "musicbrainz_artistid")
-        mb_recording_id = _vorbis_str(tags, "musicbrainz_trackid")
-        mb_release_id = _vorbis_str(tags, "musicbrainz_albumid")
+    title = _get_field(fmt, tags, "title")
+    artist = _get_field(fmt, tags, "artist")
+    albumartist = _get_field(fmt, tags, "albumartist")
+    album = _get_field(fmt, tags, "album")
+    year = _parse_year(_get_field(fmt, tags, "year"))
+    if year is None and fmt == _ID3:
+        year = _parse_year(_id3_str(tags, "TYER"))  # legacy ID3v2.3 frame
+    track_number = _parse_tracknum(_get_field(fmt, tags, "track_number"))
+    disc_number = _parse_tracknum(_get_field(fmt, tags, "disc_number"))
+    genre = _get_field(fmt, tags, "genre")
+    artist_sort = _get_field(fmt, tags, "artist_sort")
+    mb_artist_id = _get_field(fmt, tags, "mb_artist_id")
+    mb_recording_id = _get_field(fmt, tags, "mb_recording_id")
+    mb_release_id = _get_field(fmt, tags, "mb_release_id")
 
     cover = _check_cover_art(audio, tags)
 
@@ -298,26 +360,26 @@ def read_cover_art_bytes(path: Path) -> bytes | None:
         if audio is None:
             return None
         tags = audio.tags
-        if isinstance(audio, MP4):
+        fmt = _tag_format(audio, tags)
+        if fmt == _MP4:
             covr = tags.get("covr") if tags else None
             return bytes(covr[0]) if covr else None
-        elif isinstance(tags, ID3):
+        if fmt == _ID3:
             for key in tags.keys():
                 if key.startswith("APIC"):
                     return tags[key].data  # type: ignore[union-attr]
             return None
-        else:
-            from mutagen.flac import FLAC
-            if isinstance(audio, FLAC) and audio.pictures:
-                return audio.pictures[0].data
-            # OGG / Opus
-            import base64
-            from mutagen.flac import Picture
-            raw = (tags or {}).get("METADATA_BLOCK_PICTURE") or (tags or {}).get("metadata_block_picture")
-            if raw:
-                pic = Picture(base64.b64decode(raw[0] if isinstance(raw, list) else raw))
-                return pic.data
-            return None
+        from mutagen.flac import FLAC
+        if isinstance(audio, FLAC) and audio.pictures:
+            return audio.pictures[0].data
+        # OGG / Opus
+        import base64
+        from mutagen.flac import Picture
+        raw = (tags or {}).get("METADATA_BLOCK_PICTURE") or (tags or {}).get("metadata_block_picture")
+        if raw:
+            pic = Picture(base64.b64decode(raw[0] if isinstance(raw, list) else raw))
+            return pic.data
+        return None
     except Exception as exc:
         logger.debug("read_cover_art_bytes failed for %s: %s", path, exc)
         return None
@@ -352,154 +414,55 @@ def write_tags(
     if audio is None:
         return
 
-    tags = audio.tags
-
-    # WAV (and AIFF) files use ID3 tags but start with tags=None.
-    # Detect this early so they fall into the ID3 branch below.
-    if tags is None and not isinstance(audio, MP4):
+    if audio.tags is None:
+        # Untagged files (fresh remuxes, WAV/AIFF) — mutagen adds the right
+        # tag container for the FileType (ID3 for MP3/WAV, VComment for OGG…).
         try:
-            from mutagen.wave import WAVE as _WAVE
-            if isinstance(audio, _WAVE):
-                audio.add_tags()
-                tags = audio.tags
-        except Exception:
-            pass
-
-    if isinstance(audio, MP4):
-        if tags is None:
             audio.add_tags()
-            tags = audio.tags
-        if title is not None:
-            tags["©nam"] = [title]  # type: ignore[index]
-        if artist is not None:
-            tags["©ART"] = [artist]  # type: ignore[index]
-        if albumartist is not None:
-            tags["aART"] = [albumartist]  # type: ignore[index]
-        if album is not None:
-            tags["©alb"] = [album]  # type: ignore[index]
-        if year is not None:
-            tags["©day"] = [str(year)]  # type: ignore[index]
-        if track_number is not None:
-            tags["trkn"] = [(track_number, 0)]  # type: ignore[index]
-        if disc_number is not None:
-            tags["disk"] = [(disc_number, 0)]  # type: ignore[index]
-        if artist_sort is not None:
-            tags["soar"] = [artist_sort]  # type: ignore[index]
-        if compilation:
-            tags["cpil"] = True  # type: ignore[index]
-        if mb_recording_id is not None:
-            tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [  # type: ignore[index]
-                mb_recording_id.encode()
-            ]
-        if mb_release_id is not None:
-            tags["----:com.apple.iTunes:MusicBrainz Album Id"] = [  # type: ignore[index]
-                mb_release_id.encode()
-            ]
-        if mb_artist_id is not None:
-            tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [  # type: ignore[index]
-                mb_artist_id.encode()
-            ]
-        if isrc is not None:
-            tags["----:com.apple.iTunes:ISRC"] = [isrc.encode()]  # type: ignore[index]
-        if genre is not None:
-            tags["©gen"] = [genre]  # type: ignore[index]
-        if artwork_bytes is not None:
+        except Exception as exc:
+            logger.warning("write_tags: cannot add tags to %s: %s", path, exc)
+            return
+    tags = audio.tags
+    fmt = _tag_format(audio, tags)
+
+    fields: dict[str, str | int | None] = {
+        "title": title,
+        "artist": artist,
+        "albumartist": albumartist,
+        "album": album,
+        "year": year,
+        "original_year": original_year,
+        "track_number": track_number,
+        "disc_number": disc_number,
+        "artist_sort": artist_sort,
+        "genre": genre,
+        "mb_recording_id": mb_recording_id,
+        "mb_release_id": mb_release_id,
+        "mb_artist_id": mb_artist_id,
+        "isrc": isrc,
+    }
+    for field, value in fields.items():
+        if value is not None:
+            _set_field(fmt, tags, field, value)
+    if compilation:
+        _set_field(fmt, tags, "compilation", 1)
+
+    if artist is not None and fmt == _VORBIS and "artists" in tags:  # type: ignore[operator]
+        # Never keep a multi-value `artists` tag — Navidrome splits each
+        # value into a separate artist entry, creating ghost entries like
+        # "Thomax" from "RSP & Thomax".
+        del tags["artists"]  # type: ignore[operator]
+
+    if artwork_bytes is not None:
+        if fmt == _MP4:
             from mutagen.mp4 import MP4Cover
             tags["covr"] = [MP4Cover(artwork_bytes, imageformat=MP4Cover.FORMAT_JPEG)]  # type: ignore[index]
-
-    elif isinstance(tags, ID3):
-        from mutagen.id3 import (
-            APIC, TALB, TCMP, TDOR, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TSOP, TXXX,
-        )
-
-        if title is not None:
-            tags["TIT2"] = TIT2(encoding=3, text=[title])
-        if artist is not None:
-            tags["TPE1"] = TPE1(encoding=3, text=[artist])
-        if albumartist is not None:
-            tags["TPE2"] = TPE2(encoding=3, text=[albumartist])
-        if album is not None:
-            tags["TALB"] = TALB(encoding=3, text=[album])
-        if year is not None:
-            tags["TDRC"] = TDRC(encoding=3, text=[str(year)])
-        if original_year is not None:
-            tags["TDOR"] = TDOR(encoding=3, text=[str(original_year)])
-        if track_number is not None:
-            tags["TRCK"] = TRCK(encoding=3, text=[str(track_number)])
-        if disc_number is not None:
-            tags["TPOS"] = TPOS(encoding=3, text=[str(disc_number)])
-        if artist_sort is not None:
-            tags["TSOP"] = TSOP(encoding=3, text=[artist_sort])
-        if compilation:
-            tags["TCMP"] = TCMP(encoding=3, text=["1"])
-        if mb_recording_id is not None:
-            tags["TXXX:MusicBrainz Track Id"] = TXXX(
-                encoding=3, desc="MusicBrainz Track Id", text=[mb_recording_id]
-            )
-        if mb_release_id is not None:
-            tags["TXXX:MusicBrainz Album Id"] = TXXX(
-                encoding=3, desc="MusicBrainz Album Id", text=[mb_release_id]
-            )
-        if mb_artist_id is not None:
-            tags["TXXX:MusicBrainz Artist Id"] = TXXX(
-                encoding=3, desc="MusicBrainz Artist Id", text=[mb_artist_id]
-            )
-        if isrc is not None:
-            from mutagen.id3 import TSRC
-            tags["TSRC"] = TSRC(encoding=3, text=[isrc])
-        if genre is not None:
-            from mutagen.id3 import TCON
-            tags["TCON"] = TCON(encoding=3, text=[genre])
-        if artwork_bytes is not None:
+        elif fmt == _ID3:
+            from mutagen.id3 import APIC
             tags["APIC"] = APIC(
-                encoding=3,
-                mime="image/jpeg",
-                type=3,
-                desc="Cover",
-                data=artwork_bytes,
+                encoding=3, mime="image/jpeg", type=3, desc="Cover", data=artwork_bytes
             )
-
-    else:
-        # Vorbis comment: FLAC, OGG, Opus
-        if tags is None:
-            audio.add_tags()
-            tags = audio.tags
-        if title is not None:
-            tags["title"] = [title]  # type: ignore[index]
-        if artist is not None:
-            tags["artist"] = [artist]  # type: ignore[index]
-            # Never write a multi-value `artists` tag — Navidrome splits each
-            # value into a separate artist entry, creating ghost entries like
-            # "Thomax" from "RSP & Thomax".
-            if "artists" in tags:
-                del tags["artists"]  # type: ignore[operator]
-        if albumartist is not None:
-            tags["albumartist"] = [albumartist]  # type: ignore[index]
-        if album is not None:
-            tags["album"] = [album]  # type: ignore[index]
-        if year is not None:
-            tags["date"] = [str(year)]  # type: ignore[index]
-        if original_year is not None:
-            tags["originaldate"] = [str(original_year)]  # type: ignore[index]
-        if track_number is not None:
-            tags["tracknumber"] = [str(track_number)]  # type: ignore[index]
-        if disc_number is not None:
-            tags["discnumber"] = [str(disc_number)]  # type: ignore[index]
-        if artist_sort is not None:
-            tags["artistsort"] = [artist_sort]  # type: ignore[index]
-        if compilation:
-            tags["compilation"] = ["1"]  # type: ignore[index]
-        if mb_recording_id is not None:
-            tags["musicbrainz_trackid"] = [mb_recording_id]  # type: ignore[index]
-        if mb_release_id is not None:
-            tags["musicbrainz_albumid"] = [mb_release_id]  # type: ignore[index]
-        if mb_artist_id is not None:
-            tags["musicbrainz_artistid"] = [mb_artist_id]  # type: ignore[index]
-        if isrc is not None:
-            tags["isrc"] = [isrc]  # type: ignore[index]
-        if genre is not None:
-            tags["genre"] = [genre]  # type: ignore[index]
-        if artwork_bytes is not None:
+        else:
             _embed_vorbis_art(audio, artwork_bytes)
 
     audio.save()
@@ -515,29 +478,17 @@ def write_cover_jpg(album_dir: Path, artwork_bytes: bytes) -> None:
 
 
 def read_mb_release_id(path: Path) -> str | None:
-    """Read MUSICBRAINZ_ALBUMID from file tags across all container formats."""
+    """Read MUSICBRAINZ_ALBUMID from file tags across all container formats.
+
+    Uses the same exact-key adapter as read_tags — so the two can never
+    disagree about whether a file carries a release ID.
+    """
     try:
-        f = MutagenFile(path)
-        if f is None:
+        audio = MutagenFile(path)
+        if audio is None:
             return None
-        # Vorbis / OGG / FLAC
-        for key in ("musicbrainz_albumid", "MUSICBRAINZ_ALBUMID"):
-            if key in f:
-                v = f[key]
-                if isinstance(v, list):
-                    return str(v[0]) if v else None
-                return str(v) if v else None
-        # ID3 (MP3): TXXX:MusicBrainz Album Id
-        if hasattr(f, "tags") and f.tags:
-            for frame_key in f.tags.keys():
-                if "musicbrainz album id" in frame_key.lower():
-                    frame = f.tags[frame_key]
-                    if hasattr(frame, "text"):
-                        return str(frame.text[0]) if frame.text else None
-        # MP4
-        if "----:com.apple.iTunes:MusicBrainz Album Id" in f:
-            raw = f["----:com.apple.iTunes:MusicBrainz Album Id"]
-            return raw[0].decode() if raw and isinstance(raw[0], bytes) else None
+        tags = audio.tags
+        return _get_field(_tag_format(audio, tags), tags, "mb_release_id")
     except Exception as exc:
         logger.warning("read_mb_release_id failed for %s: %s", path, exc)
     return None
@@ -557,9 +508,10 @@ def strip_album_version_tags(path: Path) -> bool:
         if audio is None or audio.tags is None:
             return False
         tags = audio.tags
+        fmt = _tag_format(audio, tags)
         removed = False
 
-        if isinstance(audio, MP4):
+        if fmt == _MP4:
             for key in (
                 "----:com.apple.iTunes:VERSION",
                 "----:com.apple.iTunes:ALBUMVERSION",
@@ -568,7 +520,7 @@ def strip_album_version_tags(path: Path) -> bool:
                 if key in tags:
                     del tags[key]
                     removed = True
-        elif isinstance(tags, ID3):
+        elif fmt == _ID3:
             for frame_key in list(tags.keys()):
                 desc = frame_key.split(":", 1)[1].lower() if ":" in frame_key else ""
                 if frame_key.startswith("TXXX:") and desc in ("version", "albumversion"):

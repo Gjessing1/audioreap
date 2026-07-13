@@ -7,7 +7,7 @@
        hx-target="#browse-{{ safe_id }}"
        hx-swap="outerHTML">
     {% if t.file and t.file.has_cover_art %}
-    <img src="/library/tracks/{{ t.id }}/cover-art"
+    <img src="/library/tracks/{{ t.id }}/cover-art?size=96"
          onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
          class="browse-art-img" loading="eager" alt="">
     {% endif %}
