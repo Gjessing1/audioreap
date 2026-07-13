@@ -6,6 +6,7 @@
   <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
     <h1>Library Health</h1>
     <div style="display:flex;gap:8px">
+      <a href="/health" class="btn btn-ghost btn-sm" title="Service status: Navidrome, Redis, worker, disk">System status</a>
       <a href="/admin/config" class="btn btn-ghost btn-sm">⚙ Config</a>
       <a href="/library" class="btn btn-ghost btn-sm">← Library</a>
     </div>
@@ -204,6 +205,20 @@
   Tracks with bitrate below {{ min_bitrate_kbps }} kbps. Use "Find →" to open the library and replace the source, or press OK to suppress the warning if the bitrate is acceptable.
 </p>
 <div id="health-low-bitrate"></div>
+
+<div class="section-title" style="margin-top:24px">Missing files
+  <button class="btn btn-ghost btn-sm" style="margin-left:8px"
+          hx-get="/library/health/missing-files"
+          hx-target="#health-missing-files"
+          hx-swap="innerHTML"
+          hx-indicator="#missing-files-spinner">
+    Show <span id="missing-files-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+  Tracks indexed in the database whose audio file is no longer on disk (moved or deleted outside audioreap). Re-acquire re-downloads from the original source; Remove from DB drops the stale index entry.
+</p>
+<div id="health-missing-files"></div>
 
 <div class="section-title" style="margin-top:24px">Artist credit mismatches
   <button class="btn btn-ghost btn-sm" style="margin-left:8px"

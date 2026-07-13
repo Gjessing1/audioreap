@@ -1,0 +1,32 @@
+{% if not tracks %}
+<p class="empty">All indexed tracks have files on disk. ✓</p>
+{% else %}
+<p style="font-size:13px;color:var(--t3);margin-bottom:10px">{{ tracks|length }} track{{ 's' if tracks|length != 1 }} shown.</p>
+{% for t in tracks %}
+{% set safe_id = t.id | replace(':', '_') %}
+<div class="card" id="health-mf-{{ safe_id }}" style="padding:8px 14px;gap:8px">
+  <div class="card-info" style="flex:1;min-width:0">
+    <div class="card-title">{{ t.title }}</div>
+    <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
+  </div>
+  <div class="card-actions">
+    {% if t.provider_ref %}
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/library/tracks/{{ t.id }}/reacquire"
+            hx-target="#health-mf-{{ safe_id }}"
+            hx-swap="outerHTML"
+            hx-confirm="Re-download this track from its original source?">Re-acquire</button>
+    {% else %}
+    <a href="/acquire?q={{ (t.artist ~ ' ' ~ t.title) | urlencode }}"
+       class="btn btn-sm btn-ghost">Search</a>
+    {% endif %}
+    <button class="btn btn-sm btn-ghost"
+            hx-delete="/library/tracks/{{ t.id }}"
+            hx-target="#health-mf-{{ safe_id }}"
+            hx-swap="outerHTML swap:0.3s"
+            hx-confirm="Remove this track from the database?"
+            style="color:var(--t4)">Remove from DB</button>
+  </div>
+</div>
+{% endfor %}
+{% endif %}

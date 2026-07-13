@@ -2,7 +2,10 @@
 {% block title %}Health — audioreap{% endblock %}
 
 {% block content %}
-<h2 style="font-size:18px;margin-bottom:16px">System health</h2>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+  <h2 style="font-size:18px">System health</h2>
+  <a href="/library/health" class="btn btn-ghost btn-sm" title="Data quality: dupes, splits, missing art/lyrics/files, ReplayGain">Library Health →</a>
+</div>
 
 <div class="stats">
   <div class="stat">

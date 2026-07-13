@@ -5,6 +5,7 @@ TaggedFile for reads, and keyword arguments for writes.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,8 @@ from pathlib import Path
 from mutagen import File as MutagenFile  # type: ignore[attr-defined]
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = frozenset(
     {".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".wav", ".wma"}
@@ -161,7 +164,8 @@ def has_cover_art(path: Path) -> bool:
     """Return True if the audio file at path has embedded cover art."""
     try:
         audio = MutagenFile(path)
-    except Exception:
+    except Exception as exc:
+        logger.debug("has_cover_art: unreadable file %s: %s", path, exc)
         return False
     if audio is None:
         return False
@@ -175,7 +179,8 @@ def read_tags(path: Path) -> TaggedFile | None:
 
     try:
         audio = MutagenFile(path)
-    except Exception:
+    except Exception as exc:
+        logger.warning("read_tags: unreadable file %s: %s", path, exc)
         return None
 
     if audio is None:
@@ -313,7 +318,8 @@ def read_cover_art_bytes(path: Path) -> bytes | None:
                 pic = Picture(base64.b64decode(raw[0] if isinstance(raw, list) else raw))
                 return pic.data
             return None
-    except Exception:
+    except Exception as exc:
+        logger.debug("read_cover_art_bytes failed for %s: %s", path, exc)
         return None
 
 
@@ -375,6 +381,8 @@ def write_tags(
             tags["©day"] = [str(year)]  # type: ignore[index]
         if track_number is not None:
             tags["trkn"] = [(track_number, 0)]  # type: ignore[index]
+        if disc_number is not None:
+            tags["disk"] = [(disc_number, 0)]  # type: ignore[index]
         if artist_sort is not None:
             tags["soar"] = [artist_sort]  # type: ignore[index]
         if compilation:
@@ -502,8 +510,8 @@ def write_cover_jpg(album_dir: Path, artwork_bytes: bytes) -> None:
     try:
         cover_path = album_dir / "cover.jpg"
         cover_path.write_bytes(artwork_bytes)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("write_cover_jpg failed for %s: %s", album_dir, exc)
 
 
 def read_mb_release_id(path: Path) -> str | None:
@@ -530,8 +538,8 @@ def read_mb_release_id(path: Path) -> str | None:
         if "----:com.apple.iTunes:MusicBrainz Album Id" in f:
             raw = f["----:com.apple.iTunes:MusicBrainz Album Id"]
             return raw[0].decode() if raw and isinstance(raw[0], bytes) else None
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("read_mb_release_id failed for %s: %s", path, exc)
     return None
 
 
@@ -576,7 +584,8 @@ def strip_album_version_tags(path: Path) -> bool:
         if removed:
             audio.save()
         return removed
-    except Exception:
+    except Exception as exc:
+        logger.warning("strip_album_version_tags failed for %s: %s", path, exc)
         return False
 
 
@@ -627,9 +636,16 @@ def run_rsgain(paths: list[Path], *, album: bool, skip_existing: bool = False) -
             timeout=max(120, 20 * len(paths)),
         )
         if result.returncode != 0:
+            logger.warning(
+                "rsgain exited %s for %d file(s): %s",
+                result.returncode,
+                len(paths),
+                (result.stderr or result.stdout or "").strip()[:500],
+            )
             return False
         return True
-    except Exception:
+    except Exception as exc:
+        logger.warning("rsgain failed for %d file(s): %s", len(paths), exc)
         return False
 
 

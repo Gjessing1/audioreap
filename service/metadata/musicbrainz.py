@@ -49,6 +49,18 @@ class MBReleaseGroup:
 
 
 @dataclass
+class MBReleaseGroupMatch:
+    """One release-group search hit (richer than MBReleaseGroup: carries the
+    credited artist and disambiguation for display in link-search results)."""
+    release_group_id: str
+    title: str
+    artist: str
+    release_type: str
+    year: str  # "" when MB has no first-release-date
+    disambiguation: str
+
+
+@dataclass
 class MBRecording:
     recording_id: str
     title: str
@@ -567,11 +579,8 @@ def search_release_groups(
     album: str,
     limit: int = 8,
     cache_dir: Path | None = None,
-) -> list[dict]:
-    """Search MB for release groups matching artist + album title.
-
-    Returns a list of dicts with keys: id, title, artist, type, year, disambiguation.
-    """
+) -> list[MBReleaseGroupMatch]:
+    """Search MB for release groups matching artist + album title."""
     key = f"rg_search:{_cache_key(artist + '|' + album, '')}"
     raw = _load_cache(cache_dir, key) if cache_dir else None
     if raw is None:
@@ -586,7 +595,7 @@ def search_release_groups(
             logger.warning("MB release group search failed: %s", exc)
             return []
 
-    out = []
+    out: list[MBReleaseGroupMatch] = []
     for rg in (raw.get("release-group-list") or []):
         if not isinstance(rg, dict):
             continue
@@ -597,15 +606,14 @@ def search_release_groups(
                 break
         # year from first-release-date
         frd = str(rg.get("first-release-date") or "")
-        year = frd[:4] if frd else ""
-        out.append({
-            "id": str(rg.get("id", "")),
-            "title": str(rg.get("title", "")),
-            "artist": artist_name,
-            "type": str(rg.get("type") or rg.get("primary-type") or ""),
-            "year": year,
-            "disambiguation": str(rg.get("disambiguation") or ""),
-        })
+        out.append(MBReleaseGroupMatch(
+            release_group_id=str(rg.get("id", "")),
+            title=str(rg.get("title", "")),
+            artist=artist_name,
+            release_type=str(rg.get("type") or rg.get("primary-type") or ""),
+            year=frd[:4] if frd else "",
+            disambiguation=str(rg.get("disambiguation") or ""),
+        ))
     return out
 
 

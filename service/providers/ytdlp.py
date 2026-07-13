@@ -527,6 +527,21 @@ _UNWANTED_VERSION_RE = re.compile(
 )
 
 
+# Scoring weight table for score_yt_candidate. The base score is a weighted sum of
+# title/artist/duration similarity; everything below it is a bonus/penalty applied on
+# top. The artist gate (hard demotion of a clearly-wrong act) shares its threshold and
+# penalty with the MB candidate ranker — one tuning pass must move both call sites.
+_W_TITLE = 0.50
+_W_ARTIST = 0.25
+_W_DURATION = 0.20
+_OFFICIAL_CHANNEL_BONUS = 0.12
+_GROSS_DURATION_PENALTY = 0.35
+_EXPLICIT_MATCH_BONUS = 0.15
+_EXPLICIT_MISMATCH_PENALTY = 0.18
+_LIVE_PENALTY = 0.45
+_UNWANTED_VERSION_PENALTY = 0.45
+
+
 _BRACKETED_RE = re.compile(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]")
 
 
@@ -649,6 +664,7 @@ def score_yt_candidate(
     card's "Different source" panel (`yt_search_ranked`) use it, so the panel shows
     exactly what the picker weighed. That parity is what makes weight-tuning tractable.
     """
+    from service.metadata.candidates import ARTIST_GATE_PENALTY, ARTIST_GATE_SIM
     from service.search.matcher import (
         artist_similarity as _asim,
         title_similarity as _tsim,
@@ -686,7 +702,7 @@ def score_yt_candidate(
         # A blank candidate artist scores neutral, not zero, so we don't punish
         # sources that simply don't expose an artist field.
         a = _asim(artist, cand_artist) if cand_artist else 0.5
-        core = t * 0.50 + a * 0.25
+        core = t * _W_TITLE + a * _W_ARTIST
         if core > best_core:
             best_core, t_sim, a_sim = core, t, a
             has_artist_evidence = bool(cand_artist)
@@ -709,7 +725,7 @@ def score_yt_candidate(
             dur_score = 0.1
             gross_dur_mismatch = True
 
-    score = t_sim * 0.50 + a_sim * 0.25 + dur_score * 0.20
+    score = t_sim * _W_TITLE + a_sim * _W_ARTIST + dur_score * _W_DURATION
 
     # Prefer official audio: "- Topic" / VEVO / labelled official artist channel — but
     # only when it's the *wanted* artist's channel. Another act's Topic/VEVO channel
@@ -717,18 +733,18 @@ def score_yt_candidate(
     is_official = bool(vid_channel and _OFFICIAL_CHANNEL_RE.search(vid_channel))
     if is_official:
         if channel_artist and _asim(artist, channel_artist) >= 0.5:
-            score += 0.12
+            score += _OFFICIAL_CHANNEL_BONUS
         else:
             is_official = False
 
     if gross_dur_mismatch:
-        score -= 0.35
+        score -= _GROSS_DURATION_PENALTY
 
     # Hard guard against a perfect title from the wrong act: when the candidate exposes
     # an artist and it clearly disagrees, push it below any neutral/correct-artist
     # source so it can't win on title alone.
-    if has_artist_evidence and a_sim < 0.34:
-        score -= 0.25
+    if has_artist_evidence and a_sim < ARTIST_GATE_SIM:
+        score -= ARTIST_GATE_PENALTY
 
     age_limit = int(entry.get("age_limit") or 0)
     exp = explicit_score(vid_full_title, age_limit if age_limit >= 18 else None)
@@ -736,19 +752,19 @@ def score_yt_candidate(
         # Make a labelled version decisive: the ≈0.30 spread exceeds the title-similarity
         # gap between near-identical "Song" vs "Song (Clean)" uploads.
         if prefer_explicit:
-            score += 0.15 if exp > 0 else -0.18
+            score += _EXPLICIT_MATCH_BONUS if exp > 0 else -_EXPLICIT_MISMATCH_PENALTY
         else:
-            score += 0.15 if exp < 0 else -0.18
+            score += _EXPLICIT_MATCH_BONUS if exp < 0 else -_EXPLICIT_MISMATCH_PENALTY
 
     if looks_like_live(vid_full_title) and not looks_like_live(title):
         # Live/concert uploads surface too often over the studio cut; a heavy penalty
         # pushes them below a near-tied studio version.
-        score -= 0.45
+        score -= _LIVE_PENALTY
 
     if _UNWANTED_VERSION_RE.search(vid_full_title) and not _UNWANTED_VERSION_RE.search(title):
         # Sped-up / nightcore / remix / full-album mutations of the right song: same
         # class of wrong-source as live uploads, same decisive penalty.
-        score -= 0.45
+        score -= _UNWANTED_VERSION_PENALTY
 
     return score, is_official
 

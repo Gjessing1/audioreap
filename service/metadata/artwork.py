@@ -5,6 +5,7 @@ Returns raw JPEG/PNG bytes or None.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import struct
 from pathlib import Path
@@ -80,7 +81,7 @@ async def fetch_artwork(
     # Check disk cache first
     if cache_dir is not None:
         cache_key = release_mbid or (
-            __import__("hashlib").sha1((thumbnail_url or "").encode()).hexdigest()
+            hashlib.sha1((thumbnail_url or "").encode()).hexdigest()
         )
         cache_path = cache_dir / "artwork" / f"{cache_key}.jpg"
         if cache_path.exists():

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -61,8 +61,8 @@ class Track(Base):
     musicbrainz_recording_id: Mapped[str | None] = mapped_column(String, nullable=True)
     genre: Mapped[str | None] = mapped_column(String, nullable=True)
     tag_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    quality_suppressed: Mapped[bool | None] = mapped_column(Integer, nullable=True, default=None)
-    bitrate_suppressed: Mapped[bool | None] = mapped_column(Integer, nullable=True, default=None)
+    quality_suppressed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    bitrate_suppressed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     id_algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     normalize_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -86,7 +86,7 @@ class TrackFile(Base):
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
     provider_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    has_cover_art: Mapped[bool | None] = mapped_column(Integer, nullable=True)
+    has_cover_art: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     file_mtime: Mapped[float | None] = mapped_column(Float, nullable=True)
     layout_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

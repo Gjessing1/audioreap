@@ -1,0 +1,19 @@
+{% if not results %}
+<p class="muted" style="font-size:12px">No results found.</p>
+{% else %}
+<div style="display:flex;flex-direction:column;gap:6px">
+  {% for rg in results %}
+  <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+    <span style="color:var(--t1);flex:1">{{ rg.title }}{% if rg.year %} ({{ rg.year }}){% endif %}{% if rg.disambiguation %} [{{ rg.disambiguation }}]{% endif %}</span>
+    <span style="color:var(--t3);font-size:11px">{{ rg.release_type or "Album" }}</span>
+    <form style="display:inline"
+          hx-post="/library/albums/{{ album_id }}/link-mb-rg"
+          hx-target="#album-{{ album_id | replace(':', '_') }}"
+          hx-swap="outerHTML">
+      <input type="hidden" name="release_group_id" value="{{ rg.release_group_id }}">
+      <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">Link</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

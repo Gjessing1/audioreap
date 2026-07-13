@@ -6,6 +6,10 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import httpx
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -990,6 +994,77 @@ async def job_dest_preview(
     )
 
 
+@asynccontextmanager
+async def _approval_redis() -> AsyncIterator[object | None]:
+    """arq redis pool for per-job approval locks; yields None when Redis is
+    unavailable (approvals then proceed unlocked, best-effort)."""
+    pool = None
+    try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    except Exception:
+        pool = None
+    try:
+        yield pool
+    finally:
+        if pool is not None:
+            try:
+                await pool.aclose()
+            except Exception:
+                pass
+
+
+@asynccontextmanager
+async def _approval_lock(redis, job_id: str) -> AsyncIterator[bool]:
+    """Hold the per-job approval lock while the body runs.
+
+    Guards against concurrent approvals of the same job (a double-clicked
+    Approve button, or a batch racing a single approve): the winner moves the
+    staging file and sets state=done, an unguarded loser would then hit
+    "Staged file missing" and bounce the row back to needs_review. Yields False
+    when another approval already holds the lock — the caller must skip.
+    Redis being unavailable (or erroring) degrades to True: proceed unlocked.
+    The lock is released on exit rather than left to the 60s expiry so a
+    failed job can be re-approved immediately.
+    """
+    key = f"approve_lock:{job_id}"
+    locked = False
+    acquired = True
+    if redis is not None:
+        try:
+            locked = bool(await redis.set(key, "1", ex=60, nx=True))
+            acquired = locked
+        except Exception:
+            acquired = True
+    try:
+        yield acquired
+    finally:
+        if locked:
+            try:
+                await redis.delete(key)
+            except Exception:
+                pass
+
+
+async def _rollback_failed_approval(
+    session: AsyncSession, job_id: str, exc: Exception
+) -> None:
+    """After place_approved_track raised: roll back the partial transaction and
+    undo the intermediate "placing" state so the job returns to the review
+    queue (with the error recorded) instead of being stuck mid-import."""
+    try:
+        await session.rollback()
+        row = await session.get(AcquisitionJobRow, job_id)
+        if row:
+            if row.state in ("placing", "importing"):
+                row.state = "needs_review"
+            row.error = str(exc)[:200]
+            await session.commit()
+    except Exception:
+        logger.debug("Rollback after failed approval of %s failed", job_id, exc_info=True)
+
+
 @router.post("/jobs/batch-approve", response_class=HTMLResponse)
 async def batch_approve(
     request: Request,
@@ -1003,19 +1078,7 @@ async def batch_approve(
 
     done_count = 0
     fail_count = 0
-    # Per-job approval lock — mirrors the single approve route. Without it, two
-    # overlapping batch requests (a double-clicked "Approve N" button, or a batch
-    # racing a single approve) could both run place_approved_track for the same
-    # job: the winner moves the staging file and sets state=done, the loser then
-    # hits "Staged file missing" and bounces the row back to needs_review — leaving
-    # the job stuck in the review queue even though its file is already in /music.
-    _redis = None
-    try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        _redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-    except Exception:
-        _redis = None
+
     async def _noop_scan() -> None:
         # One Navidrome scan at the end of the batch instead of one per track.
         return None
@@ -1023,64 +1086,33 @@ async def batch_approve(
     # Album identities of approved discography-batch tracks — healed for Navidrome
     # splits once the batch lands (a source-swap or year/MBID drift can fragment it).
     heal_targets: set[tuple[str, str]] = set()
-    try:
+    async with _approval_redis() as _redis:
         for jid in job_ids:
-            locked = False
-            if _redis is not None:
+            async with _approval_lock(_redis, jid) as acquired:
+                if not acquired:
+                    # Another approval for this job is already in flight — skip it
+                    # rather than racing (and clobbering) that placement.
+                    continue
                 try:
-                    locked = bool(await _redis.set(f"approve_lock:{jid}", "1", ex=60, nx=True))
-                    if not locked:
-                        # Another approval for this job is already in flight — skip it
-                        # rather than racing (and clobbering) that placement.
-                        continue
-                except Exception:
-                    locked = False
-            try:
-                await place_approved_track(
-                    jid, {}, session, scan_trigger=_noop_scan, mark_progress=True
-                )
-                await session.commit()
-                try:
-                    _r = await session.get(AcquisitionJobRow, jid)
-                    if _r and _r.album_job_id and _r.resolved_metadata_json:
-                        _m = json.loads(_r.resolved_metadata_json)
-                        _alb = (_m.get("album") or "").strip()
-                        _aa = (_m.get("albumartist") or _m.get("artist") or "").strip()
-                        if _alb and _aa:
-                            heal_targets.add((_alb, _aa))
-                except Exception:
-                    pass
-                done_count += 1
-            except Exception as exc:
-                logger.error("Batch approve failed for %s: %s", jid, exc)
-                # Must rollback before reusing the session
-                try:
-                    await session.rollback()
-                    row = await session.get(AcquisitionJobRow, jid)
-                    if row:
-                        # Undo the intermediate "placing" state so the job returns
-                        # to the review queue instead of being stuck mid-import.
-                        if row.state in ("placing", "importing"):
-                            row.state = "needs_review"
-                        row.error = str(exc)[:200]
-                        await session.commit()
-                except Exception:
-                    pass
-                fail_count += 1
-            finally:
-                # Release the lock right away so a failed job can be re-approved
-                # without waiting out the 60s expiry.
-                if _redis is not None and locked:
+                    await place_approved_track(
+                        jid, {}, session, scan_trigger=_noop_scan, mark_progress=True
+                    )
+                    await session.commit()
                     try:
-                        await _redis.delete(f"approve_lock:{jid}")
+                        _r = await session.get(AcquisitionJobRow, jid)
+                        if _r and _r.album_job_id and _r.resolved_metadata_json:
+                            _m = json.loads(_r.resolved_metadata_json)
+                            _alb = (_m.get("album") or "").strip()
+                            _aa = (_m.get("albumartist") or _m.get("artist") or "").strip()
+                            if _alb and _aa:
+                                heal_targets.add((_alb, _aa))
                     except Exception:
                         pass
-    finally:
-        if _redis is not None:
-            try:
-                await _redis.aclose()
-            except Exception:
-                pass
+                    done_count += 1
+                except Exception as exc:
+                    logger.error("Batch approve failed for %s: %s", jid, exc)
+                    await _rollback_failed_approval(session, jid, exc)
+                    fail_count += 1
 
     # Auto-heal Navidrome album splits for any discography batch that just landed.
     scanned = False
@@ -1136,63 +1168,33 @@ async def approve_job(
         "genre": genre or None,
     }
 
-    # Guard against concurrent approvals of the same job (race condition between
-    # the state check and the file move).  A short-lived Redis lock is sufficient.
-    lock_key = f"approve_lock:{job_id}"
-    _redis = None
-    try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        _redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        acquired = await _redis.set(lock_key, "1", ex=60, nx=True)
-        if not acquired:
-            return HTMLResponse(
-                f'<div class="card card-review" id="job-{job_id}">'
-                f'<div class="rv-form"><div class="rv-alert rv-alert--error">'
-                f'Approval already in progress for this job.</div></div></div>'
-            )
-    except Exception:
-        acquired = True  # if Redis is unavailable, proceed without the lock
-
-    dest: Path | None = None
-    try:
-        dest = await place_approved_track(job_id, overrides, session, mark_progress=True)
-        await session.commit()
-    except Exception as exc:
-        logger.error("Approve job %s failed: %s", job_id, exc)
-        # Rollback any partial transaction before using the session again
-        try:
-            await session.rollback()
-            row = await session.get(AcquisitionJobRow, job_id)
-            if row:
-                # Undo the intermediate "placing" state so the job returns to the
-                # review queue instead of being stuck mid-import.
-                if row.state in ("placing", "importing"):
-                    row.state = "needs_review"
-                row.error = str(exc)[:200]
-                await session.commit()
-        except Exception:
-            pass
-        try:
-            row = await session.get(AcquisitionJobRow, job_id)
-            meta = json.loads(row.resolved_metadata_json) if row and row.resolved_metadata_json else {}
-            ctx = await _review_card_ctx(request, session, job_id, row, meta)
-            ctx["error"] = str(exc)
-            return templates.TemplateResponse(request, "partials/review_card.html", ctx)
-        except Exception:
-            import html as _html
-            return HTMLResponse(
-                f'<div class="card card-review" id="job-{job_id}">'
-                f'<div class="rv-form"><div class="rv-alert rv-alert--error">'
-                f'Approve failed: {_html.escape(str(exc))}</div></div></div>'
-            )
-    finally:
-        if _redis is not None:
+    async with _approval_redis() as _redis:
+        async with _approval_lock(_redis, job_id) as acquired:
+            if not acquired:
+                return HTMLResponse(
+                    f'<div class="card card-review" id="job-{job_id}">'
+                    f'<div class="rv-form"><div class="rv-alert rv-alert--error">'
+                    f'Approval already in progress for this job.</div></div></div>'
+                )
             try:
-                await _redis.delete(lock_key)
-                await _redis.aclose()
-            except Exception:
-                pass
+                await place_approved_track(job_id, overrides, session, mark_progress=True)
+                await session.commit()
+            except Exception as exc:
+                logger.error("Approve job %s failed: %s", job_id, exc)
+                await _rollback_failed_approval(session, job_id, exc)
+                try:
+                    row = await session.get(AcquisitionJobRow, job_id)
+                    meta = json.loads(row.resolved_metadata_json) if row and row.resolved_metadata_json else {}
+                    ctx = await _review_card_ctx(request, session, job_id, row, meta)
+                    ctx["error"] = str(exc)
+                    return templates.TemplateResponse(request, "partials/review_card.html", ctx)
+                except Exception:
+                    import html as _html
+                    return HTMLResponse(
+                        f'<div class="card card-review" id="job-{job_id}">'
+                        f'<div class="rv-form"><div class="rv-alert rv-alert--error">'
+                        f'Approve failed: {_html.escape(str(exc))}</div></div></div>'
+                    )
 
     # ReplayGain already ran inside place_approved_track — no second ffmpeg pass.
 
@@ -2466,34 +2468,11 @@ async def album_mb_link_search(
         settings.cache_dir,
     )
 
-    if not results:
-        return HTMLResponse('<p class="muted" style="font-size:12px">No results found.</p>')
-
-    import html as _html
-    lines = ['<div style="display:flex;flex-direction:column;gap:6px">']
-    for rg in results:
-        # MB fields are external free text — escape before interpolating into HTML.
-        label = rg["title"]
-        if rg["year"]:
-            label += f' ({rg["year"]})'
-        if rg["disambiguation"]:
-            label += f' [{rg["disambiguation"]}]'
-        rtype = rg["type"] or "Album"
-        lines.append(
-            f'<div style="display:flex;align-items:center;gap:8px;font-size:12px">'
-            f'<span style="color:var(--t1);flex:1">{_html.escape(label)}</span>'
-            f'<span style="color:var(--t3);font-size:11px">{_html.escape(rtype)}</span>'
-            f'<form style="display:inline"'
-            f'      hx-post="/library/albums/{album_id}/link-mb-rg"'
-            f'      hx-target="#album-{album_id.replace(":", "_")}"'
-            f'      hx-swap="outerHTML">'
-            f'  <input type="hidden" name="release_group_id" value="{_html.escape(str(rg["id"]), quote=True)}">'
-            f'  <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">Link</button>'
-            f'</form>'
-            f'</div>'
-        )
-    lines.append('</div>')
-    return HTMLResponse("".join(lines))
+    # MB fields are external free text — the Jinja partial autoescapes them.
+    return templates.TemplateResponse(
+        request, "partials/mb_rg_search_results.html",
+        {"results": results, "album_id": album_id},
+    )
 
 
 @router.post("/library/albums/{album_id}/link-mb-rg", response_class=HTMLResponse)
@@ -4487,90 +4466,11 @@ async def retag_track(
     )
 
 
-@router.get("/library/quality", response_class=HTMLResponse)
-async def quality_review_page(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Dedicated quality review: low bitrate, missing art, missing files."""
-    min_br = settings.min_bitrate_kbps
-
-    # Low-bitrate tracks (has file, bitrate known and below threshold)
-    low_br_rows = (
-        await session.execute(
-            select(Track)
-            .join(Track.artist)
-            .outerjoin(Track.album)
-            .join(Track.file)
-            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-            .where(
-                TrackFile.bitrate_kbps.isnot(None),
-                TrackFile.bitrate_kbps < min_br,
-            )
-            .order_by(TrackFile.bitrate_kbps.asc())
-            .limit(30)
-        )
-    ).unique().scalars().all()
-
-    # Tracks missing cover art but with MB ID (so CAA fetch may help)
-    no_art_rows = (
-        await session.execute(
-            select(Track)
-            .join(Track.artist)
-            .outerjoin(Track.album)
-            .join(Track.file)
-            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-            .where(
-                Track.musicbrainz_recording_id.isnot(None),
-                (TrackFile.has_cover_art.is_(None)) | (TrackFile.has_cover_art == 0),
-            )
-            .order_by(Track.title)
-            .limit(30)
-        )
-    ).unique().scalars().all()
-
-    # Missing files: TrackFile in DB but file not on disk
-    all_file_rows = (
-        await session.execute(
-            select(Track)
-            .join(Track.artist)
-            .outerjoin(Track.album)
-            .join(Track.file)
-            .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
-            .limit(500)
-        )
-    ).unique().scalars().all()
-    missing_file_tracks = [
-        r for r in all_file_rows
-        if r.file and not Path(r.file.path).exists()
-    ][:30]
-
-    def _to_dict(row: Track, extra: dict[str, object] | None = None) -> dict[str, object]:
-        d: dict[str, object] = {
-            "internal_id": row.id,
-            "title": row.title,
-            "artist": row.artist.name,
-            "album": row.album.title if row.album else None,
-            "has_mbid": bool(row.musicbrainz_recording_id),
-            "provider": row.file.provider if row.file else None,
-            "provider_ref": row.file.provider_ref if row.file else None,
-            "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
-            "codec": row.file.codec if row.file else None,
-        }
-        if extra:
-            d.update(extra)
-        return d
-
-    return templates.TemplateResponse(
-        request, "quality_review.html",
-        {
-            "active": "library",
-            "min_bitrate_kbps": min_br,
-            "low_bitrate": [_to_dict(r) for r in low_br_rows],
-            "no_art": [_to_dict(r) for r in no_art_rows],
-            "missing_files": [_to_dict(r) for r in missing_file_tracks],
-        },
-    )
+@router.get("/library/quality")
+async def quality_review_page() -> RedirectResponse:
+    """Legacy quality-review page — superseded by Library Health, which covers the
+    same data (low bitrate / missing art / missing files) with richer remediation."""
+    return RedirectResponse("/library/health", status_code=301)
 
 
 @router.post("/library/tracks/{internal_id}/reacquire", response_class=HTMLResponse)
@@ -4913,7 +4813,7 @@ async def _search_itunes_art(q: str) -> list[dict]:
     try:
         encoded = urllib.parse.quote(q)
         url = f"https://itunes.apple.com/search?term={encoded}&entity=album&limit=12&media=music"
-        async with __import__("httpx").AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
                 return results
@@ -4945,7 +4845,7 @@ async def _search_deezer_art(q: str, offset: int = 0) -> list[dict]:
     try:
         encoded = urllib.parse.quote(q)
         url = f"https://api.deezer.com/search/album?q={encoded}&limit=12&index={offset}"
-        async with __import__("httpx").AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
                 return results
@@ -5940,7 +5840,7 @@ async def discography_acquire_single_track(
     if yt_score < 0.35:
         import json as _json
         from service.db.schema import AcquisitionJobRow as _JobRow
-        job_id = str(__import__("uuid").uuid4())
+        job_id = str(uuid.uuid4())
         ghost_meta = {
             "title": candidate.title,
             "artist": candidate.artist,
@@ -6526,6 +6426,41 @@ async def library_health_low_quality(
     ]
     return templates.TemplateResponse(
         request, "partials/health_low_quality.html",
+        {"tracks": tracks},
+    )
+
+
+@router.get("/library/health/missing-files", response_class=HTMLResponse)
+async def library_health_missing_files(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: tracks indexed in the DB whose file is gone from disk."""
+    from sqlalchemy.orm import joinedload as _jl
+
+    rows = (await session.execute(
+        select(Track)
+        .options(_jl(Track.artist), _jl(Track.album), _jl(Track.file))
+        .join(Track.file)
+        .order_by(Track.title)
+    )).unique().scalars().all()
+
+    def _find_missing() -> list[Track]:
+        return [t for t in rows if t.file and not Path(t.file.path).exists()][:100]
+
+    missing = await asyncio.to_thread(_find_missing)
+    tracks = [
+        {
+            "id": t.id,
+            "title": t.title,
+            "artist": t.artist.name if t.artist else "",
+            "album": t.album.title if t.album else None,
+            "provider_ref": t.file.provider_ref if t.file else None,
+        }
+        for t in missing
+    ]
+    return templates.TemplateResponse(
+        request, "partials/health_missing_files.html",
         {"tracks": tracks},
     )
 
