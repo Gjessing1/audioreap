@@ -336,6 +336,42 @@ def test_view_artists_embeddable() -> None:
     assert 'id="artist-list"' in html
 
 
+def test_artist_grid_renders() -> None:
+    html = _render("partials/artist_grid.html", {
+        "artists": [{
+            "artist": _Obj({"id": "artist:1", "name": "Grid Artist"}),
+            "track_count": 5,
+            "album_count": 2,
+        }],
+        "q": "",
+    })
+    assert "Grid Artist" in html
+    assert "image?size=256" in html
+    assert "2 albums" in html
+
+
+def test_album_grid_renders() -> None:
+    html = _render("partials/album_grid.html", {
+        "albums": [_Obj({
+            "id": "album:1",
+            "title": "Grid Album",
+            "year": 2024,
+            "artist": {"name": "Grid Artist"},
+            "tracks": [{"id": "track:1", "file": {"path": "/music/x.ogg"}}],
+        })],
+        "album_quality": {"album:1": 0.5},
+        "singles_count": 3,
+        "singles_cover_id": None,
+        "q": "",
+        "sort": "artist",
+        "open_id": "",
+    })
+    assert "Grid Album" in html
+    assert "cover-art?size=256" in html
+    assert "Singles" in html
+    assert "50%" in html  # sub-0.7 quality badge shows
+
+
 def test_view_genres_embeddable() -> None:
     html = _render("partials/view_genres.html",
                    {"genres": [{"name": "Jazz", "count": 2}], "untagged_count": 0})

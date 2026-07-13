@@ -2112,12 +2112,12 @@ async def fix_failed_source(
     )
 
 
-def _album_view(request: Request, view: str) -> str:
-    """Resolve the albums layout: explicit ?view= wins, else the album_view
+def _layout_view(request: Request, view: str, cookie: str) -> str:
+    """Resolve a list/grid layout preference: explicit ?view= wins, else the
     cookie set on every list render. Grid is the default for fresh visitors."""
     if view in ("list", "grid"):
         return view
-    return "list" if request.cookies.get("album_view") == "list" else "grid"
+    return "list" if request.cookies.get(cookie) == "list" else "grid"
 
 
 @router.get("/library/albums", response_class=HTMLResponse)
@@ -2133,7 +2133,7 @@ async def library_albums_page(
     # `open` makes the drill-down bookmarkable: album rows hx-push-url this
     # page with ?open=<album id>, so refresh/back restores the open album.
     ctx = {"active": "library", "q": q, "sort": sort, "open_id": open_id,
-           "view": _album_view(request, view)}
+           "view": _layout_view(request, view, "album_view")}
     tmpl = "partials/view_albums.html" if embed else "library_albums.html"
     return templates.TemplateResponse(request, tmpl, ctx)
 
@@ -2239,7 +2239,7 @@ async def library_albums_list(
                 .limit(1)
             )).scalar_one_or_none()
             singles_cover_id = cover_row
-    view = _album_view(request, view)
+    view = _layout_view(request, view, "album_view")
     tmpl = "partials/album_grid.html" if view == "grid" else "partials/album_list.html"
     resp = templates.TemplateResponse(
         request, tmpl,
@@ -3390,6 +3390,7 @@ async def _auto_artist_image(name: str) -> Path | None:
 @router.get("/library/artists/{artist_id}/image", response_class=HTMLResponse)
 async def artist_image(
     artist_id: str,
+    size: int | None = Query(None, ge=32, le=512),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Serve the artist's portrait: artist.jpg from /music when the user saved
@@ -3398,18 +3399,31 @@ async def artist_image(
 
     204 (not 404) when nothing exists: the <img> tags that request this fall
     back via onerror either way, but a 2xx keeps the browser console clean.
+
+    ?size=N serves a disk-cached thumbnail like the track cover-art route —
+    the artist grid must use it so a screenful of cells doesn't re-download
+    full portraits. Regenerated when the source image is newer than the thumb.
     """
     from fastapi.responses import FileResponse, Response
     artist = await session.get(Artist, artist_id)
     if artist is None:
         return Response(status_code=204)
     img_path = settings.music_dir / artist.name / "artist.jpg"
-    if img_path.exists():
-        return FileResponse(str(img_path), media_type="image/jpeg")
-    cached = await _auto_artist_image(artist.name)
-    if cached is not None:
-        return FileResponse(str(cached), media_type="image/jpeg")
-    return Response(status_code=204)
+    src = img_path if img_path.exists() else await _auto_artist_image(artist.name)
+    if src is None:
+        return Response(status_code=204)
+    if size is not None:
+        thumb_headers = {"Cache-Control": "public, max-age=600"}
+        thumb_path = settings.cache_dir / "thumbs" / f"artist_{artist_id}_{size}.jpg"
+        if thumb_path.exists() and thumb_path.stat().st_mtime >= src.stat().st_mtime:
+            data = await asyncio.to_thread(thumb_path.read_bytes)
+            return Response(content=data, media_type="image/jpeg", headers=thumb_headers)
+        art = await asyncio.to_thread(src.read_bytes)
+        data = await asyncio.to_thread(_resize_cover, art, size, thumb_path)
+        if data:
+            return Response(content=data, media_type="image/jpeg", headers=thumb_headers)
+        # resize failed — fall through to full-size art
+    return FileResponse(str(src), media_type="image/jpeg")
 
 
 @router.get("/library/artists/{artist_id}/mb-search", response_class=HTMLResponse)
@@ -3640,6 +3654,7 @@ async def library_artists_page(
     request: Request,
     q: str = "",
     sort: str = "name",
+    view: str = "",
     embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
@@ -3671,14 +3686,19 @@ async def library_artists_page(
         {"artist": r.Artist, "track_count": r.track_count, "album_count": r.album_count}
         for r in rows
     ]
-    ctx = {"active": "library", "artists": artists, "q": q, "sort": sort}
+    view = _layout_view(request, view, "artist_view")
+    ctx = {"active": "library", "artists": artists, "q": q, "sort": sort, "view": view}
     # embed=1: full view content for in-place loading on the /library page.
     if embed:
-        return templates.TemplateResponse(request, "partials/view_artists.html", ctx)
-    # HTMX partial reload (search form): return only the list block.
-    if request.headers.get("HX-Request"):
-        return templates.TemplateResponse(request, "partials/artist_list.html", ctx)
-    return templates.TemplateResponse(request, "library_artists.html", ctx)
+        resp = templates.TemplateResponse(request, "partials/view_artists.html", ctx)
+    # HTMX partial reload (search form / view toggle): only the list block.
+    elif request.headers.get("HX-Request"):
+        tmpl = "partials/artist_grid.html" if view == "grid" else "partials/artist_list.html"
+        resp = templates.TemplateResponse(request, tmpl, ctx)
+    else:
+        resp = templates.TemplateResponse(request, "library_artists.html", ctx)
+    resp.set_cookie("artist_view", view, max_age=365 * 24 * 3600, samesite="lax")
+    return resp
 
 
 @router.get("/library/genres", response_class=HTMLResponse)
@@ -6878,7 +6898,7 @@ async def merge_album(
     for alb in albums:
         scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
         album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
-    view = _album_view(request, "")
+    view = _layout_view(request, "", "album_view")
     tmpl = "partials/album_grid.html" if view == "grid" else "partials/album_list.html"
     return templates.TemplateResponse(
         request, tmpl,

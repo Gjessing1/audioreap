@@ -1168,6 +1168,11 @@ input::placeholder { color: var(--t4); }
 }
 .album-grid-detail { grid-column: 1 / -1; }
 
+/* Artist grid: same card system, circular portraits, centered labels */
+.artist-card { display: block; text-decoration: none; color: inherit; text-align: center; }
+.artist-card-art { border-radius: 50%; }
+.artist-card .album-card-ph { font-size: 34px; }
+
 @media (max-width: 480px) {
   .album-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px 10px; }
   .album-card-ph { font-size: 22px; }

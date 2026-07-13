@@ -1,7 +1,9 @@
 {# Artists view content (no page toolbar). Shared by /library/artists and the
    in-place library view (embed=1). The search form posts to /library/artists,
-   which returns partials/artist_list.html for HX-Request. #}
-<form hx-get="/library/artists"
+   which returns partials/artist_grid.html or artist_list.html for HX-Request
+   depending on the layout preference (?view= / artist_view cookie). #}
+<form id="artist-search-form"
+      hx-get="/library/artists"
       hx-target="#artist-list"
       hx-swap="innerHTML"
       hx-trigger="input changed delay:300ms from:input[name='q'], change from:select[name='sort'], submit"
@@ -16,8 +18,30 @@
     <option value="tracks" {% if sort == 'tracks' %}selected{% endif %}>Sort: Tracks ↓</option>
     <option value="albums" {% if sort == 'albums' %}selected{% endif %}>Sort: Albums ↓</option>
   </select>
+  <div class="view-toggle" id="artist-view-toggle" role="group" aria-label="Layout">
+    <button type="button" title="List view" aria-label="List view"
+            class="view-toggle-btn{% if view|default('grid') != 'grid' %} view-toggle-btn--active{% endif %}"
+            onclick="setArtistView('list', this)">☰</button>
+    <button type="button" title="Grid view" aria-label="Grid view"
+            class="view-toggle-btn{% if view|default('grid') == 'grid' %} view-toggle-btn--active{% endif %}"
+            onclick="setArtistView('grid', this)">▦</button>
+  </div>
+  <input type="hidden" id="artist-view" name="view" value="{{ view|default('grid') }}">
 </form>
 
+<script>
+function setArtistView(v, btn) {
+  document.getElementById('artist-view').value = v;
+  document.querySelectorAll('#artist-view-toggle .view-toggle-btn')
+    .forEach(function (b) { b.classList.toggle('view-toggle-btn--active', b === btn); });
+  htmx.trigger('#artist-search-form', 'submit');
+}
+</script>
+
 <div id="artist-list">
-{% include "partials/artist_list.html" %}
+{% if view|default('grid') == 'grid' %}
+  {% include "partials/artist_grid.html" %}
+{% else %}
+  {% include "partials/artist_list.html" %}
+{% endif %}
 </div>
