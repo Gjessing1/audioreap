@@ -59,6 +59,7 @@ from service.library.writer import trash_empty_album_dir as _trash_empty_album_d
 
 _JOBS_COMPLETED_PAGE = 50
 _BROWSE_PAGE = 75
+_LIST_PAGE = 100  # Albums / Artists load-more page size
 _COMPLETED_STATES = ("done", "failed", "cancelled")
 
 
@@ -2190,16 +2191,24 @@ async def library_albums_list(
     q: str = "",
     sort: str = "artist",
     view: str = "",
+    offset: int = Query(0, ge=0),
     open_id: str = Query("", alias="open"),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from sqlalchemy.orm import joinedload as _jl
 
+    # Quality sort happens in SQL (scalar subquery) so offset pagination stays
+    # correct — a Python re-sort would only order each page internally.
+    _quality_sq = (
+        select(func.avg(Track.tag_quality_score))
+        .where(Track.album_id == Album.id)
+        .scalar_subquery()
+    )
     _album_sort_map = {
         "artist":  (Artist.sort_name, Artist.name, Album.year, Album.title),
         "title":   (Album.title, Artist.name),
         "year":    (Album.year.desc().nulls_last(), Album.title, Artist.name),
-        "quality": None,  # handled in Python after fetch
+        "quality": (func.coalesce(_quality_sq, 0.0), Album.title),
     }
     sort_cols = _album_sort_map.get(sort) or _album_sort_map["artist"]
 
@@ -2207,27 +2216,38 @@ async def library_albums_list(
         select(Album)
         .join(Album.artist)
         .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
-        .limit(500)
+        .order_by(*sort_cols, Album.id)  # id tiebreak keeps pages disjoint
+        .offset(offset)
+        .limit(_LIST_PAGE + 1)
     )
-    if sort_cols:
-        stmt = stmt.order_by(*sort_cols)
 
     if q.strip():
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Album.title.ilike(pattern) | Artist.name.ilike(pattern))
     albums = (await session.execute(stmt)).unique().scalars().all()
+    has_more = len(albums) > _LIST_PAGE
+    albums = albums[:_LIST_PAGE]
+
+    # A bookmarked ?open= album may live on a later page — fetch and append it
+    # so refresh still restores the expanded detail.
+    if open_id and offset == 0 and not any(a.id == open_id for a in albums):
+        open_album = (await session.execute(
+            select(Album)
+            .options(_jl(Album.artist), _jl(Album.tracks).joinedload(Track.file))
+            .where(Album.id == open_id)
+        )).unique().scalar_one_or_none()
+        if open_album is not None:
+            albums.append(open_album)
+
     # Compute per-album quality from owned tracks (no extra query needed — tracks already loaded)
     album_quality: dict[str, float | None] = {}
     for alb in albums:
         scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
         album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
-    # Sort by quality in Python when requested (no SQL column for this)
-    if sort == "quality":
-        albums = sorted(albums, key=lambda a: album_quality.get(a.id) or 0.0)
 
     singles_count = 0
     singles_cover_id: str | None = None
-    if not q.strip():
+    if not q.strip() and offset == 0:
         singles_count = (await session.execute(
             select(func.count(Track.id)).join(Track.file).where(Track.album_id.is_(None))
         )).scalar_one()
@@ -2245,7 +2265,9 @@ async def library_albums_list(
         request, tmpl,
         {"albums": albums, "q": q, "sort": sort, "album_quality": album_quality,
          "singles_count": singles_count, "singles_cover_id": singles_cover_id,
-         "open_id": open_id, "view": view},
+         "open_id": open_id, "view": view,
+         "offset": offset, "has_more": has_more,
+         "next_offset": offset + _LIST_PAGE},
     )
     resp.set_cookie("album_view", view, max_age=365 * 24 * 3600, samesite="lax")
     return resp
@@ -3661,6 +3683,7 @@ async def library_artists_page(
     q: str = "",
     sort: str = "name",
     view: str = "",
+    offset: int = Query(0, ge=0),
     embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
@@ -3682,18 +3705,21 @@ async def library_artists_page(
         .outerjoin(Artist.tracks)
         .outerjoin(Track.album)
         .group_by(Artist.id)
-        .order_by(*sort_cols)
-        .limit(500)
+        .order_by(*sort_cols, Artist.id)  # id tiebreak keeps pages disjoint
+        .offset(offset)
+        .limit(_LIST_PAGE + 1)
     )
     if q.strip():
         stmt = stmt.where(Artist.name.ilike(f"%{q.strip()}%"))
     rows = (await session.execute(stmt)).all()
+    has_more = len(rows) > _LIST_PAGE
     artists = [
         {"artist": r.Artist, "track_count": r.track_count, "album_count": r.album_count}
-        for r in rows
+        for r in rows[:_LIST_PAGE]
     ]
     view = _layout_view(request, view, "artist_view")
-    ctx = {"active": "library", "artists": artists, "q": q, "sort": sort, "view": view}
+    ctx = {"active": "library", "artists": artists, "q": q, "sort": sort, "view": view,
+           "offset": offset, "has_more": has_more, "next_offset": offset + _LIST_PAGE}
     # embed=1: full view content for in-place loading on the /library page.
     if embed:
         resp = templates.TemplateResponse(request, "partials/view_artists.html", ctx)

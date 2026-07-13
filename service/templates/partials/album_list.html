@@ -1,5 +1,8 @@
-{% if albums or singles_count %}
-<div class="album-list">
+{# offset > 0 renders a page fragment: rows + next sentinel only, swapped into
+   the existing .album-list in place of the previous Load-more sentinel. #}
+{% set is_page = offset|default(0) > 0 %}
+{% if albums or singles_count or is_page %}
+{% if not is_page %}<div class="album-list">{% endif %}
   {% if singles_count %}
   <a href="/library/browse?f=singles" style="text-decoration:none;color:inherit;display:block">
   <div class="album-row" style="cursor:pointer">
@@ -90,7 +93,21 @@
   </div>
   {% endif %}
   {% endfor %}
-</div>
+
+  {% if has_more|default(false) %}
+  <div style="padding:8px 0;text-align:center"
+       hx-get="/library/albums/list?offset={{ next_offset }}&q={{ q|default('')|urlencode }}&sort={{ sort|default('artist')|urlencode }}&view=list"
+       hx-trigger="click"
+       hx-target="this"
+       hx-swap="outerHTML"
+       hx-indicator="this">
+    <button class="btn btn-ghost" style="font-size:13px">
+      Load more
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </div>
+  {% endif %}
+{% if not is_page %}</div>{% endif %}
 {% else %}
 <p class="empty" style="text-align:left;padding:24px 0">
   {% if q %}No albums matching "{{ q }}".{% else %}No albums in library.{% endif %}

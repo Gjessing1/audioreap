@@ -1,11 +1,14 @@
-{% if not artists %}
+{# offset > 0 renders a page fragment: rows + next sentinel only, swapped in
+   place of the previous Load-more sentinel. #}
+{% set is_page = offset|default(0) > 0 %}
+{% if not artists and not is_page %}
 <p class="empty" style="padding:16px 0">No artists found{% if q %} for "{{ q }}"{% endif %}.</p>
 {% else %}
 {% for entry in artists %}
 <a href="/library/artists/{{ entry.artist.id }}"
    style="text-decoration:none;color:inherit;display:block">
 <div class="card" style="padding:10px 14px;gap:12px">
-  <img src="/library/artists/{{ entry.artist.id }}/image"
+  <img src="/library/artists/{{ entry.artist.id }}/image?size=96"
        style="width:40px;height:40px;object-fit:cover;border-radius:6px;flex-shrink:0"
        onerror="this.style.display='none'" alt="">
   <div style="flex:1;min-width:0">
@@ -26,7 +29,17 @@
 </div>
 </a>
 {% endfor %}
-{% if artists|length >= 500 %}
-<p class="empty" style="padding:12px 0;font-size:12px">Showing first 500 — use search to narrow.</p>
+{% if has_more|default(false) %}
+<div style="padding:8px 0;text-align:center"
+     hx-get="/library/artists?offset={{ next_offset }}&q={{ q|default('')|urlencode }}&sort={{ sort|default('name')|urlencode }}&view=list"
+     hx-trigger="click"
+     hx-target="this"
+     hx-swap="outerHTML"
+     hx-indicator="this">
+  <button class="btn btn-ghost" style="font-size:13px">
+    Load more
+    <span class="htmx-indicator"><span class="spinner"></span></span>
+  </button>
+</div>
 {% endif %}
 {% endif %}
