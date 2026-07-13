@@ -3160,6 +3160,11 @@ async def artist_page(
                 _norm(a["album"].title): len(a["tracks"])
                 for a in albums_list if a["album"]
             }
+            # → a local track id per owned album so its cover thumb is local art
+            owned_title_covers: dict[str, str] = {
+                _norm(a["album"].title): a["tracks"][0].id
+                for a in albums_list if a["album"] and a["tracks"]
+            }
             for rg in rgs:
                 owned = _norm(rg.title) in owned_album_titles
                 mb_release_groups.append({
@@ -3169,6 +3174,7 @@ async def artist_page(
                     "release_type": rg.release_type,
                     "owned": owned,
                     "owned_track_count": owned_title_counts.get(_norm(rg.title), 0),
+                    "cover_track_id": owned_title_covers.get(_norm(rg.title)),
                 })
         except Exception as exc:
             logger.debug("Artist page MB lookup failed: %s", exc)
@@ -6088,37 +6094,40 @@ async def discography_view(
             local_albums_list = (
                 await session.execute(
                     select(Album)
-                    .options(joinedload(Album.tracks))
+                    .options(joinedload(Album.tracks).joinedload(Track.file))
                     .where(Album.artist_id == la.id)
                 )
             ).unique().scalars().all()
             break
 
-    # Build lookup maps: release_group_id → track_count, normalized_title → track_count
-    rg_to_track_count: dict[str, int] = {}
-    title_to_track_count: dict[str, int] = {}
+    # Build lookup maps: release_group_id / normalized_title → (track_count,
+    # cover track id). The cover id lets owned releases show local art instead
+    # of hitting Cover Art Archive.
+    rg_to_local: dict[str, tuple[int, str | None]] = {}
+    title_to_local: dict[str, tuple[int, str | None]] = {}
     for la in local_albums_list:
         tc = len(la.tracks)
+        cover_id = next((t.id for t in la.tracks if t.file), None)
         if la.mb_release_group_id:
-            rg_to_track_count[la.mb_release_group_id] = tc
-        title_to_track_count[_normalize(la.title)] = tc
+            rg_to_local[la.mb_release_group_id] = (tc, cover_id)
+        title_to_local[_normalize(la.title)] = (tc, cover_id)
 
     release_entries = []
     for rg in filtered:
         normalized_title = _normalize(rg.title)
         # Prefer release-group ID match, fall back to title similarity
-        if rg.release_group_id in rg_to_track_count:
+        if rg.release_group_id in rg_to_local:
             owned = True
-            owned_track_count = rg_to_track_count[rg.release_group_id]
+            owned_track_count, cover_track_id = rg_to_local[rg.release_group_id]
         else:
             best_match = max(
-                ((tc, title_similarity(normalized_title, local_t))
-                 for local_t, tc in title_to_track_count.items()),
+                ((local, title_similarity(normalized_title, local_t))
+                 for local_t, local in title_to_local.items()),
                 key=lambda x: x[1],
-                default=(0, 0.0),
+                default=((0, None), 0.0),
             )
             owned = best_match[1] >= 0.80
-            owned_track_count = best_match[0] if owned else 0
+            owned_track_count, cover_track_id = best_match[0] if owned else (0, None)
         release_entries.append({
             "release_group_id": rg.release_group_id,
             "title": rg.title,
@@ -6126,6 +6135,7 @@ async def discography_view(
             "release_type": rg.release_type,
             "owned": owned,
             "owned_track_count": owned_track_count,
+            "cover_track_id": cover_track_id,
         })
 
     owned_count = sum(1 for r in release_entries if r["owned"])

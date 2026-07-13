@@ -32,6 +32,21 @@
 {% if releases %}
 {% for r in releases %}
 <div class="card" style="margin-bottom:6px" data-disco-title="{{ r.title|e }}">
+  {# Cover thumb: local art for owned releases, else Cover Art Archive
+     release-group front (hotlinked like art_search_results.html); the
+     onerror chain falls from local → CAA → placeholder. #}
+  <div style="width:44px;height:44px;flex-shrink:0;border-radius:6px;overflow:hidden;background:var(--s3);display:flex;align-items:center;justify-content:center">
+    {% if r.cover_track_id %}
+    <img src="/library/tracks/{{ r.cover_track_id }}/cover-art?size=96"
+         loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover"
+         onerror="this.onerror=function(){this.style.display='none';this.nextElementSibling.style.display='block'};this.src='https://coverartarchive.org/release-group/{{ r.release_group_id }}/front-250'">
+    {% else %}
+    <img src="https://coverartarchive.org/release-group/{{ r.release_group_id }}/front-250"
+         loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover"
+         onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+    {% endif %}
+    <span style="display:none;color:var(--t4);font-size:16px">♪</span>
+  </div>
   <div class="card-info">
     <div class="card-title">{{ r.title }}</div>
     <div class="card-sub">

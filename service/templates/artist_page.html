@@ -213,6 +213,20 @@
 <div style="display:flex;flex-direction:column;gap:6px">
   {% for rg in mb_release_groups %}
   <div class="card" style="padding:10px 14px;align-items:center;gap:12px">
+    {# Cover thumb: local art for owned releases, else Cover Art Archive
+       release-group front; onerror chain falls local → CAA → placeholder. #}
+    <div style="width:44px;height:44px;flex-shrink:0;border-radius:6px;overflow:hidden;background:var(--s3);display:flex;align-items:center;justify-content:center">
+      {% if rg.cover_track_id %}
+      <img src="/library/tracks/{{ rg.cover_track_id }}/cover-art?size=96"
+           loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover"
+           onerror="this.onerror=function(){this.style.display='none';this.nextElementSibling.style.display='block'};this.src='https://coverartarchive.org/release-group/{{ rg.release_group_id }}/front-250'">
+      {% else %}
+      <img src="https://coverartarchive.org/release-group/{{ rg.release_group_id }}/front-250"
+           loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+      {% endif %}
+      <span style="display:none;color:var(--t4);font-size:16px">♪</span>
+    </div>
     <div style="flex:1;min-width:0">
       <div style="font-size:14px;font-weight:{% if rg.owned %}600{% else %}400{% endif %}">
         {{ rg.title }}
