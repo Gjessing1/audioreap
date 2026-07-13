@@ -5,6 +5,7 @@
      hx-get="/discography/{{ a.artist_id }}"
      hx-target="#disco-detail"
      hx-swap="innerHTML"
+     hx-push-url="true"
      hx-indicator="#disco-detail">
   <div class="card-info">
     <div class="card-title">{{ a.name }}</div>

@@ -27,6 +27,7 @@ from service.library.cohesion import (
     find_canonical_album,
     get_owned_recording_ids,
     merge_albums,
+    merge_artists,
     stable_albumartist,
 )
 
@@ -250,6 +251,7 @@ async def test_merge_albums_moves_files_and_deletes_source_row(
 
     async with db() as session:
         result = await merge_albums(session, "album:canon", "album:split", trash, music)
+        await session.commit()  # merge_albums flushes; the caller owns the commit
 
     assert result == {"moved": 1, "already_there": 0, "collisions": 0}
     dst = canon_dir / moved_src.name
@@ -316,6 +318,7 @@ async def test_auto_heal_merges_split_into_mbid_bearing_canonical(
         merged = await auto_heal_album_splits(
             session, "In Rainbows", "Radiohead", music / ".trash", music
         )
+        await session.commit()  # auto_heal flushes; the caller owns the commit
     assert merged == 1
 
     async with db() as session:
@@ -333,6 +336,58 @@ async def test_auto_heal_noop_without_split(
     async with db() as session:
         assert await auto_heal_album_splits(session, "Kid A", "Radiohead", tmp_path, tmp_path) == 0
         assert await auto_heal_album_splits(session, "", "Radiohead", tmp_path, tmp_path) == 0
+
+
+# ---------------------------------------------------------------- merge_artists
+
+
+async def test_merge_artists_reassigns_moves_and_deletes_source(
+    db: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    music = tmp_path / "music"
+    src_dir = music / "Beatles, The" / "Abbey Road (1969)"
+    src_dir.mkdir(parents=True)
+    src_file = src_dir / "01 - Come Together.ogg"
+    src_file.write_bytes(b"fake-audio-1")
+
+    async with db() as session, session.begin():
+        canonical = await _seed_artist(session, "The Beatles", mb_artist_id=MB_ARTIST)
+        source = await _seed_artist(session, "Beatles, The")
+        album = await _seed_album(session, source, "Abbey Road", album_id="album:ar", year=1969)
+        track = await _seed_track(session, source, album, "Come Together", file_path=src_file)
+        track.track_number = 1  # so track_path keeps the "01 - " filename prefix
+        canonical_id, source_id = canonical.id, source.id
+
+    async with db() as session:
+        result = await merge_artists(session, canonical_id, source_id, music)
+        await session.commit()  # merge_artists flushes; the caller owns the commit
+
+    assert result == {"retagged": 1, "moved": 1}
+    # File relocated into the canonical artist's layout path; source tree pruned.
+    dst = music / "The Beatles" / "Abbey Road (1969)" / "01 - Come Together.ogg"
+    assert dst.exists() and not src_file.exists()
+    assert not (music / "Beatles, The").exists()
+
+    async with db() as session:
+        assert await session.get(Artist, source_id) is None
+        album_row = await session.get(Album, "album:ar")
+        assert album_row is not None and album_row.artist_id == canonical_id
+        tf = (
+            (await session.execute(select(TrackFile).where(TrackFile.path == str(dst))))
+            .scalars()
+            .one_or_none()
+        )
+        assert tf is not None
+
+
+async def test_merge_artists_missing_artist_returns_none(
+    db: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    async with db() as session, session.begin():
+        await _seed_artist(session, "The Beatles")
+    async with db() as session:
+        assert await merge_artists(session, _artist_id("The Beatles"), "artist:gone", tmp_path) is None
+        assert await merge_artists(session, "artist:gone", _artist_id("The Beatles"), tmp_path) is None
 
 
 # ---------------------------------------------------------------- apply_album_tags

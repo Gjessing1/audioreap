@@ -26,6 +26,33 @@ def _artist_id(name: str) -> str:
     return f"artist:{digest}"
 
 
+async def resolve_canonical_release_id(album: object) -> str | None:
+    """Canonical MUSICBRAINZ_ALBUMID for an album: the DB value if set, else the
+    majority value across the album's files (an inconsistent album ID is itself a
+    cause of Navidrome splits). Requires ``tracks[].file`` loaded.
+    """
+    import asyncio
+    from collections import Counter
+
+    from service.library.tagger import read_mb_release_id
+
+    canonical: str | None = album.musicbrainz_release_id  # type: ignore[attr-defined]
+    if canonical:
+        return canonical
+
+    mb_ids: list[str] = []
+    for track in album.tracks:  # type: ignore[attr-defined]
+        if track.file:
+            fp = Path(track.file.path)
+            if fp.exists():
+                rid = await asyncio.to_thread(read_mb_release_id, fp)
+                if rid:
+                    mb_ids.append(rid)
+    if mb_ids:
+        return Counter(mb_ids).most_common(1)[0][0]
+    return None
+
+
 async def apply_album_tags(album: object) -> int:
     """Rewrite album / albumartist / year / canonical MUSICBRAINZ_ALBUMID on every
     track file of ``album`` so Navidrome groups them into one album (fixes splits).
@@ -36,9 +63,6 @@ async def apply_album_tags(album: object) -> int:
     retagged. Does **not** commit — the caller owns the session/transaction.
     """
     import asyncio
-    from collections import Counter
-
-    import mutagen
 
     from service.library.tagger import write_tags as _write_tags
 
@@ -46,32 +70,7 @@ async def apply_album_tags(album: object) -> int:
     year_val = album.year  # type: ignore[attr-defined]
     albumartist_val = album.artist.name if album.artist else "Unknown"  # type: ignore[attr-defined]
 
-    # Canonical MUSICBRAINZ_ALBUMID: prefer the DB value, else the majority across the
-    # files — an inconsistent album ID is itself a cause of Navidrome splits.
-    canonical_mb_release_id = album.musicbrainz_release_id  # type: ignore[attr-defined]
-    if not canonical_mb_release_id:
-        mb_ids: list[str] = []
-        for track in album.tracks:  # type: ignore[attr-defined]
-            if track.file:
-                fp = Path(track.file.path)
-                if fp.exists():
-                    try:
-                        raw = await asyncio.to_thread(mutagen.File, fp)
-                        if raw and raw.tags:
-                            for key in ("musicbrainz_albumid", "TXXX:MusicBrainz Album Id",
-                                        "----:com.apple.iTunes:MusicBrainz Album Id"):
-                                v = raw.tags.get(key)
-                                if v:
-                                    val_str = v[0] if isinstance(v, list) else str(v)
-                                    if hasattr(val_str, "text"):
-                                        val_str = str(val_str.text[0]) if val_str.text else ""
-                                    if val_str:
-                                        mb_ids.append(str(val_str).strip())
-                                    break
-                    except Exception:
-                        pass
-        if mb_ids:
-            canonical_mb_release_id = Counter(mb_ids).most_common(1)[0][0]
+    canonical_mb_release_id = await resolve_canonical_release_id(album)
 
     count = 0
     for track in album.tracks:  # type: ignore[attr-defined]
@@ -226,7 +225,10 @@ async def merge_albums(
     Reusable core shared by the manual merge route and :func:`auto_heal_album_splits`.
     Normalises album / albumartist / year / MUSICBRAINZ_ALBUMID across the moved
     tracks and strips any stray VERSION tag so Navidrome groups them as one album.
-    Commits the transaction. Returns counts: moved / already_there / collisions.
+    Flushes but does **not** commit — the caller owns the session/transaction
+    (same convention as :func:`apply_album_tags`) and must commit promptly, since
+    the filesystem moves have already happened by the time this returns.
+    Returns counts: moved / already_there / collisions.
 
     Deliberately does NOT call ``index_file()`` — that would re-read file tags and
     re-group on the source's tags. Instead we update TrackFile.path and
@@ -239,11 +241,7 @@ async def merge_albums(
 
     from service.db.schema import Album, Track
     from service.library.layout import track_path
-    from service.library.tagger import (
-        read_mb_release_id,
-        strip_album_version_tags,
-        write_tags,
-    )
+    from service.library.tagger import strip_album_version_tags, write_tags
     from service.library.writer import atomic_place, trash_empty_album_dir
 
     canonical = (await session.execute(
@@ -321,16 +319,9 @@ async def merge_albums(
         except Exception:
             pass
 
-    # Determine the canonical release ID (DB first, then read from a canonical file).
-    canonical_release_id: str | None = canonical.musicbrainz_release_id
-    if not canonical_release_id:
-        for t in canonical.tracks:
-            if t.file:
-                fp = Path(t.file.path)
-                if fp.exists():
-                    canonical_release_id = read_mb_release_id(fp)
-                    if canonical_release_id:
-                        break
+    # Canonical release ID: DB value, else majority vote across canonical's files
+    # (same heuristic as apply_album_tags).
+    canonical_release_id = await resolve_canonical_release_id(canonical)
 
     # Normalise grouping tags on every moved track + strip any stray VERSION tag.
     canonical_artist_name = canonical.artist.name if canonical.artist else "Unknown"
@@ -358,13 +349,152 @@ async def merge_albums(
     await session.flush()
     session.expunge(source)
     await session.execute(_sa_delete(Album).where(Album.id == source_id))
-    await session.commit()
 
     logger.info(
         "Merged album %s → %s (moved=%d already=%d collisions=%d)",
         source_id, canonical_id, moved, already_there, collisions,
     )
     return {"moved": moved, "already_there": already_there, "collisions": collisions}
+
+
+async def merge_artists(
+    session: AsyncSession,
+    canonical_id: str,
+    source_id: str,
+    music_dir: "Path",
+) -> dict[str, int] | None:
+    """Merge ``source`` artist into ``canonical``: reassign all albums + tracks,
+    rewrite artist/albumartist tags, and move files to the canonical layout path.
+
+    Counterpart of :func:`merge_albums` (the manual artist-merge route used to
+    inline all of this in the web layer). Returns ``None`` when either artist
+    doesn't exist, else counts: retagged / moved. Flushes but does **not**
+    commit — the caller owns the session/transaction and must commit promptly,
+    since the filesystem moves have already happened by the time this returns.
+    """
+    import asyncio
+    import shutil
+
+    from sqlalchemy import delete as _sa_delete, select
+    from sqlalchemy.orm import joinedload as _jl
+
+    from service.db.schema import Artist, Track, TrackFile
+    from service.library.layout import track_path
+    from service.library.tagger import write_tags
+
+    canonical = (await session.execute(
+        select(Artist)
+        .options(_jl(Artist.albums), _jl(Artist.tracks).joinedload(Track.file))
+        .where(Artist.id == canonical_id)
+    )).unique().scalar_one_or_none()
+    source = (await session.execute(
+        select(Artist)
+        .options(_jl(Artist.albums), _jl(Artist.tracks).joinedload(Track.file))
+        .where(Artist.id == source_id)
+    )).unique().scalar_one_or_none()
+
+    if canonical is None or source is None:
+        return None
+
+    canonical_name = canonical.name
+
+    # Carry over MB artist ID / sort name if canonical lacks them.
+    if not canonical.musicbrainz_artist_id and source.musicbrainz_artist_id:
+        canonical.musicbrainz_artist_id = source.musicbrainz_artist_id
+    if not canonical.sort_name and source.sort_name:
+        canonical.sort_name = source.sort_name
+
+    # Reassign albums
+    for album in source.albums:
+        album.artist_id = canonical_id
+
+    # Reassign tracks and collect files to retag; plan path moves but don't update
+    # DB yet. Compute each destination with the canonical library layout
+    # (track_path) so files filed under the album-artist dir, /music/Singles/<artist>/,
+    # AND /music/Compilations/ all relocate to the merged artist. A plain prefix
+    # check on /music/<source_name>/ would strand singles & comps (e.g. a duet
+    # single left in /music/Singles/<collab>/ surfacing as "[Unknown Album]").
+    albums_by_id = {alb.id: alb for alb in source.albums}
+    files_to_retag: list[Path] = []
+    planned_moves: list[tuple[Path, Path, "TrackFile"]] = []  # (old, new, orm_row)
+    for track in source.tracks:
+        track.artist_id = canonical_id
+        if not track.file:
+            continue
+        fp = Path(track.file.path)
+        if not fp.exists():
+            continue
+        files_to_retag.append(fp)
+        alb = albums_by_id.get(track.album_id) if track.album_id else None
+        new_fp = track_path(
+            music_dir,
+            artist=canonical_name,
+            album=(alb.title if alb else None),
+            year=(alb.year if alb else None),
+            track_number=track.track_number,
+            disc_number=track.disc_number,
+            title=track.title,
+            ext=fp.suffix,
+            albumartist=canonical_name,
+        )
+        if new_fp != fp:
+            planned_moves.append((fp, new_fp, track.file))
+
+    # Rewrite albumartist (and artist) tags so Navidrome groups under canonical name
+    retagged = 0
+    for fp in files_to_retag:
+        try:
+            await asyncio.to_thread(write_tags, fp, artist=canonical_name, albumartist=canonical_name)
+            retagged += 1
+        except Exception as exc:
+            logger.warning("merge_artists: tag write failed for %s: %s", fp, exc)
+
+    # Move files to their canonical location; update DB paths only for files that
+    # actually moved so the DB stays consistent with the filesystem. Remember each
+    # source dir → dest dir so we can carry sidecars and prune emptied source dirs.
+    moved = 0
+    dir_moves: dict[Path, Path] = {}
+    for old_fp, new_fp, tf_row in planned_moves:
+        try:
+            new_fp.parent.mkdir(parents=True, exist_ok=True)
+            if not new_fp.exists():
+                shutil.move(str(old_fp), str(new_fp))
+            tf_row.path = str(new_fp)
+            moved += 1
+            if old_fp.parent != new_fp.parent:
+                dir_moves.setdefault(old_fp.parent, new_fp.parent)
+        except Exception as exc:
+            logger.warning("merge_artists: could not move %s → %s: %s", old_fp, new_fp, exc)
+
+    # Carry over sidecars (cover.jpg, artist.jpg, …) from each emptied source dir,
+    # then prune now-empty source directories upward (stops at /music).
+    for old_dir, new_dir in dir_moves.items():
+        try:
+            if old_dir.exists():
+                for item in sorted(old_dir.iterdir()):
+                    if item.is_file():
+                        dest_item = new_dir / item.name
+                        dest_item.parent.mkdir(parents=True, exist_ok=True)
+                        if not dest_item.exists():
+                            shutil.move(str(item), str(dest_item))
+            d = old_dir
+            while d != music_dir and d.exists() and not any(d.iterdir()):
+                d.rmdir()
+                d = d.parent
+        except Exception as exc:
+            logger.warning("merge_artists: source dir cleanup failed for %s: %s", old_dir, exc)
+
+    # Delete the source Artist row. Flush the reassignments first, then expunge
+    # so SQLAlchemy doesn't auto-NULL the reassigned rows' FK on delete.
+    await session.flush()
+    session.expunge(source)
+    await session.execute(_sa_delete(Artist).where(Artist.id == source_id))
+
+    logger.info(
+        "Merged artist %s → %s (retagged=%d moved=%d)",
+        source_id, canonical_id, retagged, moved,
+    )
+    return {"retagged": retagged, "moved": moved}
 
 
 async def auto_heal_album_splits(
@@ -379,7 +509,9 @@ async def auto_heal_album_splits(
     Run after a discography batch's tracks land in /music. Groups local albums by
     normalized (title, artist); when more than one album row matches, picks the
     canonical (one with a MB release ID, else most tracks) and merges the rest into
-    it. Returns the number of source albums merged.
+    it. Returns the number of source albums merged. Does **not** commit — the
+    caller owns the session/transaction and must commit promptly (files have
+    already moved on disk).
     """
     from sqlalchemy import func, select
 

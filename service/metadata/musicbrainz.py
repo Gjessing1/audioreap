@@ -16,6 +16,7 @@ from pathlib import Path
 
 import musicbrainzngs
 
+from service.metadata.backoff import call_with_backoff
 from service.search.matcher import DEDUP_THRESHOLD, title_similarity, track_similarity
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,26 @@ musicbrainzngs.set_useragent("audioreap", "0.1", "https://github.com/Gjessing1/a
 socket.setdefaulttimeout(30)
 
 _CACHE_TTL = 86400  # 24 hours
+
+
+def _mb_transient(exc: Exception) -> bool:
+    """Retryable musicbrainzngs failures: network errors and 429/5xx responses."""
+    if isinstance(exc, musicbrainzngs.NetworkError):
+        return True
+    if isinstance(exc, musicbrainzngs.ResponseError):
+        code = getattr(getattr(exc, "cause", None), "code", None)
+        return code == 429 or (isinstance(code, int) and code >= 500)
+    return False
+
+
+def _mb_call(label, fn):
+    """Run a musicbrainzngs call with the shared transient-retry backoff.
+
+    musicbrainzngs already throttles to 1 req/s and handles 503 rate-limit
+    retries internally; this adds the other 5xx/429 codes and network blips,
+    so a momentary outage doesn't become a "no match" that callers cache.
+    """
+    return call_with_backoff(fn, is_transient=_mb_transient, label=label)
 
 
 @dataclass
@@ -226,11 +247,11 @@ def lookup_recording(
 
     if raw is None:
         try:
-            result = musicbrainzngs.search_recordings(
+            result = _mb_call("MB search_recordings", lambda: musicbrainzngs.search_recordings(
                 recording=title,
                 artistname=artist,
                 limit=5,
-            )
+            ))
             raw = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key, raw)
@@ -382,17 +403,21 @@ def _staged_recording_search(
     duration_seconds: int | None,
     limit: int,
     preferred_release_group: str | None,
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Run staged queries sequentially, stopping once the pool is strong enough.
 
-    Returns merged raw recording dicts (deduped by MBID, first-seen order).
+    Returns (merged raw recording dicts (deduped by MBID, first-seen order),
+    complete). complete=False means at least one staged query failed even after
+    retries — the pool may be missing candidates, so it must not be cached.
     """
     merged: dict[str, dict] = {}
+    complete = True
     for q in _staged_recording_queries(title, artist, duration_seconds, preferred_release_group):
         try:
-            result = musicbrainzngs.search_recordings(query=q, limit=limit)
+            result = _mb_call("MB staged search", lambda: musicbrainzngs.search_recordings(query=q, limit=limit))
         except Exception as exc:
             logger.warning("MB staged query failed (%s): %s", q, exc)
+            complete = False
             continue
         for rec in result.get("recording-list") or []:
             if isinstance(rec, dict):
@@ -412,7 +437,7 @@ def _staged_recording_search(
         logger.debug("MB staged: %d candidates after %r (best_sim=%.2f)", len(merged), q, best)
         if best >= DEDUP_THRESHOLD:
             break
-    return list(merged.values())
+    return list(merged.values()), complete
 
 
 def get_recording_candidates(
@@ -438,11 +463,13 @@ def get_recording_candidates(
         raw = _load_cache(cache_dir, key)
 
     if raw is None:
-        records = _staged_recording_search(
+        records, complete = _staged_recording_search(
             title, artist, duration_seconds, limit, preferred_release_group
         )
         raw = {"recording-list": records}
-        if cache_dir is not None:
+        # Only cache complete pools — a pool missing candidates because a staged
+        # query failed transiently must not become a 24h false negative.
+        if cache_dir is not None and complete:
             _save_cache(cache_dir, key, raw)
     else:
         logger.debug("MB cache hit (candidates): %s", key)
@@ -500,11 +527,11 @@ def search_recordings_free(
 
     if raw is None:
         try:
-            result = musicbrainzngs.search_recordings(
+            result = _mb_call("MB free search", lambda: musicbrainzngs.search_recordings(
                 recording=title_q or query,
                 artistname=artist_q or None,
                 limit=limit,
-            )
+            ))
             raw = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key, raw)
@@ -553,7 +580,7 @@ def search_artists(
 
     if raw is None:
         try:
-            result = musicbrainzngs.search_artists(artist=name, limit=limit)
+            result = _mb_call("MB artist search", lambda: musicbrainzngs.search_artists(artist=name, limit=limit))
             raw = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key, raw)
@@ -585,9 +612,9 @@ def search_release_groups(
     raw = _load_cache(cache_dir, key) if cache_dir else None
     if raw is None:
         try:
-            result = musicbrainzngs.search_release_groups(
+            result = _mb_call("MB release-group search", lambda: musicbrainzngs.search_release_groups(
                 releasegroup=album, artist=artist, limit=limit
-            )
+            ))
             raw = dict(result)
             if cache_dir:
                 _save_cache(cache_dir, key, raw)
@@ -638,7 +665,7 @@ def get_artist_release_groups(
     else:
         # Fetch artist name (fast call, no includes).
         try:
-            artist_result = musicbrainzngs.get_artist_by_id(artist_mbid)
+            artist_result = _mb_call("MB artist fetch", lambda: musicbrainzngs.get_artist_by_id(artist_mbid))
             artist_name = str(artist_result.get("artist", {}).get("name") or "Unknown Artist")
         except Exception as exc:
             logger.warning("MB artist fetch failed for %s: %s", artist_mbid, exc)
@@ -648,13 +675,15 @@ def get_artist_release_groups(
         raw_rgs = []
         limit = 100
         offset = 0
+        complete = True
         while True:
             try:
-                page = musicbrainzngs.browse_release_groups(
+                page = _mb_call("MB browse release-groups", lambda: musicbrainzngs.browse_release_groups(
                     artist=artist_mbid, limit=limit, offset=offset
-                )
+                ))
             except Exception as exc:
                 logger.warning("MB browse_release_groups failed for %s offset %d: %s", artist_mbid, offset, exc)
+                complete = False
                 break
             page_list: list[dict] = page.get("release-group-list") or []
             raw_rgs.extend(page_list)
@@ -663,7 +692,9 @@ def get_artist_release_groups(
             if offset >= total or not page_list:
                 break
 
-        if cache_dir is not None:
+        # Only cache complete discographies — a pagination failure would
+        # otherwise pin a truncated release list for 24h.
+        if cache_dir is not None and complete:
             _save_cache(cache_dir, key, {"artist_name": artist_name, "release_groups": raw_rgs})
 
     groups: list[MBReleaseGroup] = []
@@ -702,10 +733,10 @@ def get_recording_by_id(
 
     if raw is None:
         try:
-            result = musicbrainzngs.get_recording_by_id(
+            result = _mb_call("MB recording fetch", lambda: musicbrainzngs.get_recording_by_id(
                 recording_id,
                 includes=["artists", "releases", "media", "isrcs"],
-            )
+            ))
             raw = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key, raw)
@@ -736,10 +767,10 @@ def get_release_group_genres(
 
     if raw is None:
         try:
-            result = musicbrainzngs.get_release_group_by_id(
+            result = _mb_call("MB release-group tags", lambda: musicbrainzngs.get_release_group_by_id(
                 release_group_id,
                 includes=["tags"],
-            )
+            ))
             raw = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key, raw)
@@ -801,10 +832,10 @@ def get_release_group_tracks(
 
     if raw_rg is None:
         try:
-            result = musicbrainzngs.get_release_group_by_id(
+            result = _mb_call("MB release-group fetch", lambda: musicbrainzngs.get_release_group_by_id(
                 release_group_id,
                 includes=["releases"],
-            )
+            ))
             raw_rg = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key_rg, raw_rg)
@@ -858,10 +889,10 @@ def _fetch_release_tracks(
 
     if raw_rel is None:
         try:
-            result = musicbrainzngs.get_release_by_id(
+            result = _mb_call("MB release fetch", lambda: musicbrainzngs.get_release_by_id(
                 release_id,
                 includes=["recordings", "media"],
-            )
+            ))
             raw_rel = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key_rel, raw_rel)

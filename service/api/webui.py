@@ -1124,6 +1124,7 @@ async def batch_approve(
                 healed += await auto_heal_album_splits(
                     session, _alb, _aa, settings.music_dir / ".trash", settings.music_dir
                 )
+                await session.commit()
             except Exception as exc:
                 logger.warning("Auto-heal failed for %r / %r: %s", _alb, _aa, exc)
                 try:
@@ -1380,14 +1381,14 @@ async def requeue_job(
     )
 
 
-@router.get("/jobs/{job_id}/mb-search", response_class=HTMLResponse)
-async def job_mb_search(
-    request: Request,
-    job_id: str,
-    q: str = "",
-    limit: int = 10,
-    duration: int | None = None,
+async def _mb_recording_search(
+    request: Request, q: str, limit: int, duration: int | None, **ctx: object
 ) -> HTMLResponse:
+    """Shared MB recording search → mb_candidates.html partial.
+
+    Used by both the review-card (job) and library-track edit-card search
+    boxes; ctx carries the route-specific keys (job_id / track_id).
+    """
     if not q.strip():
         return HTMLResponse("")
     from service.metadata.musicbrainz import search_recordings_free
@@ -1396,8 +1397,19 @@ async def job_mb_search(
     )
     return templates.TemplateResponse(
         request, "partials/mb_candidates.html",
-        {"results": results, "job_id": job_id, "q": q.strip(), "limit": limit, "duration": duration},
+        {"results": results, "q": q.strip(), "limit": limit, "duration": duration, **ctx},
     )
+
+
+@router.get("/jobs/{job_id}/mb-search", response_class=HTMLResponse)
+async def job_mb_search(
+    request: Request,
+    job_id: str,
+    q: str = "",
+    limit: int = 10,
+    duration: int | None = None,
+) -> HTMLResponse:
+    return await _mb_recording_search(request, q, limit, duration, job_id=job_id)
 
 
 @router.post("/jobs/{job_id}/mb-apply", response_class=HTMLResponse)
@@ -2820,6 +2832,64 @@ async def job_cover_art(
                 headers={"Cache-Control": "no-store"})
 
 
+async def _fetch_user_art(art_url: str) -> tuple[bytes | None, HTMLResponse | None]:
+    """Download + size-validate user-picked cover art from a URL.
+
+    Returns (art_bytes, None) on success or (None, error_badge_response) on
+    failure — the shared front half of the job/track/album apply-art routes.
+    """
+    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small, fetch_from_url
+
+    art = await fetch_from_url(art_url)
+    if not art:
+        return None, HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
+    if _image_too_small(art, _MIN_USER_COVER_PX):
+        return None, HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
+    return art, None
+
+
+async def _embed_album_art(session: AsyncSession, album_id: str, art: bytes) -> int:
+    """Embed art into every track file of an album + write the cover.jpg sidecar.
+
+    Returns the number of files embedded; raises HTTPException(404) for an
+    unknown album. Commits the session and triggers scans — shared back half
+    of the album apply-art and album cover-upload routes.
+    """
+    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
+
+    album = (await session.execute(
+        select(Album)
+        .options(joinedload(Album.tracks).joinedload(Track.file))
+        .where(Album.id == album_id)
+    )).unique().scalar_one_or_none()
+    if album is None:
+        raise HTTPException(404)
+
+    album_dir: Path | None = None
+    embedded = 0
+    for track in album.tracks:
+        if not track.file:
+            continue
+        fp = Path(track.file.path)
+        if not fp.exists():
+            continue
+        album_dir = album_dir or fp.parent
+        try:
+            await asyncio.to_thread(_write_tags, fp, artwork_bytes=art)
+            hca = await asyncio.to_thread(_has_cover_art, fp)
+            track.file.has_cover_art = hca
+            embedded += 1
+        except Exception as exc:
+            logger.debug("album art embed failed for %s: %s", fp, exc)
+
+    if album_dir:
+        write_cover_jpg(album_dir, art)
+
+    await session.commit()
+    await _do_scans()
+    return embedded
+
+
 @router.post("/jobs/{job_id}/apply-art", response_class=HTMLResponse)
 async def job_apply_art(
     request: Request,
@@ -2829,7 +2899,6 @@ async def job_apply_art(
 ) -> HTMLResponse:
     """Download art from a URL and embed it into the staging file for a review job."""
     from service.library.tagger import write_tags as _write_tags
-    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small, fetch_from_url
 
     row = await session.get(AcquisitionJobRow, job_id)
     if not row or not row.staging_path:
@@ -2838,11 +2907,9 @@ async def job_apply_art(
     if not staging_path.exists():
         raise HTTPException(404, "Staging file not on disk")
 
-    art = await fetch_from_url(art_url)
-    if not art:
-        return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
-    if _image_too_small(art, _MIN_USER_COVER_PX):
-        return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
+    art, err = await _fetch_user_art(art_url)
+    if err is not None:
+        return err
 
     await asyncio.to_thread(_write_tags, staging_path, artwork_bytes=art)
 
@@ -3095,126 +3162,18 @@ async def merge_artist(
     source_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Merge source artist into canonical: reassign all albums+tracks, rewrite albumartist tags."""
-    from sqlalchemy.orm import joinedload as _jl
-    from service.library.tagger import write_tags as _write_tags
-    from sqlalchemy import delete as _sa_delete
+    """Merge source artist into canonical.
 
-    canonical = (await session.execute(
-        select(Artist)
-        .options(_jl(Artist.albums), _jl(Artist.tracks).joinedload(Track.file))
-        .where(Artist.id == canonical_id)
-    )).unique().scalar_one_or_none()
-    source = (await session.execute(
-        select(Artist)
-        .options(_jl(Artist.albums), _jl(Artist.tracks).joinedload(Track.file))
-        .where(Artist.id == source_id)
-    )).unique().scalar_one_or_none()
+    Thin route over :func:`service.library.cohesion.merge_artists`, which does
+    the DB reassignment + tag rewrite + filesystem moves (mirrors merge_album →
+    cohesion.merge_albums).
+    """
+    from service.library.cohesion import merge_artists as _merge_artists
 
-    if canonical is None or source is None:
+    result = await _merge_artists(session, canonical_id, source_id, settings.music_dir)
+    if result is None:
         raise HTTPException(404)
-
-    canonical_name = canonical.name
-    source_name = source.name
-
-    # Carry over MB artist ID if canonical lacks one
-    if not canonical.musicbrainz_artist_id and source.musicbrainz_artist_id:
-        canonical.musicbrainz_artist_id = source.musicbrainz_artist_id
-
-    # Carry over sort name if canonical lacks one
-    if not canonical.sort_name and source.sort_name:
-        canonical.sort_name = source.sort_name
-
-    # Reassign albums
-    for album in source.albums:
-        album.artist_id = canonical_id
-
-    # Reassign tracks and collect files to retag; plan path moves but don't update DB yet.
-    # Compute each destination with the canonical library layout (track_path) so files
-    # filed under the album-artist dir, /music/Singles/<artist>/, AND /music/Compilations/
-    # all relocate to the merged artist. The old prefix check only handled
-    # /music/<source_name>/, which stranded singles & comps (e.g. a duet single left in
-    # /music/Singles/<collab>/ surfacing as "[Unknown Album]" under the merged artist).
-    from service.library.layout import track_path as _track_path
-
-    albums_by_id = {alb.id: alb for alb in source.albums}
-    files_to_retag: list[Path] = []
-    planned_moves: list[tuple[Path, Path, "TrackFile"]] = []  # (old, new, orm_row)
-    for track in source.tracks:
-        track.artist_id = canonical_id
-        if not track.file:
-            continue
-        fp = Path(track.file.path)
-        if not fp.exists():
-            continue
-        files_to_retag.append(fp)
-        alb = albums_by_id.get(track.album_id) if track.album_id else None
-        new_fp = _track_path(
-            settings.music_dir,
-            artist=canonical_name,
-            album=(alb.title if alb else None),
-            year=(alb.year if alb else None),
-            track_number=track.track_number,
-            disc_number=track.disc_number,
-            title=track.title,
-            ext=fp.suffix,
-            albumartist=canonical_name,
-        )
-        if new_fp != fp:
-            planned_moves.append((fp, new_fp, track.file))
-
-    # Flush reassignments before deleting source (otherwise FK violations)
-    await session.flush()
-    session.expunge(source)
-    await session.execute(_sa_delete(Artist).where(Artist.id == source_id))
     await session.commit()
-
-    # Rewrite albumartist (and artist) tags so Navidrome groups under canonical name
-    for fp in files_to_retag:
-        try:
-            await asyncio.to_thread(_write_tags, fp, artist=canonical_name, albumartist=canonical_name)
-        except Exception as exc:
-            logger.warning("merge_artist: tag write failed for %s: %s", fp, exc)
-
-    # Move files to their canonical location; update DB paths only for files that
-    # actually moved so the DB stays consistent with the filesystem. Remember each
-    # source dir → dest dir so we can carry sidecars and prune emptied source dirs.
-    import shutil as _shutil
-    paths_updated = False
-    dir_moves: dict[Path, Path] = {}
-    for old_fp, new_fp, tf_row in planned_moves:
-        try:
-            new_fp.parent.mkdir(parents=True, exist_ok=True)
-            if not new_fp.exists():
-                _shutil.move(str(old_fp), str(new_fp))
-            tf_row.path = str(new_fp)
-            paths_updated = True
-            if old_fp.parent != new_fp.parent:
-                dir_moves.setdefault(old_fp.parent, new_fp.parent)
-        except Exception as exc:
-            logger.warning("merge_artist: could not move %s → %s: %s", old_fp, new_fp, exc)
-
-    # Carry over sidecars (cover.jpg, artist.jpg, …) from each emptied source dir,
-    # then prune now-empty source directories upward (stops at /music).
-    music_root = settings.music_dir
-    for old_dir, new_dir in dir_moves.items():
-        try:
-            if old_dir.exists():
-                for item in sorted(old_dir.iterdir()):
-                    if item.is_file():
-                        dest_item = new_dir / item.name
-                        dest_item.parent.mkdir(parents=True, exist_ok=True)
-                        if not dest_item.exists():
-                            _shutil.move(str(item), str(dest_item))
-            d = old_dir
-            while d != music_root and d.exists() and not any(d.iterdir()):
-                d.rmdir()
-                d = d.parent
-        except Exception as exc:
-            logger.warning("merge_artist: source dir cleanup failed for %s: %s", old_dir, exc)
-
-    if paths_updated:
-        await session.commit()
 
     await _do_scans()
 
@@ -4391,16 +4350,8 @@ async def library_track_mb_search(
     limit: int = 10,
     duration: int | None = None,
 ) -> HTMLResponse:
-    if not q.strip():
-        return HTMLResponse("")
-    from service.metadata.musicbrainz import search_recordings_free
-    results = await asyncio.to_thread(
-        search_recordings_free, q.strip(), limit, settings.cache_dir, duration
-    )
-    return templates.TemplateResponse(
-        request, "partials/mb_candidates.html",
-        {"results": results, "job_id": None, "track_id": internal_id,
-         "q": q.strip(), "limit": limit, "duration": duration},
+    return await _mb_recording_search(
+        request, q, limit, duration, job_id=None, track_id=internal_id
     )
 
 
@@ -5001,7 +4952,6 @@ async def apply_art_to_track(
 ) -> HTMLResponse:
     """Download art from a URL and embed it in a track file."""
     from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
-    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small, fetch_from_url
 
     stmt = (
         select(Track)
@@ -5015,11 +4965,9 @@ async def apply_art_to_track(
     if not file_path.exists():
         raise HTTPException(404, "File not on disk")
 
-    art = await fetch_from_url(art_url)
-    if not art:
-        return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
-    if _image_too_small(art, _MIN_USER_COVER_PX):
-        return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
+    art, err = await _fetch_user_art(art_url)
+    if err is not None:
+        return err
 
     await asyncio.to_thread(_write_tags, file_path, artwork_bytes=art)
     # Only write sidecar cover.jpg for album tracks — singles share their parent
@@ -5056,46 +5004,11 @@ async def apply_art_to_album(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Download art from a URL and embed it in all tracks of an album."""
-    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
-    from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small, fetch_from_url
-    from sqlalchemy.orm import joinedload as _jl
+    art, err = await _fetch_user_art(art_url)
+    if err is not None:
+        return err
 
-    art = await fetch_from_url(art_url)
-    if not art:
-        return HTMLResponse('<span class="badge badge-warn">Could not download image</span>')
-    if _image_too_small(art, _MIN_USER_COVER_PX):
-        return HTMLResponse('<span class="badge badge-warn">Image too small (< 300×300)</span>')
-
-    album = (await session.execute(
-        select(Album)
-        .options(_jl(Album.tracks).joinedload(Track.file))
-        .where(Album.id == album_id)
-    )).unique().scalar_one_or_none()
-    if album is None:
-        raise HTTPException(404)
-
-    album_dir: Path | None = None
-    embedded = 0
-    for track in album.tracks:
-        if not track.file:
-            continue
-        fp = Path(track.file.path)
-        if not fp.exists():
-            continue
-        album_dir = album_dir or fp.parent
-        try:
-            await asyncio.to_thread(_write_tags, fp, artwork_bytes=art)
-            hca = await asyncio.to_thread(_has_cover_art, fp)
-            track.file.has_cover_art = hca
-            embedded += 1
-        except Exception as exc:
-            logger.debug("apply_art_to_album: embed failed for %s: %s", fp, exc)
-
-    if album_dir:
-        write_cover_jpg(album_dir, art)
-
-    await session.commit()
-    await _do_scans()
+    embedded = await _embed_album_art(session, album_id, art)
     return HTMLResponse(f'<span class="badge badge-done">Art applied to {embedded} track(s) ✓</span>')
 
 
@@ -5152,9 +5065,7 @@ async def upload_album_cover(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Embed a user-supplied image as cover art for all tracks in an album + sidecar."""
-    from service.library.tagger import has_cover_art as _has_cover_art, write_cover_jpg, write_tags as _write_tags
     from service.metadata.artwork import _MIN_USER_COVER_PX, _image_too_small
-    from sqlalchemy.orm import joinedload as _jl
 
     if not cover.content_type or not cover.content_type.startswith("image/"):
         return HTMLResponse('<span class="badge badge-warn">Not an image file</span>')
@@ -5165,36 +5076,7 @@ async def upload_album_cover(
     if _image_too_small(art, _MIN_USER_COVER_PX):
         return HTMLResponse('<span class="badge badge-warn">Image too small — must be at least 300×300 px</span>')
 
-    album = (await session.execute(
-        select(Album)
-        .options(_jl(Album.tracks).joinedload(Track.file))
-        .where(Album.id == album_id)
-    )).unique().scalar_one_or_none()
-    if album is None:
-        raise HTTPException(404)
-
-    album_dir: Path | None = None
-    embedded = 0
-    for track in album.tracks:
-        if not track.file:
-            continue
-        fp = Path(track.file.path)
-        if not fp.exists():
-            continue
-        album_dir = album_dir or fp.parent
-        try:
-            await asyncio.to_thread(_write_tags, fp, artwork_bytes=art)
-            hca = await asyncio.to_thread(_has_cover_art, fp)
-            track.file.has_cover_art = hca
-            embedded += 1
-        except Exception as exc:
-            logger.debug("upload_album_cover: embed failed for %s: %s", fp, exc)
-
-    if album_dir:
-        write_cover_jpg(album_dir, art)
-
-    await session.commit()
-    await _do_scans()
+    embedded = await _embed_album_art(session, album_id, art)
     return HTMLResponse(f'<span class="badge badge-done">Cover saved to {embedded} track(s) ✓</span>')
 
 
@@ -5690,9 +5572,11 @@ def _yt_search_best(
 
 @router.get("/discography", response_class=HTMLResponse)
 async def discography_page(
-    request: Request, session: AsyncSession = Depends(get_session)
+    request: Request, q: str = "", session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
     ctx = await _acquire_ctx(request, "", "discover", session)
+    # ?q= prefills the artist search and runs it on load (artist-page deep link).
+    ctx["disco_q"] = q.strip()
     return templates.TemplateResponse(request, "acquire.html", ctx)
 
 
@@ -6025,7 +5909,10 @@ async def discography_album_status(
 async def discography_view(
     request: Request,
     artist_mbid: str,
-    types: list[str] = [],
+    # Bare `list[str] = []` is NOT bound to repeated ?types= query params by
+    # FastAPI — it needs an explicit Query default, else the filter chips are a
+    # server-side no-op (every request sees an empty selection).
+    types: list[str] = Query([]),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.core.normalize import normalize as _normalize
@@ -6108,9 +5995,17 @@ async def discography_view(
     }
     if request.headers.get("hx-request"):
         return templates.TemplateResponse(request, "partials/discography_content.html", ctx)
-    return templates.TemplateResponse(
-        request, "discography.html", {"active": "discography", **ctx}
+    # Full-page load (bookmark / refresh / artist-page link): render the acquire
+    # page on the Discover tab with this artist's discography preloaded, so the
+    # standalone and tab UIs are one implementation.
+    from urllib.parse import urlencode as _urlencode
+
+    page_ctx = await _acquire_ctx(request, "", "discover", session)
+    preload_qs = _urlencode([("types", t) for t in sorted(selected_types)])
+    page_ctx["disco_preload_url"] = (
+        f"/discography/{artist_mbid}" + (f"?{preload_qs}" if preload_qs else "")
     )
+    return templates.TemplateResponse(request, "acquire.html", page_ctx)
 
 
 from service.library.tagger import read_mb_release_id as _read_mb_release_id
@@ -6817,6 +6712,7 @@ async def merge_album(
         session, canonical_id, source_id,
         settings.music_dir / ".trash", settings.music_dir,
     )
+    await session.commit()
 
     await _do_scans()
 

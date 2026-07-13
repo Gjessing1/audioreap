@@ -1175,6 +1175,7 @@ input::placeholder { color: var(--t4); }
 }
 .acq-tab {
   appearance: none; background: none; border: none;
+  text-decoration: none; display: inline-block;
   font-family: var(--font-head);
   font-size: 14px; font-weight: 600;
   color: var(--t3);

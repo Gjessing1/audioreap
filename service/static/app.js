@@ -259,7 +259,9 @@ window.toggleDiscoType = function(artistMbid, type, currentTypes) {
   var idx = types.indexOf(type);
   if (idx >= 0) { types.splice(idx, 1); } else { types.push(type); }
   var params = types.map(function(t){ return 'types=' + encodeURIComponent(t); }).join('&');
-  htmx.ajax('GET', '/discography/' + artistMbid + (params ? '?' + params : ''), {target: '#disco-detail', swap: 'innerHTML'});
+  var url = '/discography/' + artistMbid + (params ? '?' + params : '');
+  htmx.ajax('GET', url, {target: '#disco-detail', swap: 'innerHTML'});
+  try { history.replaceState(null, '', url); } catch (e) {}
 };
 
 /* ── Discography text search (client-side filter within loaded releases) ─── */

@@ -4,7 +4,7 @@
     <div class="card-sub">{{ owned_count }} / {{ total_count }} releases owned</div>
   </div>
   <button class="btn btn-ghost btn-sm"
-          onclick="document.getElementById('disco-detail').innerHTML='';document.getElementById('artist-candidates').innerHTML=''">
+          onclick="document.getElementById('disco-detail').innerHTML='';document.getElementById('artist-candidates').innerHTML='';try{history.replaceState(null,'','/discography')}catch(e){}">
     ← Back
   </button>
 </div>

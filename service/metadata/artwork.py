@@ -12,6 +12,8 @@ from pathlib import Path
 
 import httpx
 
+from service.metadata.backoff import TransientError, get_with_backoff
+
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 20.0
@@ -45,14 +47,20 @@ def _image_too_small(data: bytes, min_px: int = _MIN_COVER_PX) -> bool:
 
 
 async def fetch_from_caa(release_mbid: str) -> bytes | None:
-    """Fetch front cover from MusicBrainz Cover Art Archive."""
+    """Fetch front cover from MusicBrainz Cover Art Archive.
+
+    Retries transient failures (429/5xx/network) with backoff so a CAA blip
+    isn't treated the same as "no art exists"; a 404 stays a definitive miss.
+    """
     url = _CAA_FRONT.format(release_mbid=release_mbid)
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code == 200:
+            resp = await get_with_backoff(client, url, label="CAA")
+            if resp is not None:
                 return resp.content
-            logger.debug("CAA returned %d for %s", resp.status_code, release_mbid)
+            logger.debug("CAA has no front cover for %s", release_mbid)
+    except TransientError as exc:
+        logger.warning("CAA unreachable for %s after retries: %s", release_mbid, exc)
     except Exception as exc:
         logger.debug("CAA fetch failed for %s: %s", release_mbid, exc)
     return None
@@ -62,11 +70,13 @@ async def fetch_from_url(url: str) -> bytes | None:
     """Fetch artwork from an arbitrary URL (provider thumbnail etc.)."""
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code == 200:
+            resp = await get_with_backoff(client, url, label="artwork URL")
+            if resp is not None:
                 content_type = resp.headers.get("content-type", "")
                 if "image" in content_type:
                     return resp.content
+    except TransientError as exc:
+        logger.warning("Artwork URL unreachable after retries (%s): %s", url, exc)
     except Exception as exc:
         logger.debug("Artwork URL fetch failed for %s: %s", url, exc)
     return None

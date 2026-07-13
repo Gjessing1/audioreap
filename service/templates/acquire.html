@@ -5,11 +5,13 @@
 
 {# One tab bar instead of three stacked collapsible sections: Search (library +
    YouTube), Discover (MB discographies), Playlists (URL import). The last-used
-   tab is remembered per browser; a server hint (active_section) wins on load. #}
+   tab is remembered per browser; a server hint (active_section) wins on load.
+   Tabs are real links (each section has its own URL, so it's bookmarkable and
+   crawlable); JS intercepts the click for an instant client-side switch. #}
 <div class="acq-tabs" id="acq-tabs" role="tablist">
-  <button type="button" role="tab" data-tab="search"    class="acq-tab">Search</button>
-  <button type="button" role="tab" data-tab="discover"  class="acq-tab">Discover</button>
-  <button type="button" role="tab" data-tab="playlists" class="acq-tab">Playlists</button>
+  <a href="/acquire"      role="tab" data-tab="search"    class="acq-tab">Search</a>
+  <a href="/discography"  role="tab" data-tab="discover"  class="acq-tab">Discover</a>
+  <a href="/playlists"    role="tab" data-tab="playlists" class="acq-tab">Playlists</a>
 </div>
 
 {# ── Search ──────────────────────────────────────────────────────────────── #}
@@ -64,12 +66,21 @@
   <input id="disco-q" name="q" type="search"
          placeholder="Search artist (e.g. Radiohead, Daft Punk)…"
          inputmode="search" enterkeyhint="search" autocomplete="off"
+         value="{{ disco_q|default('') }}"
          style="width:100%;margin-bottom:10px"
          hx-get="/discography/search"
-         hx-trigger="input changed delay:400ms, keyup[key=='Enter']"
+         hx-trigger="input changed delay:400ms, keyup[key=='Enter']{% if disco_q %}, load{% endif %}"
          hx-target="#artist-candidates">
   <div id="artist-candidates"></div>
+  {% if disco_preload_url %}
+  {# Deep link to one artist's discography (bookmark / refresh / artist page) #}
+  <div id="disco-detail" style="margin-top:8px"
+       hx-get="{{ disco_preload_url }}" hx-trigger="load" hx-swap="innerHTML">
+    <span class="muted" style="font-size:12px"><span class="spinner" style="width:10px;height:10px"></span> Loading…</span>
+  </div>
+  {% else %}
   <div id="disco-detail" style="margin-top:8px"></div>
+  {% endif %}
 </section>
 
 {# ── Playlists ────────────────────────────────────────────────────────────── #}
@@ -148,7 +159,11 @@
   }
 
   tabs.forEach(function (t) {
-    t.addEventListener('click', function () { show(t.dataset.tab); });
+    t.addEventListener('click', function (e) {
+      e.preventDefault();  // client-side switch; the href stays a real deep link
+      show(t.dataset.tab);
+      try { history.replaceState(null, '', t.getAttribute('href')); } catch (err) {}
+    });
   });
 
   var initial = 'search';
