@@ -4,7 +4,7 @@
       hx-get="/library/albums/list"
       hx-trigger="input changed delay:300ms from:#aq, change from:#album-sort, submit"
       hx-target="#album-list"
-      hx-include="#aq, #album-sort"
+      hx-include="#aq, #album-sort, #album-view"
       style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
   <div class="search-bar" style="margin-bottom:0;flex:1;min-width:160px">
     <input id="aq" name="q" type="search"
@@ -17,10 +17,28 @@
     <option value="year"    {% if sort == 'year'    %}selected{% endif %}>Sort: Year ↓</option>
     <option value="quality" {% if sort == 'quality' %}selected{% endif %}>Sort: Quality ↑</option>
   </select>
+  <div class="view-toggle" id="album-view-toggle" role="group" aria-label="Layout">
+    <button type="button" title="List view" aria-label="List view"
+            class="view-toggle-btn{% if view|default('grid') != 'grid' %} view-toggle-btn--active{% endif %}"
+            onclick="setAlbumView('list', this)">☰</button>
+    <button type="button" title="Grid view" aria-label="Grid view"
+            class="view-toggle-btn{% if view|default('grid') == 'grid' %} view-toggle-btn--active{% endif %}"
+            onclick="setAlbumView('grid', this)">▦</button>
+  </div>
+  <input type="hidden" id="album-view" name="view" value="{{ view|default('grid') }}">
 </form>
 
+<script>
+function setAlbumView(v, btn) {
+  document.getElementById('album-view').value = v;
+  document.querySelectorAll('#album-view-toggle .view-toggle-btn')
+    .forEach(function (b) { b.classList.toggle('view-toggle-btn--active', b === btn); });
+  htmx.trigger('#album-search-form', 'submit');
+}
+</script>
+
 <div id="album-list"
-     hx-get="/library/albums/list?q={{ q|urlencode }}&sort={{ sort|default('artist') }}{% if open_id|default('') %}&open={{ open_id|urlencode }}{% endif %}"
+     hx-get="/library/albums/list?q={{ q|urlencode }}&sort={{ sort|default('artist') }}&view={{ view|default('grid') }}{% if open_id|default('') %}&open={{ open_id|urlencode }}{% endif %}"
      hx-trigger="load"
      hx-swap="innerHTML">
   <div style="color:var(--t3);font-size:13px;padding:20px 0;display:flex;gap:8px;align-items:center">

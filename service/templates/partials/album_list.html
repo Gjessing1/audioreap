@@ -34,9 +34,9 @@
      list with that one open, which collapses this one. #}
   {% include "partials/album_detail.html" %}
   {% else %}
-  {% set open_url = "/library/albums/list?q=" ~ (q | urlencode) ~ "&sort=" ~ (sort | urlencode) ~ "&open=" ~ (album.id | urlencode) %}
+  {% set open_url = "/library/albums/list?q=" ~ (q | urlencode) ~ "&sort=" ~ (sort | urlencode) ~ "&view=list&open=" ~ (album.id | urlencode) %}
   {# Bookmarkable URL for the open album — refresh/back restores this state #}
-  {% set push_url = "/library/albums?q=" ~ (q | urlencode) ~ "&sort=" ~ (sort | urlencode) ~ "&open=" ~ (album.id | urlencode) %}
+  {% set push_url = "/library/albums?q=" ~ (q | urlencode) ~ "&sort=" ~ (sort | urlencode) ~ "&view=list&open=" ~ (album.id | urlencode) %}
   <div class="album-row" id="album-{{ aid }}">
     {# Cover art #}
     <div class="album-art"

@@ -1,0 +1,66 @@
+{# Grid view of albums — same context as album_list.html, rendered when the
+   layout preference (?view= / album_view cookie) is "grid". Cards use the
+   cached 256px thumbnail variant of the cover-art route. #}
+{% if albums or singles_count %}
+<div class="album-grid">
+  {% if singles_count %}
+  <a href="/library/browse?f=singles" class="album-card" style="text-decoration:none;color:inherit">
+    <div class="album-card-art">
+      {% if singles_cover_id %}
+      <img src="/library/tracks/{{ singles_cover_id }}/cover-art?size=256"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+           loading="lazy" alt="">
+      <div class="album-card-ph" style="display:none">♪</div>
+      {% else %}
+      <div class="album-card-ph">♪</div>
+      {% endif %}
+    </div>
+    <div class="album-card-title">Singles</div>
+    <div class="album-card-meta">{{ singles_count }} track{% if singles_count != 1 %}s{% endif %} · no album</div>
+  </a>
+  {% endif %}
+
+  {% for album in albums %}
+  {% if album.id == open_id|default('') %}
+  {# Expanded detail spans the full grid width; only one album is ever open. #}
+  <div class="album-grid-detail">
+    {% include "partials/album_detail.html" %}
+  </div>
+  {% else %}
+  {% set cover_track = namespace(value=None) %}
+  {% for t in album.tracks %}{% if t.file and cover_track.value is none %}{% set cover_track.value = t %}{% endif %}{% endfor %}
+  {% set open_url = "/library/albums/list?q=" ~ (q|default('')|urlencode) ~ "&sort=" ~ (sort|default('artist')|urlencode) ~ "&view=grid&open=" ~ (album.id|urlencode) %}
+  {# Bookmarkable URL for the open album — refresh/back restores this state #}
+  {% set push_url = "/library/albums?q=" ~ (q|default('')|urlencode) ~ "&sort=" ~ (sort|default('artist')|urlencode) ~ "&view=grid&open=" ~ (album.id|urlencode) %}
+  {% set aq = album_quality[album.id] if album_quality is defined and album.id in album_quality else none %}
+  <div class="album-card" id="album-{{ album.id | replace(':', '_') }}"
+       hx-get="{{ open_url }}"
+       hx-target="#album-list"
+       hx-swap="innerHTML"
+       hx-push-url="{{ push_url }}">
+    <div class="album-card-art">
+      {% if cover_track.value %}
+      <img src="/library/tracks/{{ cover_track.value.id }}/cover-art?size=256"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+           loading="lazy" alt="">
+      <div class="album-card-ph" style="display:none">♪</div>
+      {% else %}
+      <div class="album-card-ph">♪</div>
+      {% endif %}
+      {# Attention badge only below the "good" threshold — clean albums stay clean #}
+      {% if aq is not none and aq < 0.7 %}
+      <span class="album-card-q {% if aq >= 0.4 %}quality-mid{% else %}quality-low{% endif %}"
+            title="Metadata quality score: {{ '%.0f'|format(aq * 100) }}% — open to review tags">{{ "%.0f"|format(aq * 100) }}%</span>
+      {% endif %}
+    </div>
+    <div class="album-card-title" title="{{ album.title }}">{{ album.title }}</div>
+    <div class="album-card-meta">{{ album.artist.name }}{% if album.year %} · {{ album.year }}{% endif %}</div>
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty" style="text-align:left;padding:24px 0">
+  {% if q %}No albums matching "{{ q }}".{% else %}No albums in library.{% endif %}
+</p>
+{% endif %}

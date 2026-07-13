@@ -2112,18 +2112,28 @@ async def fix_failed_source(
     )
 
 
+def _album_view(request: Request, view: str) -> str:
+    """Resolve the albums layout: explicit ?view= wins, else the album_view
+    cookie set on every list render. Grid is the default for fresh visitors."""
+    if view in ("list", "grid"):
+        return view
+    return "list" if request.cookies.get("album_view") == "list" else "grid"
+
+
 @router.get("/library/albums", response_class=HTMLResponse)
 async def library_albums_page(
     request: Request,
     q: str = "",
     sort: str = "",
+    view: str = "",
     open_id: str = Query("", alias="open"),
     embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     # `open` makes the drill-down bookmarkable: album rows hx-push-url this
     # page with ?open=<album id>, so refresh/back restores the open album.
-    ctx = {"active": "library", "q": q, "sort": sort, "open_id": open_id}
+    ctx = {"active": "library", "q": q, "sort": sort, "open_id": open_id,
+           "view": _album_view(request, view)}
     tmpl = "partials/view_albums.html" if embed else "library_albums.html"
     return templates.TemplateResponse(request, tmpl, ctx)
 
@@ -2179,6 +2189,7 @@ async def library_albums_list(
     request: Request,
     q: str = "",
     sort: str = "artist",
+    view: str = "",
     open_id: str = Query("", alias="open"),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
@@ -2228,12 +2239,16 @@ async def library_albums_list(
                 .limit(1)
             )).scalar_one_or_none()
             singles_cover_id = cover_row
-    return templates.TemplateResponse(
-        request, "partials/album_list.html",
+    view = _album_view(request, view)
+    tmpl = "partials/album_grid.html" if view == "grid" else "partials/album_list.html"
+    resp = templates.TemplateResponse(
+        request, tmpl,
         {"albums": albums, "q": q, "sort": sort, "album_quality": album_quality,
          "singles_count": singles_count, "singles_cover_id": singles_cover_id,
-         "open_id": open_id},
+         "open_id": open_id, "view": view},
     )
+    resp.set_cookie("album_view", view, max_age=365 * 24 * 3600, samesite="lax")
+    return resp
 
 
 @router.get("/library/albums/{album_id}/detail", response_class=HTMLResponse)
@@ -6863,9 +6878,11 @@ async def merge_album(
     for alb in albums:
         scores = [t.tag_quality_score for t in alb.tracks if t.tag_quality_score is not None]
         album_quality[alb.id] = round(sum(scores) / len(scores), 3) if scores else None
+    view = _album_view(request, "")
+    tmpl = "partials/album_grid.html" if view == "grid" else "partials/album_list.html"
     return templates.TemplateResponse(
-        request, "partials/album_list.html",
-        {"albums": albums, "q": "", "album_quality": album_quality},
+        request, tmpl,
+        {"albums": albums, "q": "", "album_quality": album_quality, "view": view},
     )
 
 
