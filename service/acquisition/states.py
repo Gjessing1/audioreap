@@ -64,7 +64,9 @@ def classify_failure(exc: Exception) -> tuple[FailureClass, str]:
     - DownloadError with transient message → transient (backoff retry)
     - Unknown DownloadError → permanent (safer than retrying forever)
     - Network / OS errors → transient
-    - Everything else → transient
+    - Internal logic errors (TypeError, KeyError, …) → permanent (a bug
+      never succeeds on retry; retrying only burns worker slots)
+    - Everything else → transient (retries are capped by _MAX_RETRIES)
     """
     import yt_dlp.utils as yt_utils
 
@@ -82,5 +84,12 @@ def classify_failure(exc: Exception) -> tuple[FailureClass, str]:
 
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return "transient", error_str
+
+    if isinstance(
+        exc,
+        (TypeError, KeyError, AttributeError, IndexError, ValueError,
+         AssertionError, NotImplementedError),
+    ):
+        return "permanent", error_str
 
     return "transient", error_str

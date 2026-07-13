@@ -699,10 +699,16 @@ async def run_acquisition(
                 # describe the WRONG track and would mis-fire. AcoustID can rescue a
                 # weak text match but does NOT exempt a track from these gates.
                 if not _recording_id_overridden:
-                    # (a) Artist mismatch — on ALL paths (was AcoustID-only before).
-                    #     Catches both fingerprint wrong-matches and text-search
-                    #     candidates from a different artist (title dominated the score).
-                    if candidate.artist and mb.artist:  # type: ignore[union-attr]
+                    # (a) Artist mismatch — Path B only (all match sources, not just
+                    #     AcoustID). Catches both fingerprint wrong-matches and
+                    #     text-search candidates from a different artist (title
+                    #     dominated the score). Skipped on Path A: there
+                    #     candidate.artist is the ALBUM artist and mb.artist comes
+                    #     from the very recording we locked, so a mismatch is
+                    #     expected for VA/feature tracks and says nothing about the
+                    #     downloaded file — the AcoustID fingerprint check above is
+                    #     Path A's wrong-file gate.
+                    if not candidate.mb_recording_id and candidate.artist and mb.artist:  # type: ignore[union-attr]
                         from service.search.matcher import artist_similarity as _artist_sim
                         a_sim = _artist_sim(candidate.artist, mb.artist)  # type: ignore[union-attr]
                         if a_sim < 0.55:
@@ -750,7 +756,19 @@ async def run_acquisition(
                     logger.warning("Job %s: %s", job_id, mismatch_note)
 
         except Exception as mb_exc:
-            logger.debug("MB lookup skipped: %s", mb_exc)
+            # Identification failing is NOT business as usual — without it the
+            # track reaches review untagged and unverified. Log loudly and tell
+            # the review card why there's no MB match, instead of the previous
+            # silent debug-level swallow.
+            logger.warning(
+                "Job %s %r: MB/AcoustID identification failed: %s",
+                job_id, title, mb_exc,
+            )
+            ident_note = f"Identification failed ({type(mb_exc).__name__}): {str(mb_exc)[:160]}"
+            force_staging_reason = (
+                f"{force_staging_reason} | {ident_note}"
+                if force_staging_reason else ident_note
+            )
 
         # When no MB match, clean the raw YouTube title/artist so the review card
         # shows a sensible default instead of "(Official Music Video)" noise.
@@ -911,9 +929,10 @@ async def place_approved_track(
     row = await session.get(AcquisitionJobRow, job_id)
     if row is None:
         raise ValueError(f"Job {job_id} not found")
-    # "importing" is accepted so a job left mid-placement (worker/route crash after
-    # mark_progress committed) can be re-approved.
-    if row.state not in ("needs_review", "importing"):
+    # "placing" is accepted so a job left mid-placement (worker/route crash after
+    # mark_progress committed) can be re-approved. "importing" covers rows from
+    # before Phase 2 got its own state.
+    if row.state not in ("needs_review", "placing", "importing"):
         raise ValueError(f"Job {job_id} is in state {row.state!r}, expected needs_review")
     if not row.resolved_metadata_json:
         raise ValueError(f"Job {job_id} has no resolved metadata")
@@ -925,15 +944,18 @@ async def place_approved_track(
     if not staging_path.exists():
         raise FileNotFoundError(f"Staged file missing: {staging_path}")
 
-    # Publish an intermediate "importing" state (committed) so the job-list poll —
+    # Publish an intermediate "placing" state (committed) so the job-list poll —
     # which runs in a separate transaction — never momentarily sees this job as
     # needs_review while its staging file has already been moved out. That race
     # produced a spurious "Staging file missing — use Re-download" flag during the
     # several seconds of ReplayGain + artwork + scan. Only the API approval paths
     # set mark_progress; the in-transaction auto-approve path (run_acquisition)
-    # keeps its single atomic commit.
-    if mark_progress and row.state != "importing":
-        row.state = "importing"
+    # keeps its single atomic commit. Deliberately NOT "importing" (Phase 1's
+    # state): stuck-job recovery re-queues "importing" rows through a full
+    # re-download, which must never happen to a job whose file may already have
+    # been atomically placed into /music.
+    if mark_progress and row.state != "placing":
+        row.state = "placing"
         row.updated_at = datetime.now(UTC).replace(tzinfo=None)
         await session.commit()
 

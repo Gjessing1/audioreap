@@ -11,6 +11,7 @@
             hx-get="/library/albums/list"
             hx-target="#album-list"
             hx-swap="innerHTML"
+            hx-push-url="/library/albums"
             style="font-size:11px;color:var(--t3)">← Albums</button>
   </div>
 
@@ -157,7 +158,8 @@
       <button type="button" class="btn btn-sm rv-reject"
               hx-get="/library/albums/list"
               hx-target="#album-list"
-              hx-swap="innerHTML">Close</button>
+              hx-swap="innerHTML"
+              hx-push-url="/library/albums">Close</button>
     </div>
     <div id="fix-discs-result-{{ aid }}" style="font-size:12px"></div>
   </form>

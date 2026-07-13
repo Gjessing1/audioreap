@@ -143,7 +143,7 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     _sc = _Counter(r.state for r in active_rows)
     ctx["status_counts"] = {
         "downloading": _sc.get("downloading", 0),
-        "working": sum(_sc.get(s, 0) for s in ("processing", "enriching", "tagging", "importing")),
+        "working": sum(_sc.get(s, 0) for s in ("processing", "enriching", "tagging", "importing", "placing")),
         "waiting": _sc.get("waiting", 0),
         "queued": _sc.get("queued", 0),
     }
@@ -226,7 +226,7 @@ async def _acquire_ctx(request: Request, q: str, active_section: str, session: A
             select(PlaylistImport).order_by(PlaylistImport.created_at.desc()).limit(10)
         )
     ).scalars().all()
-    _ACTIVE = ("queued", "waiting", "downloading", "processing", "enriching", "tagging", "importing")
+    _ACTIVE = ("queued", "waiting", "downloading", "processing", "enriching", "tagging", "importing", "placing")
     import_states: dict[str, str] = {}
     if rows:
         active_counts = (await session.execute(
@@ -1058,9 +1058,9 @@ async def batch_approve(
                     await session.rollback()
                     row = await session.get(AcquisitionJobRow, jid)
                     if row:
-                        # Undo the intermediate "importing" state so the job returns
+                        # Undo the intermediate "placing" state so the job returns
                         # to the review queue instead of being stuck mid-import.
-                        if row.state == "importing":
+                        if row.state in ("placing", "importing"):
                             row.state = "needs_review"
                         row.error = str(exc)[:200]
                         await session.commit()
@@ -1165,9 +1165,9 @@ async def approve_job(
             await session.rollback()
             row = await session.get(AcquisitionJobRow, job_id)
             if row:
-                # Undo the intermediate "importing" state so the job returns to the
+                # Undo the intermediate "placing" state so the job returns to the
                 # review queue instead of being stuck mid-import.
-                if row.state == "importing":
+                if row.state in ("placing", "importing"):
                     row.state = "needs_review"
                 row.error = str(exc)[:200]
                 await session.commit()
@@ -1180,9 +1180,11 @@ async def approve_job(
             ctx["error"] = str(exc)
             return templates.TemplateResponse(request, "partials/review_card.html", ctx)
         except Exception:
+            import html as _html
             return HTMLResponse(
                 f'<div class="card card-review" id="job-{job_id}">'
-                f'<div class="rv-form"><div class="rv-alert rv-alert--error">Approve failed: {exc}</div></div></div>'
+                f'<div class="rv-form"><div class="rv-alert rv-alert--error">'
+                f'Approve failed: {_html.escape(str(exc))}</div></div></div>'
             )
     finally:
         if _redis is not None:
@@ -1202,12 +1204,15 @@ async def approve_job(
             meta = json.loads(row.resolved_metadata_json)
         except Exception:
             pass
+    import html as _html
+    # Title/album originate from free-text search or the downloaded file's own
+    # tags — escape before interpolating into HTML.
     placed_title = meta.get("title") or (row.query if row else "") or "Track"
     placed_album = meta.get("album") or ""
     dest_hint = f" → {placed_album}" if placed_album else ""
     return HTMLResponse(
         f'<div id="job-{job_id}" class="job-placed-feedback">'
-        f'✓ {placed_title}{dest_hint} · placed'
+        f'✓ {_html.escape(placed_title + dest_hint)} · placed'
         f'</div>'
     )
 
@@ -2045,10 +2050,13 @@ async def library_albums_page(
     request: Request,
     q: str = "",
     sort: str = "",
+    open_id: str = Query("", alias="open"),
     embed: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    ctx = {"active": "library", "q": q, "sort": sort}
+    # `open` makes the drill-down bookmarkable: album rows hx-push-url this
+    # page with ?open=<album id>, so refresh/back restores the open album.
+    ctx = {"active": "library", "q": q, "sort": sort, "open_id": open_id}
     tmpl = "partials/view_albums.html" if embed else "library_albums.html"
     return templates.TemplateResponse(request, tmpl, ctx)
 
@@ -2461,8 +2469,10 @@ async def album_mb_link_search(
     if not results:
         return HTMLResponse('<p class="muted" style="font-size:12px">No results found.</p>')
 
+    import html as _html
     lines = ['<div style="display:flex;flex-direction:column;gap:6px">']
     for rg in results:
+        # MB fields are external free text — escape before interpolating into HTML.
         label = rg["title"]
         if rg["year"]:
             label += f' ({rg["year"]})'
@@ -2471,13 +2481,13 @@ async def album_mb_link_search(
         rtype = rg["type"] or "Album"
         lines.append(
             f'<div style="display:flex;align-items:center;gap:8px;font-size:12px">'
-            f'<span style="color:var(--t1);flex:1">{label}</span>'
-            f'<span style="color:var(--t3);font-size:11px">{rtype}</span>'
+            f'<span style="color:var(--t1);flex:1">{_html.escape(label)}</span>'
+            f'<span style="color:var(--t3);font-size:11px">{_html.escape(rtype)}</span>'
             f'<form style="display:inline"'
             f'      hx-post="/library/albums/{album_id}/link-mb-rg"'
             f'      hx-target="#album-{album_id.replace(":", "_")}"'
             f'      hx-swap="outerHTML">'
-            f'  <input type="hidden" name="release_group_id" value="{rg["id"]}">'
+            f'  <input type="hidden" name="release_group_id" value="{_html.escape(str(rg["id"]), quote=True)}">'
             f'  <button type="submit" class="btn btn-sm btn-ghost" style="font-size:11px">Link</button>'
             f'</form>'
             f'</div>'
@@ -4152,7 +4162,14 @@ async def save_track_tags(
             genre=genre_val,
         )
     except Exception as exc:
+        # Do NOT update the DB when the file write failed — a partial "save" would
+        # leave DB and on-disk tags silently disagreeing from then on.
         logger.warning("save-tags write failed for %s: %s", file_path, exc)
+        import html as _html
+        return HTMLResponse(
+            f'<div style="color:var(--danger);font-size:12px;padding:6px 0">'
+            f'✗ Tag write failed — nothing was saved: {_html.escape(str(exc))}</div>'
+        )
 
     # Update DB — update existing rows in-place to avoid hash ID churn
     row.title = title_val

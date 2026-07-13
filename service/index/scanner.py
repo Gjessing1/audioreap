@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from service.core.identity import make_id
@@ -66,16 +67,27 @@ async def _upsert_artist(
     aid = _artist_id(name)
     row = await session.get(Artist, aid)
     if row is None:
-        row = Artist(
-            id=aid,
-            name=name,
-            sort_name=sort_name,
-            musicbrainz_artist_id=mb_artist_id,
-            created_at=_now(),
-            updated_at=_now(),
-        )
-        session.add(row)
-    else:
+        # Savepoint so losing a concurrent-creation race (two approvals of a
+        # brand-new artist in separate sessions) doesn't poison the caller's
+        # transaction — SQLite serializes writers, so by the time the INSERT
+        # fails the winner's row is committed and readable below.
+        try:
+            async with session.begin_nested():
+                session.add(Artist(
+                    id=aid,
+                    name=name,
+                    sort_name=sort_name,
+                    musicbrainz_artist_id=mb_artist_id,
+                    created_at=_now(),
+                    updated_at=_now(),
+                ))
+                await session.flush()
+            return aid
+        except IntegrityError:
+            row = await session.get(Artist, aid)
+            if row is None:
+                raise
+    if row is not None:
         updated = False
         if sort_name and not row.sort_name:
             row.sort_name = sort_name
@@ -100,18 +112,29 @@ async def _upsert_album(
     alid = _album_id(artist_name, title, year)
     row = await session.get(Album, alid)
     if row is None:
-        row = Album(
-            id=alid,
-            title=title,
-            year=year,
-            artist_id=artist_id,
-            mb_release_group_id=mb_release_group_id,
-            musicbrainz_release_id=mb_release_id,
-            created_at=_now(),
-            updated_at=_now(),
-        )
-        session.add(row)
-    else:
+        # Savepoint: two tracks of a brand-new album approved concurrently both
+        # see no Album row and both try to create it. Without this, the loser's
+        # UNIQUE violation aborted its whole indexing transaction — the file was
+        # on disk but never appeared in the library. See _upsert_artist.
+        try:
+            async with session.begin_nested():
+                session.add(Album(
+                    id=alid,
+                    title=title,
+                    year=year,
+                    artist_id=artist_id,
+                    mb_release_group_id=mb_release_group_id,
+                    musicbrainz_release_id=mb_release_id,
+                    created_at=_now(),
+                    updated_at=_now(),
+                ))
+                await session.flush()
+            return alid
+        except IntegrityError:
+            row = await session.get(Album, alid)
+            if row is None:
+                raise
+    if row is not None:
         # Backfill MB IDs from the file's tags when the DB column is still NULL —
         # same authority rule as Track.musicbrainz_recording_id: file tags are the
         # source of truth, the scanner only fills gaps and never overwrites. This

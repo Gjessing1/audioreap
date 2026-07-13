@@ -11,7 +11,7 @@ from service.db.schema import AcquisitionJobRow
 
 logger = logging.getLogger(__name__)
 
-_STUCK_STATES = frozenset({"queued", "downloading", "processing", "tagging", "importing"})
+_STUCK_STATES = frozenset({"queued", "downloading", "processing", "tagging", "importing", "placing"})
 _STUCK_CUTOFF_MINUTES = 15
 # A "waiting" job is parked in the rate gate (_await_rate_slot), which rewrites its
 # countdown to the DB every ~3s while a worker is actually sleeping on it. So a
@@ -63,6 +63,30 @@ async def _recover_stuck_jobs(
             was_state = row.state
             cutoff_min = _WAITING_CUTOFF_MINUTES if was_state == "waiting" else _STUCK_CUTOFF_MINUTES
             logger.warning("Resetting stuck job %s (was %s, idle since %s)", row.id, was_state, row.updated_at)
+
+            # Mid-Phase-2 (placement) crash: "placing", or legacy "importing" with
+            # a staging_path (Phase 1 only sets staging_path at needs_review, so a
+            # staging_path here means the job already passed identification). The
+            # audio may already have been atomically renamed into /music — NEVER
+            # re-queue these through Phase 1, that re-downloads an already-placed
+            # track. If the staging file is still there, placement never got far:
+            # send it back to review for a harmless re-approve.
+            if was_state == "placing" or (was_state == "importing" and row.staging_path):
+                from pathlib import Path as _Path
+                row.updated_at = now
+                if row.staging_path and _Path(row.staging_path).exists():
+                    row.state = "needs_review"
+                    row.error = f"Placement interrupted (stuck in '{was_state}' >{cutoff_min}m) — re-approve"
+                else:
+                    row.state = "failed"
+                    row.failure_class = "permanent"
+                    row.error = (
+                        f"Placement interrupted (stuck in '{was_state}' >{cutoff_min}m) after the "
+                        "staging file was moved — the track may already be in the library; "
+                        "check before re-downloading"
+                    )
+                continue
+
             row.failure_class = "transient"
             row.updated_at = now
             if row.candidate_json and row.provider_ref and row.retry_count < _MAX_RETRIES:
@@ -232,6 +256,15 @@ async def worker_heartbeat(ctx: dict[str, object]) -> None:
             await reconcile_album_jobs(ctx)
         except Exception as exc:
             logger.warning("periodic album reconcile failed: %s", exc)
+
+    # Sweep /tmp-acquire orphans (>1h old) on the same clock — previously this
+    # only ran at worker startup, so a crash mid-job left orphans sitting until
+    # the next restart.
+    try:
+        import asyncio
+        await asyncio.to_thread(_cleanup_tmp, str(settings.tmp_acquire_dir))
+    except Exception as exc:
+        logger.debug("periodic tmp cleanup failed: %s", exc)
 
 
 async def auto_rescan(ctx: dict[str, object]) -> None:

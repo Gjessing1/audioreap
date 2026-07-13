@@ -20,7 +20,7 @@
 </form>
 
 <div id="album-list"
-     hx-get="/library/albums/list?q={{ q|urlencode }}&sort={{ sort|default('artist') }}"
+     hx-get="/library/albums/list?q={{ q|urlencode }}&sort={{ sort|default('artist') }}{% if open_id|default('') %}&open={{ open_id|urlencode }}{% endif %}"
      hx-trigger="load"
      hx-swap="innerHTML">
   <div style="color:var(--t3);font-size:13px;padding:20px 0;display:flex;gap:8px;align-items:center">

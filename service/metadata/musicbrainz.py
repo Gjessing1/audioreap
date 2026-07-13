@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import re
+import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,13 @@ from service.search.matcher import DEDUP_THRESHOLD, title_similarity, track_simi
 logger = logging.getLogger(__name__)
 
 musicbrainzngs.set_useragent("audioreap", "0.1", "https://github.com/Gjessing1/audioreap")
+
+# musicbrainzngs' urllib opener has no timeout parameter — a stalled MB (or
+# AcoustID, which shares the same gap) connection would otherwise hang a worker
+# thread forever. The process-wide default only applies to blocking sockets
+# that don't set their own timeout (httpx, yt-dlp, asyncio all do), so in
+# practice this covers exactly the libraries that can't be configured directly.
+socket.setdefaulttimeout(30)
 
 _CACHE_TTL = 86400  # 24 hours
 

@@ -138,6 +138,20 @@ if (!window.__browseToolbarInit) {
     if (e.target.id === 'browse-results') {
       var tb = document.getElementById('bulk-toolbar');
       if (tb) tb.style.display = 'none';
+      // Keep the address bar in sync with the active search/filter/sort so a
+      // refresh or bookmark restores this exact view (replaceState, not push:
+      // every keystroke re-filters and shouldn't grow the history stack).
+      if (window.location.pathname === '/library/browse') {
+        var p = new URLSearchParams();
+        var bq = document.getElementById('bq'), bf = document.getElementById('bf'),
+            bs = document.getElementById('bs'), bg = document.getElementById('bgenre');
+        if (bq && bq.value) p.set('q', bq.value);
+        if (bf && bf.value) p.set('f', bf.value);
+        if (bs && bs.value && bs.value !== 'artist') p.set('sort', bs.value);
+        if (bg && bg.value) p.set('genre', bg.value);
+        var qs = p.toString();
+        history.replaceState(history.state, '', '/library/browse' + (qs ? '?' + qs : ''));
+      }
     }
   });
 }

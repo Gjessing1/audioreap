@@ -35,12 +35,15 @@
   {% include "partials/album_detail.html" %}
   {% else %}
   {% set open_url = "/library/albums/list?q=" ~ (q | urlencode) ~ "&sort=" ~ (sort | urlencode) ~ "&open=" ~ (album.id | urlencode) %}
+  {# Bookmarkable URL for the open album — refresh/back restores this state #}
+  {% set push_url = "/library/albums?q=" ~ (q | urlencode) ~ "&sort=" ~ (sort | urlencode) ~ "&open=" ~ (album.id | urlencode) %}
   <div class="album-row" id="album-{{ aid }}">
     {# Cover art #}
     <div class="album-art"
          hx-get="{{ open_url }}"
          hx-target="#album-list"
          hx-swap="innerHTML"
+         hx-push-url="{{ push_url }}"
          style="cursor:pointer">
       {% if cover_track.value %}
       <img src="/library/tracks/{{ cover_track.value.id }}/cover-art"
@@ -56,6 +59,7 @@
          hx-get="{{ open_url }}"
          hx-target="#album-list"
          hx-swap="innerHTML"
+         hx-push-url="{{ push_url }}"
          style="cursor:pointer">
       <div class="album-title">{{ album.title }}</div>
       <div class="album-meta">
@@ -80,7 +84,8 @@
       <button class="btn btn-sm btn-ghost"
               hx-get="{{ open_url }}"
               hx-target="#album-list"
-              hx-swap="innerHTML">Edit</button>
+              hx-swap="innerHTML"
+              hx-push-url="{{ push_url }}">Edit</button>
     </div>
   </div>
   {% endif %}

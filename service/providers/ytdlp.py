@@ -196,6 +196,10 @@ def _ydl_opts_base() -> dict[str, object]:
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": False,
+        # A stalled connection must not hang a worker slot indefinitely —
+        # yt-dlp has no overall deadline, but a per-socket timeout unsticks
+        # both metadata extraction and downloads.
+        "socket_timeout": 30,
         **_youtube_auth_opts(),
     }
 
@@ -595,7 +599,7 @@ def _yt_search_entries(query: str, n_candidates: int) -> list[dict]:
     """
     import yt_dlp
 
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_youtube_auth_opts()}
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "socket_timeout": 30, **_youtube_auth_opts()}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"ytsearch{n_candidates}:{query}", download=False)
@@ -617,7 +621,7 @@ def _yt_music_search_entries(query: str, n_candidates: int) -> list[dict]:
 
     import yt_dlp
 
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_youtube_auth_opts()}
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "socket_timeout": 30, **_youtube_auth_opts()}
     url = f"https://music.youtube.com/search?q={urllib.parse.quote(query)}"
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
