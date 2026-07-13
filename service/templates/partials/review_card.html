@@ -2,7 +2,10 @@
 
   {# ── Header ─────────────────────────────────────────────────────────── #}
   <div class="rv-header">
-    <div class="rv-art rv-art--lg">
+    {# data-lightbox with no URL zooms whatever the <img> currently shows #}
+    <div class="rv-art rv-art--lg" style="cursor:zoom-in"
+         data-lightbox=""
+         data-lightbox-caption="{{ meta.artist or '' }}{% if meta.artist and meta.title %} — {% endif %}{{ meta.title or '' }}">
       {# Try embedded art from staging file first, fall back to YouTube thumbnail #}
       <img src="/jobs/{{ job_id }}/cover-art"
            id="rv-cover-img-{{ job_id }}"

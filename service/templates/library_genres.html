@@ -4,7 +4,10 @@
 
 <div class="page-toolbar">
   <h2 class="page-title">Genres</h2>
-  <a href="/library" class="btn btn-sm btn-ghost">← Library</a>
+  <nav class="crumbs">
+    <a href="/library">Library</a><span class="crumb-sep">›</span>
+    <span class="crumb-cur">Genres</span>
+  </nav>
 </div>
 
 {% include "partials/view_genres.html" %}

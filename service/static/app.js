@@ -114,6 +114,15 @@ if (playerNext) playerNext.addEventListener("click", () => playerSkip(1));
 if (playerArtImg) {
   playerArtImg.addEventListener("error", () => playerArt.classList.add("hidden"));
 }
+if (playerArt) {
+  // Zoom the playing track's art — strip any ?size= thumb param for full res
+  playerArt.addEventListener("click", () => {
+    const src = playerArtImg && playerArtImg.getAttribute("src");
+    if (!src) return;
+    const full = src.replace(/([?&])size=\d+&?/, "$1").replace(/[?&]$/, "");
+    openLightbox(full, playerTitle ? playerTitle.textContent : "");
+  });
+}
 
 if (audio) {
   audio.addEventListener("play", () => {
@@ -179,6 +188,59 @@ window.togglePanel = function(showId, ...hideIds) {
   });
   if (show) show.classList.toggle('hidden');
 };
+
+/* ── Cover-art lightbox ──────────────────────────────────────────────────── */
+/* One shared overlay, created on first use. openLightbox(src, caption) shows
+ * the full-size image; click anywhere or Esc closes it. No history/pushState
+ * integration — HTMX owns popstate on pages using hx-push-url. */
+let _lightbox = null;
+
+function _ensureLightbox() {
+  if (_lightbox) return _lightbox;
+  const el = document.createElement("div");
+  el.id = "ar-lightbox";
+  el.className = "hidden";
+  el.innerHTML =
+    '<figure><img alt=""><figcaption></figcaption></figure>';
+  el.addEventListener("click", closeLightbox);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !el.classList.contains("hidden")) closeLightbox();
+  });
+  document.body.appendChild(el);
+  _lightbox = el;
+  return el;
+}
+
+window.openLightbox = function (src, caption) {
+  const el = _ensureLightbox();
+  const img = el.querySelector("img");
+  const cap = el.querySelector("figcaption");
+  img.src = src;
+  cap.textContent = caption || "";
+  cap.style.display = caption ? "" : "none";
+  el.classList.remove("hidden");
+};
+
+window.closeLightbox = function () {
+  if (!_lightbox || _lightbox.classList.contains("hidden")) return;
+  _lightbox.classList.add("hidden");
+  _lightbox.querySelector("img").removeAttribute("src");
+};
+
+/* Delegated: any [data-lightbox] element zooms on click (survives HTMX swaps).
+ * data-lightbox="<url>" uses that URL; an empty value uses the inner <img>'s
+ * current src (for art whose onerror chain may have swapped the source).
+ * The "change" strip inside editable art tiles keeps its own handler. */
+document.body.addEventListener("click", function (e) {
+  const zoom = e.target.closest("[data-lightbox]");
+  if (!zoom || e.target.closest(".rv-art-change")) return;
+  const img = zoom.querySelector("img");
+  // Thumbnail failed → placeholder is showing; a zoom would just be broken
+  if (img && (!img.getAttribute("src") || img.style.display === "none")) return;
+  const url = zoom.dataset.lightbox || (img && img.src);
+  if (!url) return;
+  openLightbox(url, zoom.dataset.lightboxCaption || "");
+});
 
 /* ── Batch approve checkboxes ────────────────────────────────────────────── */
 /* Selected job IDs survive the 12s job-list polling swap (innerHTML wipes the

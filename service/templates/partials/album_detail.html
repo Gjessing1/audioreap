@@ -5,30 +5,37 @@
 
 <div class="card card-review" id="album-{{ aid }}">
 
-  {# ── Back / close ─────────────────────────────────────────────────────── #}
-  <div style="padding:4px 8px 0">
-    <button class="btn btn-sm btn-ghost"
-            hx-get="/library/albums/list"
-            hx-target="#album-list"
-            hx-swap="innerHTML"
-            hx-push-url="/library/albums"
-            style="font-size:11px;color:var(--t3)">← Albums</button>
-  </div>
+  {# ── Breadcrumbs ──────────────────────────────────────────────────────── #}
+  <nav class="crumbs" style="padding:8px 12px 0">
+    <a href="/library">Library</a><span class="crumb-sep">›</span>
+    <a hx-get="/library/albums/list"
+       hx-target="#album-list"
+       hx-swap="innerHTML"
+       hx-push-url="/library/albums">Albums</a><span class="crumb-sep">›</span>
+    <a href="/library/artists/{{ album.artist.id }}">{{ album.artist.name }}</a><span class="crumb-sep">›</span>
+    <span class="crumb-cur">{{ album.title }}</span>
+  </nav>
 
   {# ── Album header ──────────────────────────────────────────────────────── #}
   <div class="rv-header">
-    <div class="rv-art rv-art--lg" style="cursor:pointer;position:relative"
-         onclick="togglePanel('album-art-panel-{{ aid }}')">
-      {% if cover_track.value %}
+    {# Art click zooms (lightbox); the "change" strip opens the art panel #}
+    {% if cover_track.value %}
+    <div class="rv-art rv-art--lg" style="cursor:zoom-in;position:relative"
+         data-lightbox="/library/tracks/{{ cover_track.value.id }}/cover-art"
+         data-lightbox-caption="{{ album.artist.name }} — {{ album.title }}">
       <img src="/library/tracks/{{ cover_track.value.id }}/cover-art?size=144"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
            style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">
       <div style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
-      {% else %}
-      <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
-      {% endif %}
-      <div style="position:absolute;bottom:0;left:0;right:0;text-align:center;font-size:10px;color:var(--t4);background:rgba(0,0,0,.45);padding:2px 0;border-radius:0 0 inherit inherit;pointer-events:none">change</div>
+      <div class="rv-art-change" onclick="event.stopPropagation();togglePanel('album-art-panel-{{ aid }}')">change</div>
     </div>
+    {% else %}
+    <div class="rv-art rv-art--lg" style="cursor:pointer;position:relative"
+         onclick="togglePanel('album-art-panel-{{ aid }}')">
+      <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
+      <div class="rv-art-change" style="pointer-events:none">change</div>
+    </div>
+    {% endif %}
     <div class="rv-info">
       <div class="rv-badges">
         {% if album.musicbrainz_release_id or album.mb_release_group_id %}

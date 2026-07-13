@@ -2,16 +2,20 @@
 {% block title %}{{ artist.name }} — audioreap{% endblock %}
 
 {% block content %}
-<div style="margin-bottom:12px">
-  <a href="/library/artists" class="btn btn-sm btn-ghost">← Artists</a>
-</div>
+<nav class="crumbs" style="margin-bottom:14px">
+  <a href="/library">Library</a><span class="crumb-sep">›</span>
+  <a href="/library/artists">Artists</a><span class="crumb-sep">›</span>
+  <span class="crumb-cur">{{ artist.name }}</span>
+</nav>
 
 {# ── Artist header with image ─────────────────────────────────────────── #}
 <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:20px">
   <div id="artist-img-wrap" style="flex-shrink:0">
     <img src="/library/artists/{{ artist.id }}/image"
-         style="width:80px;height:80px;object-fit:cover;border-radius:10px;display:block"
+         style="width:80px;height:80px;object-fit:cover;border-radius:10px;display:block;cursor:zoom-in"
          onerror="this.style.display='none';document.getElementById('artist-img-placeholder').style.display='flex'"
+         data-lightbox="/library/artists/{{ artist.id }}/image"
+         data-lightbox-caption="{{ artist.name }}"
          alt="{{ artist.name }}">
     <div id="artist-img-placeholder"
          style="display:none;width:80px;height:80px;border-radius:10px;background:var(--b1);align-items:center;justify-content:center;font-size:28px;color:var(--t4)">♪</div>

@@ -4,11 +4,16 @@
 {% block content %}
 <div class="page-header">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-    <h1>Library Health</h1>
+    <div>
+      <nav class="crumbs" style="margin-bottom:4px">
+        <a href="/library">Library</a><span class="crumb-sep">›</span>
+        <span class="crumb-cur">Health</span>
+      </nav>
+      <h1>Library Health</h1>
+    </div>
     <div style="display:flex;gap:8px">
       <a href="/health" class="btn btn-ghost btn-sm" title="Service status: Navidrome, Redis, worker, disk">System status</a>
       <a href="/admin/config" class="btn btn-ghost btn-sm">⚙ Config</a>
-      <a href="/library" class="btn btn-ghost btn-sm">← Library</a>
     </div>
   </div>
 </div>
