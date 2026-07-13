@@ -1873,9 +1873,32 @@ async def library_page(
             .join(Track.file)
             .options(joinedload(Track.artist), joinedload(Track.album), joinedload(Track.file))
             .order_by(TrackFile.created_at.desc())
-            .limit(20)
+            .limit(60)
         )
     ).unique().scalars().all()
+
+    # Recently-added rail: one card per album (newest first), single tracks as
+    # their own cards — a batch of 15 album tracks shouldn't fill the rail with
+    # 15 copies of the same cover.
+    recent_rail: list[dict] = []
+    _seen_albums: set[str] = set()
+    for t in recent_rows:
+        if t.album_id:
+            if t.album_id in _seen_albums:
+                continue
+            _seen_albums.add(t.album_id)
+            recent_rail.append({
+                "kind": "album", "album_id": t.album_id,
+                "title": t.album.title if t.album else "?",
+                "sub": t.artist.name, "cover_track_id": t.id,
+            })
+        else:
+            recent_rail.append({
+                "kind": "track", "track_id": t.id,
+                "title": t.title, "sub": t.artist.name, "cover_track_id": t.id,
+            })
+        if len(recent_rail) >= 20:
+            break
 
     needs_review_count = (
         await session.execute(
@@ -1892,7 +1915,7 @@ async def library_page(
         {
             "active": "library",
             **stats_ctx,
-            "recent": [_track_to_ref(r) for r in recent_rows],
+            "recent_rail": recent_rail,
             "settings_music_dir": str(settings.music_dir),
             "needs_review_count": needs_review_count,
             "artist_names": artist_names,

@@ -68,51 +68,43 @@
    page. Empty until a tile is clicked. #}
 <div id="library-view" style="margin-top:18px"></div>
 
-{# ── Recent additions ── #}
-{% if recent %}
-<details id="recent-additions" style="margin-top:20px">
-  <summary style="cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:8px">
-    <span class="section-title" style="margin:0">Recent additions</span>
-    <span style="font-size:11px;color:var(--t3)">({{ recent|length }})</span>
-    <span class="recent-chevron" style="font-size:11px;color:var(--t3);margin-left:auto">▶</span>
-  </summary>
-  <div style="margin-top:10px">
-  {% for t in recent %}
-  {% set safe_rid = t.internal_id | replace(':', '_') %}
-  <div class="card" id="recent-{{ safe_rid }}">
-    <button class="play-btn" data-id="{{ t.internal_id }}"
-            onclick="playTrack('{{ t.internal_id }}', '{{ t.title|e }}')">▶</button>
-    <div class="card-info">
-      <div class="card-title">{{ t.title }}</div>
-      <div class="card-sub">{{ t.artist }}{% if t.album %} · {{ t.album }}{% endif %}</div>
+{# ── Recently added — horizontal cover rail, one card per album ── #}
+{% if recent_rail %}
+<div style="margin-top:20px">
+  <div class="section-title" style="margin-bottom:8px">Recently added</div>
+  <div class="recent-rail">
+    {% for e in recent_rail %}
+    {% if e.kind == 'album' %}
+    <div class="album-card"
+         hx-get="/library/albums?embed=1&open={{ e.album_id|urlencode }}"
+         hx-target="#library-view" hx-swap="innerHTML"
+         hx-push-url="/library/albums?open={{ e.album_id|urlencode }}"
+         hx-on::after-request="document.getElementById('library-view').scrollIntoView({behavior:'smooth'})">
+      <div class="album-card-art">
+        <img src="/library/tracks/{{ e.cover_track_id }}/cover-art?size=256"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+             loading="lazy" alt="">
+        <div class="album-card-ph" style="display:none">♪</div>
+      </div>
+      <div class="album-card-title" title="{{ e.title }}">{{ e.title }}</div>
+      <div class="album-card-meta">{{ e.sub }}</div>
     </div>
-    <div class="card-actions">
-      <button class="btn btn-sm btn-ghost"
-              hx-get="/library/tracks/{{ t.internal_id }}/edit-card"
-              hx-target="#recent-{{ safe_rid }}"
-              hx-swap="outerHTML">Edit</button>
-      <button class="btn btn-sm btn-ghost"
-              hx-delete="/library/tracks/{{ t.internal_id }}"
-              hx-target="#recent-{{ safe_rid }}"
-              hx-swap="outerHTML swap:0.3s"
-              hx-confirm="Move this track to trash?"
-              style="color:var(--t4)">✕</button>
+    {% else %}
+    <div class="album-card"
+         onclick="playTrack('{{ e.track_id }}', '{{ e.title|e }}')">
+      <div class="album-card-art">
+        <img src="/library/tracks/{{ e.cover_track_id }}/cover-art?size=256"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+             loading="lazy" alt="">
+        <div class="album-card-ph" style="display:none">♪</div>
+        <span class="recent-rail-play">▶</span>
+      </div>
+      <div class="album-card-title" title="{{ e.title }}">{{ e.title }}</div>
+      <div class="album-card-meta">{{ e.sub }} · single</div>
     </div>
+    {% endif %}
+    {% endfor %}
   </div>
-  {% endfor %}
-  </div>
-</details>
-<script>
-(function() {
-  var det = document.getElementById('recent-additions');
-  if (!det) return;
-  function syncChevron() {
-    var ch = det.querySelector('.recent-chevron');
-    if (ch) ch.textContent = det.open ? '▼' : '▶';
-  }
-  det.addEventListener('toggle', syncChevron);
-  syncChevron();
-})();
-</script>
+</div>
 {% endif %}
 {% endblock %}

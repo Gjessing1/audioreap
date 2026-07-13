@@ -1173,6 +1173,25 @@ input::placeholder { color: var(--t4); }
 .artist-card-art { border-radius: 50%; }
 .artist-card .album-card-ph { font-size: 34px; }
 
+/* Recently-added rail: horizontally scrolling strip of album cards */
+.recent-rail {
+  display: flex; gap: 12px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+.recent-rail .album-card { width: 120px; flex-shrink: 0; scroll-snap-align: start; }
+.recent-rail-play {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; color: #fff;
+  background: rgba(10, 12, 20, 0.35);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.recent-rail .album-card:hover .recent-rail-play { opacity: 1; }
+
 @media (max-width: 480px) {
   .album-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px 10px; }
   .album-card-ph { font-size: 22px; }
