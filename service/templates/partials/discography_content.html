@@ -88,3 +88,9 @@
 <p class="empty">No releases found for the selected types.</p>
 {% endif %}
 
+{# Related-artists rail — lazy so the discography itself never waits on the extra MB call #}
+<div id="disco-related"
+     hx-get="/discography/{{ artist_mbid }}/related"
+     hx-trigger="load"
+     hx-swap="innerHTML"></div>
+

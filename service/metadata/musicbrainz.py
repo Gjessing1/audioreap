@@ -720,6 +720,78 @@ def get_artist_release_groups(
     return artist_name, groups
 
 
+@dataclass
+class MBRelatedArtist:
+    artist_id: str
+    name: str
+    relation: str  # human label: "member", "collaboration", "tribute", …
+    disambiguation: str
+
+
+# Artist–artist relation types worth surfacing for discovery, in display order.
+# Personal relations (married, sibling, parent, …) are deliberately excluded —
+# the rail answers "who else might I want to hear", not "who do they know".
+_RELATED_ARTIST_TYPES: dict[str, str] = {
+    "member of band": "member",
+    "collaboration": "collaboration",
+    "is person": "same person",
+    "subgroup": "subgroup",
+    "founder": "founder",
+    "supporting musician": "supporting musician",
+    "vocal supporting musician": "supporting vocalist",
+    "instrumental supporting musician": "supporting musician",
+    "tribute": "tribute",
+}
+
+
+def get_related_artists(
+    artist_mbid: str,
+    cache_dir: Path | None = None,
+) -> list[MBRelatedArtist]:
+    """Musically-related artists via MB artist-artist relationships.
+
+    Band members, side projects, collaborations, personas — MB has no
+    "similar artists" data, so relationship links are the discovery signal.
+    Deduped by artist id, ordered by relation type relevance.
+    """
+    key = f"artist_rels:{artist_mbid}"
+    raw = _load_cache(cache_dir, key) if cache_dir else None
+    if raw is None:
+        try:
+            result = _mb_call("MB artist relationships", lambda: musicbrainzngs.get_artist_by_id(
+                artist_mbid, includes=["artist-rels"]
+            ))
+            raw = dict(result)
+            if cache_dir:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MB artist-rels fetch failed for %s: %s", artist_mbid, exc)
+            return []
+
+    rels = (raw.get("artist") or {}).get("artist-relation-list") or []
+    type_rank = {t: i for i, t in enumerate(_RELATED_ARTIST_TYPES)}
+    seen: set[str] = set()
+    ranked: list[tuple[int, MBRelatedArtist]] = []
+    for rel in rels:
+        if not isinstance(rel, dict):
+            continue
+        rel_type = str(rel.get("type") or "")
+        label = _RELATED_ARTIST_TYPES.get(rel_type)
+        target = rel.get("artist") or {}
+        target_id = str(target.get("id") or "")
+        if not label or not target_id or target_id == artist_mbid or target_id in seen:
+            continue
+        seen.add(target_id)
+        ranked.append((type_rank[rel_type], MBRelatedArtist(
+            artist_id=target_id,
+            name=str(target.get("name") or "Unknown"),
+            relation=label,
+            disambiguation=str(target.get("disambiguation") or ""),
+        )))
+    ranked.sort(key=lambda pair: pair[0])
+    return [artist for _, artist in ranked]
+
+
 def get_recording_by_id(
     recording_id: str,
     cache_dir: Path | None = None,

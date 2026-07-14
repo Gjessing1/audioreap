@@ -1,0 +1,24 @@
+{# Inline source preview for one discography tracklist row: the YouTube candidate
+   the auto-picker would download, scored but NOT downloaded. Replaces the hidden
+   placeholder <tr id="ytsrc-…"> so repeat clicks swap in place. #}
+<tr id="ytsrc-{{ row_id }}">
+  {% if best %}
+  <td></td>
+  <td colspan="4" style="padding:2px 0 8px;font-size:12px;color:var(--t3)">
+    <span style="font-family:var(--font-mono);color:{% if best.score >= 0.60 %}var(--success){% elif best.score >= 0.35 %}var(--warn){% else %}var(--danger){% endif %}"
+          title="Source match score — title similarity, artist, duration proximity, live/cover penalty. ≥ 0.35 downloads without review search.">{{ '%.2f'|format(best.score) }}</span>
+    <span style="color:var(--t2);margin-left:6px">{{ best.title }}</span>
+    {% if best.artist %}<span style="margin-left:4px">· {{ best.artist }}</span>{% endif %}
+    {% if best.duration_seconds %}<span style="margin-left:4px">· {{ best.duration_seconds // 60 }}:{{ '%02d' % (best.duration_seconds % 60) }}</span>{% endif %}
+    {% if best.is_official %}<span class="badge badge-done" style="font-size:9px;padding:1px 5px;margin-left:6px" title="Official audio channel — Topic / VEVO / Official">official</span>{% endif %}
+    <button class="play-btn" style="width:20px;height:20px;font-size:9px;margin-left:6px;vertical-align:middle"
+            onclick="playPreview('{{ best.provider_ref|e }}','{{ best.title|e }}')" title="Preview">▶</button>
+    <a href="{{ best.provider_ref|e }}" target="_blank" style="margin-left:4px;color:var(--t3)" title="Open on YouTube">↗</a>
+  </td>
+  {% else %}
+  <td></td>
+  <td colspan="4" style="padding:2px 0 8px;font-size:12px;color:var(--danger)">
+    No YouTube source found — “Get” would park this track for manual source search.
+  </td>
+  {% endif %}
+</tr>

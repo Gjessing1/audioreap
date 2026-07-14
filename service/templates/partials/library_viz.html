@@ -1,0 +1,79 @@
+{# Library at-a-glance data-viz: size/playtime tiles + added-per-month trend +
+   top-genres bars. Loaded lazily once per page view (see /library/viz route
+   docstring for why it's not part of the polled stats fragment).
+   Charts use the theme primary for marks and text tokens for all labels; the
+   SVG is geometry-only (preserveAspectRatio=none + non-scaling-stroke) with
+   labels, end-dot, and hover cells as HTML so text never distorts. #}
+
+<div class="stats" style="margin-top:14px">
+  <div class="stat">
+    <div class="stat-val">{{ total_size }}</div>
+    <div class="stat-label">Library size</div>
+  </div>
+  <div class="stat">
+    <div class="stat-val">{{ total_playtime }}</div>
+    <div class="stat-label">Playtime</div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px">
+
+  {# ── Tracks added per month, last 12 months ── #}
+  <div class="card" style="flex-direction:column;align-items:stretch;gap:0;padding:14px 16px">
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--t3)">
+      Added per month
+    </div>
+    <div style="position:relative;height:110px;margin-top:14px">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none"
+           style="position:absolute;inset:0;width:100%;height:100%;display:block" aria-hidden="true">
+        <line x1="0" y1="8" x2="100" y2="8" stroke="var(--b1)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+        <line x1="0" y1="54" x2="100" y2="54" stroke="var(--b1)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+        <line x1="0" y1="100" x2="100" y2="100" stroke="var(--b2)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+        <path d="{{ area_d }}" fill="var(--primary)" opacity="0.1"/>
+        <path d="{{ line_d }}" fill="none" stroke="var(--primary)" stroke-width="2"
+              stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      </svg>
+      {# y-axis ticks (HTML so they don't scale with the plot) #}
+      <span style="position:absolute;left:0;top:8%;transform:translateY(-100%);font-size:9px;color:var(--t3)">{{ y_max }}</span>
+      <span style="position:absolute;left:0;top:54%;transform:translateY(-100%);font-size:9px;color:var(--t3)">{{ y_mid }}</span>
+      {# end-of-series dot with surface ring + direct value label #}
+      {% set last = months[-1] %}
+      <div style="position:absolute;left:calc({{ last.x }}% - 4px);top:calc({{ last.y }}% - 4px);width:8px;height:8px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 2px var(--s2);pointer-events:none"></div>
+      <span style="position:absolute;right:0;top:calc({{ last.y }}% - 20px);font-size:10px;font-weight:600;color:var(--t2)">{{ last.count }}</span>
+      {# hover layer: one hit cell per month #}
+      <div style="position:absolute;inset:0;display:flex">
+        {% for m in months %}
+        <div style="flex:1" title="{{ m.full }} — {{ m.count }} track{% if m.count != 1 %}s{% endif %} added"></div>
+        {% endfor %}
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--t3);margin-top:4px">
+      <span>{{ months[0].full }}</span>
+      <span>{{ months[6].label }}</span>
+      <span>{{ months[-1].full }}</span>
+    </div>
+  </div>
+
+  {# ── Top genres by track count ── #}
+  <div class="card" style="flex-direction:column;align-items:stretch;gap:0;padding:14px 16px">
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--t3)">
+      Top genres
+    </div>
+    {% if genres %}
+    <div style="margin-top:10px">
+      {% for g in genres %}
+      <div style="display:flex;align-items:center;gap:8px;margin-top:7px" title="{{ g.name }} — {{ g.count }} track{% if g.count != 1 %}s{% endif %}">
+        <span style="width:88px;flex-shrink:0;font-size:11px;color:var(--t2);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ g.name }}</span>
+        <div style="flex:1;min-width:0">
+          <div style="width:{{ g.pct }}%;height:12px;background:{% if g.other %}var(--b3){% else %}var(--primary){% endif %};border-radius:0 4px 4px 0;min-width:2px"></div>
+        </div>
+        <span style="width:38px;flex-shrink:0;font-size:10px;color:var(--t3)">{{ g.count }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted" style="font-size:12px;margin-top:10px">No genre tags yet — MB Enrich fills these in.</p>
+    {% endif %}
+  </div>
+
+</div>

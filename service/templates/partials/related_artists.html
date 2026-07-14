@@ -1,0 +1,22 @@
+{# Related-artists rail: MB artist-artist relationships (members, side projects,
+   collaborations, personas). Clicking a chip loads that artist's discography
+   in place — same target/push as artist_candidates.html. Empty result renders
+   nothing so the rail simply doesn't exist for unconnected artists. #}
+{% if related %}
+<div class="section-title" style="margin-top:20px">Related artists</div>
+<div style="display:flex;gap:6px;flex-wrap:wrap">
+  {% for r in related[:16] %}
+  <button type="button"
+          hx-get="/discography/{{ r.artist_id }}"
+          hx-target="#disco-detail"
+          hx-swap="innerHTML"
+          hx-push-url="true"
+          hx-indicator="#disco-detail"
+          title="{{ r.relation }}{% if r.disambiguation %} — {{ r.disambiguation }}{% endif %}"
+          style="border:1px solid var(--b2);background:var(--s2);color:var(--t1);border-radius:16px;padding:5px 12px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">
+    {{ r.name }}
+    <span style="font-size:10px;color:var(--t3)">{{ r.relation }}</span>
+  </button>
+  {% endfor %}
+</div>
+{% endif %}

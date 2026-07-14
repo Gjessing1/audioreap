@@ -22,10 +22,18 @@
       <td style="padding:4px 0 4px 8px;color:var(--muted);text-align:right;font-size:12px">
         {% if t.duration_seconds %}{{ t.duration_seconds // 60 }}:{{ '%02d' % (t.duration_seconds % 60) }}{% endif %}
       </td>
-      <td style="padding:4px 0 4px 8px;width:80px;text-align:right">
+      <td style="padding:4px 0 4px 8px;text-align:right;white-space:nowrap">
         {% if is_owned %}
         <span style="font-size:11px;color:var(--t3)">owned</span>
         {% elif t.recording_id %}
+        <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px;padding:2px 6px"
+                title="Preview which YouTube source “Get” would download, with its match score — no download happens"
+                hx-get="/discography/{{ artist_mbid }}/{{ release_group_id }}/source-preview?title={{ t.title|urlencode }}&artist={{ artist|urlencode }}{% if t.duration_seconds %}&duration_seconds={{ t.duration_seconds }}{% endif %}&row_id={{ t.recording_id }}"
+                hx-target="#ytsrc-{{ t.recording_id }}"
+                hx-swap="outerHTML"
+                hx-indicator="#ytsrc-ind-{{ t.recording_id }}">
+          source?<span id="ytsrc-ind-{{ t.recording_id }}" class="htmx-indicator"><span class="spinner" style="width:9px;height:9px"></span></span>
+        </button>
         <form style="display:inline"
               hx-post="/discography/{{ artist_mbid }}/{{ release_group_id }}/acquire-track"
               hx-target="#disco-track-{{ t.recording_id }} td:last-child"
@@ -44,6 +52,10 @@
         {% endif %}
       </td>
     </tr>
+    {% if not is_owned and t.recording_id %}
+    {# Placeholder the source-preview response swaps in over (repeat clicks replace, never stack) #}
+    <tr id="ytsrc-{{ t.recording_id }}" style="display:none"></tr>
+    {% endif %}
     {% endfor %}
   </table>
 

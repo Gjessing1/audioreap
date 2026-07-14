@@ -164,6 +164,127 @@ async def library_page(
     )
 
 
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if unit not in ("B", "KB") else f"{n:.0f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _human_playtime(seconds: int) -> str:
+    hours, minutes = seconds // 3600, (seconds % 3600) // 60
+    if hours >= 48:
+        return f"{hours // 24}d {hours % 24}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _nice_ceil(n: int) -> int:
+    """Smallest 'nice' number (1/2/2.5/5 × 10^k, even half) ≥ n, for a clean y-max tick."""
+    if n <= 4:
+        return max(n, 1) if n % 2 == 0 else n + 1
+    mag = 1
+    while mag * 10 < n:
+        mag *= 10
+    for mult in (1, 1.5, 2, 3, 4, 5, 10):
+        cand = mult * mag
+        if cand == int(cand) and cand >= n:
+            return int(cand)
+    return 10 * mag
+
+
+@router.get("/library/viz", response_class=HTMLResponse)
+async def library_viz(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Lazy data-viz fragment for the Library overview: total size / playtime
+    tiles, tracks-added-per-month trend, top-genres bars.
+
+    Separate from the polled stats fragment on purpose — the total-size number
+    stats every indexed file, which is cheap once per page view but not every 30s.
+    """
+    from datetime import datetime
+
+    paths = (await session.execute(select(TrackFile.path))).scalars().all()
+    if not paths:
+        return HTMLResponse("")
+
+    def _sum_sizes(ps: list[str]) -> int:
+        total = 0
+        for p in ps:
+            try:
+                total += Path(p).stat().st_size
+            except OSError:
+                pass
+        return total
+
+    total_bytes = await asyncio.to_thread(_sum_sizes, list(paths))
+    total_seconds = (await session.execute(
+        select(func.coalesce(func.sum(Track.duration_seconds), 0)).join(Track.file)
+    )).scalar_one()
+
+    # Tracks added per month (file landed in library), last 12 months incl. empty ones
+    month_rows = dict((await session.execute(
+        select(func.strftime("%Y-%m", TrackFile.created_at), func.count())
+        .group_by(func.strftime("%Y-%m", TrackFile.created_at))
+    )).all())
+    now = datetime.now()
+    months: list[dict] = []
+    year, month = now.year, now.month
+    keys: list[tuple[int, int]] = []
+    for _ in range(12):
+        keys.append((year, month))
+        month = month - 1 or 12
+        year -= month == 12
+    for y, m in reversed(keys):
+        key = f"{y:04d}-{m:02d}"
+        months.append({
+            "label": datetime(y, m, 1).strftime("%b"),
+            "full": datetime(y, m, 1).strftime("%b %Y"),
+            "count": int(month_rows.get(key, 0)),
+        })
+    y_max = _nice_ceil(max(m["count"] for m in months))
+    n = len(months)
+    for i, m in enumerate(months):
+        m["x"] = round(i / (n - 1) * 100, 2)
+        m["y"] = round(100 - m["count"] / y_max * 92, 2)
+    line_d = "M" + " L".join(f"{m['x']},{m['y']}" for m in months)
+    area_d = f"M0,100 L{' L'.join(f'{m['x']},{m['y']}' for m in months)} L100,100 Z"
+
+    # Top genres by track count; tail folds into "Other"
+    genre_rows = (await session.execute(
+        select(Track.genre, func.count(Track.id))
+        .join(Track.file)
+        .where(Track.genre.isnot(None), Track.genre != "")
+        .group_by(Track.genre)
+        .order_by(func.count(Track.id).desc())
+    )).all()
+    top = [{"name": g, "count": c, "other": False} for g, c in genre_rows[:6]]
+    tail = sum(c for _, c in genre_rows[6:])
+    if tail:
+        top.append({"name": "Other", "count": tail, "other": True})
+    g_max = max((g["count"] for g in top), default=1)
+    for g in top:
+        g["pct"] = round(g["count"] / g_max * 100, 1)
+
+    return templates.TemplateResponse(
+        request, "partials/library_viz.html",
+        {
+            "total_size": _human_size(total_bytes),
+            "total_playtime": _human_playtime(int(total_seconds)),
+            "months": months,
+            "line_d": line_d,
+            "area_d": area_d,
+            "y_max": y_max,
+            "y_mid": y_max // 2 if y_max % 2 == 0 else y_max / 2,
+            "genres": top,
+        },
+    )
+
+
 @router.get("/library/stats-fragment", response_class=HTMLResponse)
 async def library_stats_fragment(
     request: Request,

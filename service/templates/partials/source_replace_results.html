@@ -30,7 +30,7 @@
         </span>
         {% endif %}
         {% if c.is_official %}<span class="badge badge-done" style="font-size:9px;padding:1px 5px;margin-left:4px" title="Official audio channel — Topic / VEVO / Official">official</span>{% endif %}
-        {% if c.score is not none %}<span style="font-family:var(--font-mono);color:var(--accent);margin-left:4px" title="source match score (same scorer the auto-picker used)">{{ '%.2f'|format(c.score) }}</span>{% endif %}
+        {% if c.score is not none %}<span style="font-family:var(--font-mono);color:var(--primary);margin-left:4px" title="source match score (same scorer the auto-picker used)">{{ '%.2f'|format(c.score) }}</span>{% endif %}
       </div>
     </div>
     <div class="card-actions">

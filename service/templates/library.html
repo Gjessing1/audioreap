@@ -63,6 +63,9 @@
 {% include "partials/library_stats.html" %}
 </div>
 
+{# ── At-a-glance viz (size, added-per-month, top genres) — lazy, loads once ── #}
+<div id="library-viz" hx-get="/library/viz" hx-trigger="load" hx-swap="innerHTML"></div>
+
 {# ── In-place view (Tracks / Albums / Artists / Genres / quality filters) ──
    Loaded here by the stat tiles above instead of navigating to a separate
    page. Empty until a tile is clicked. #}

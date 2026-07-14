@@ -64,6 +64,22 @@ async def discography_search(
     )
 
 
+@router.get("/{artist_mbid}/related", response_class=HTMLResponse)
+async def discography_related_artists(
+    request: Request,
+    artist_mbid: str,
+) -> HTMLResponse:
+    """Lazy-loaded rail of musically-related artists (MB artist relationships)."""
+    from service.metadata.musicbrainz import get_related_artists
+
+    related = await asyncio.to_thread(
+        get_related_artists, artist_mbid, settings.cache_dir
+    )
+    return templates.TemplateResponse(
+        request, "partials/related_artists.html", {"related": related}
+    )
+
+
 @router.get("/{artist_mbid}/{release_group_id}/tracks", response_class=HTMLResponse)
 async def discography_tracklist(
     request: Request,
@@ -212,6 +228,38 @@ def _single_track_candidate(
     )
 
 
+@router.get("/{artist_mbid}/{release_group_id}/source-preview", response_class=HTMLResponse)
+async def discography_source_preview(
+    request: Request,
+    artist_mbid: str,
+    release_group_id: str,
+    title: str = "",
+    artist: str = "",
+    duration_seconds: str = "",
+    row_id: str = "",
+) -> HTMLResponse:
+    """Score the YouTube source for one tracklist row *without* downloading it.
+
+    Runs the same scorer the acquire-track auto-picker uses (yt_search_ranked is
+    a superset pool of yt_search_best) and renders the winning candidate inline,
+    so the user sees source quality before committing to a download.
+    """
+    from service.providers.ytdlp import yt_search_ranked
+
+    dur_s = int(duration_seconds) if duration_seconds.isdigit() else None
+    ranked = await asyncio.to_thread(
+        yt_search_ranked,
+        artist or "Unknown",
+        title or "Unknown",
+        dur_s,
+        prefer_explicit=settings.prefer_explicit,
+    )
+    return templates.TemplateResponse(
+        request, "partials/yt_source_preview.html",
+        {"best": ranked[0] if ranked else None, "row_id": row_id},
+    )
+
+
 @router.post("/{artist_mbid}/{release_group_id}/acquire-track", response_class=HTMLResponse)
 async def discography_acquire_single_track(
     request: Request,
@@ -276,8 +324,11 @@ async def discography_acquire_single_track(
     except Exception as exc:
         raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 
+    score_color = "var(--success)" if yt_score >= 0.60 else "var(--warn)"
     return HTMLResponse(
-        f'<span class="badge badge-busy">Queued → <a href="/jobs" style="color:inherit">Jobs</a></span>'
+        f'<span class="badge badge-busy" title="YouTube source match score (same scorer the review panel shows)">'
+        f'Queued <span style="font-family:var(--font-mono);color:{score_color}">{yt_score:.2f}</span>'
+        f' → <a href="/jobs" style="color:inherit">Jobs</a></span>'
     )
 
 
