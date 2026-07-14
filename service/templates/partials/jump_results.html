@@ -1,0 +1,62 @@
+{# Jump-to palette results — rendered into #jump-results by GET /nav/jump.
+   Rows are plain <a> full-page navigations; arrow-key highlight (.jump-active)
+   is managed by the palette JS in app.js. #}
+{% if artists %}
+<div class="jump-section">Artists</div>
+{% for a in artists %}
+<a class="jump-item" href="/library/artists/{{ a.id }}">
+  <span class="jump-art">👤</span>
+  <span class="jump-main">{{ a.name }}</span>
+  <span class="jump-kind">artist</span>
+</a>
+{% endfor %}
+{% endif %}
+
+{% if albums %}
+<div class="jump-section">Albums</div>
+{% for al in albums %}
+<a class="jump-item" href="/library/albums?view=list&open={{ al.id|urlencode }}">
+  <span class="jump-art">
+    {% if cover_ids.get(al.id) %}
+    <img src="/library/tracks/{{ cover_ids[al.id] }}/cover-art?size=64" loading="lazy"
+         onerror="this.remove()" alt="">
+    {% else %}♪{% endif %}
+  </span>
+  <span class="jump-main">{{ al.title }}
+    <span class="jump-sub">{{ al.artist.name }}{% if al.year %} · {{ al.year }}{% endif %}</span>
+  </span>
+  <span class="jump-kind">album</span>
+</a>
+{% endfor %}
+{% endif %}
+
+{% if tracks %}
+<div class="jump-section">Tracks</div>
+{% for t in tracks %}
+<a class="jump-item" href="/library/browse?q={{ t.title|urlencode }}">
+  <span class="jump-art">
+    <img src="/library/tracks/{{ t.id }}/cover-art?size=64" loading="lazy"
+         onerror="this.remove()" alt="">
+  </span>
+  <span class="jump-main">{{ t.title }}
+    <span class="jump-sub">{{ t.artist.name }}</span>
+  </span>
+  <span class="jump-kind">track</span>
+</a>
+{% endfor %}
+{% endif %}
+
+{% if review_jobs %}
+<div class="jump-section">Review queue</div>
+{% for j in review_jobs %}
+<a class="jump-item" href="/jobs">
+  <span class="jump-art">⏳</span>
+  <span class="jump-main">{{ j.query }}</span>
+  <span class="jump-kind">needs review</span>
+</a>
+{% endfor %}
+{% endif %}
+
+{% if not artists and not albums and not tracks and not review_jobs %}
+<div class="jump-hint">No matches for “{{ q }}”.</div>
+{% endif %}

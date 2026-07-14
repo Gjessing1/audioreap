@@ -204,6 +204,9 @@ a:hover { text-decoration: underline; }
   transition: color 0.15s, border-color 0.15s, background 0.12s;
 }
 .theme-btn:hover { color: var(--t1); border-color: var(--b3); background: var(--s2); box-shadow: none; }
+/* svg icons inside the top-bar buttons: as flex items their attribute width
+   can be shrunk away in Chromium — pin the size in CSS instead */
+.theme-btn svg { width: 14px; height: 14px; flex: none; }
 
 .nav-links {
   display: none;
@@ -348,6 +351,28 @@ input::placeholder { color: var(--t4); }
 .card[data-state="tagging"], .card[data-state="importing"],
 .card[data-state="placing"] { border-left: 3px solid #60A5FA; }
 .card[data-state="queued"] { border-left: 3px solid var(--b3); }
+
+/* Swipe-to-triage (touch): right = approve, left = reject. pan-y keeps native
+   vertical scrolling; horizontal drags belong to the gesture in app.js. */
+#job-list .card[data-state="needs_review"] { touch-action: pan-y; }
+.card.swipe-return { transition: transform 0.18s ease; }
+.card.swipe-commit { transition: transform 0.2s ease, opacity 0.2s ease; opacity: 0.35; }
+.swipe-badge {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 2;
+  white-space: nowrap;
+}
+.swipe-badge--approve { left: 10px; background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
+.swipe-badge--reject { right: 10px; background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger); }
 
 .dl-progress {
   position: absolute;
@@ -1348,6 +1373,67 @@ input::placeholder { color: var(--t4); }
 }
 
 /* ── Cover-art lightbox ───────────────────────────────────────────────────── */
+/* ── Jump-to palette ─────────────────────────────────────────────────────── */
+#jump-palette {
+  position: fixed; inset: 0; z-index: 320;
+  background: rgba(6, 8, 14, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  padding: 10vh 16px 16px;
+  display: flex; justify-content: center; align-items: flex-start;
+  animation: lightboxIn 0.12s ease;
+}
+#jump-palette.hidden { display: none; }
+#jump-panel {
+  width: 100%; max-width: 540px;
+  background: var(--s2);
+  border: 1px solid var(--b2);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  max-height: min(70vh, 560px);
+}
+#jump-input {
+  border: none; border-bottom: 1px solid var(--b1); border-radius: 0;
+  background: transparent;
+  padding: 14px 16px;
+  font-size: 15px;
+  width: 100%;
+}
+#jump-input:focus { outline: none; box-shadow: none; border-color: var(--b2); }
+#jump-results { overflow-y: auto; padding: 4px 0 8px; }
+#jump-results:empty { padding: 0; }
+.jump-section {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--t4);
+  padding: 10px 16px 4px;
+}
+.jump-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 16px;
+  text-decoration: none; color: var(--t1);
+  font-size: 13px;
+}
+.jump-item:hover, .jump-item.jump-active { background: var(--s3); }
+.jump-item.jump-active { box-shadow: inset 2px 0 0 var(--primary); }
+.jump-art {
+  width: 32px; height: 32px; flex-shrink: 0;
+  border-radius: 6px; background: var(--s3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: var(--t4);
+  overflow: hidden;
+}
+.jump-art img { width: 100%; height: 100%; object-fit: cover; }
+.jump-main {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.jump-sub { font-size: 11px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; }
+.jump-kind { font-size: 10px; color: var(--t4); flex-shrink: 0; }
+.jump-hint { padding: 14px 16px; font-size: 13px; color: var(--t3); }
+
 #ar-lightbox {
   position: fixed; inset: 0; z-index: 300;
   display: flex; align-items: center; justify-content: center;

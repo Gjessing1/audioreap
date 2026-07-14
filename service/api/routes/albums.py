@@ -293,6 +293,72 @@ async def album_set_genre(
     )
 
 
+@router.post("/bulk-edit", response_class=HTMLResponse)
+async def albums_bulk_edit(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Apply genre and/or year to every track of the selected albums.
+
+    Album-level counterpart of the Browse bulk-edit: same genre/year fields,
+    but the selection unit is a whole album. Writes file tags per track and
+    keeps the Album/Track DB rows in sync.
+    """
+    from service.library.tagger import write_tags as _write_tags
+
+    form = await request.form()
+    album_ids: list[str] = list(form.getlist("album_id"))  # type: ignore[arg-type]
+    genre_val = (form.get("genre") or "").strip() or None  # type: ignore[union-attr]
+    year_str = (form.get("year") or "").strip()  # type: ignore[union-attr]
+    year_val: int | None = int(year_str) if year_str.isdigit() else None
+
+    if not album_ids:
+        return _error_badge("No albums selected")
+    if genre_val is None and year_val is None:
+        return _error_badge("Enter at least one field to update")
+
+    albums = (await session.execute(
+        select(Album)
+        .options(joinedload(Album.tracks).joinedload(Track.file))
+        .where(Album.id.in_(album_ids))
+    )).unique().scalars().all()
+
+    tracks_updated = 0
+    failed = 0
+    for album in albums:
+        if year_val is not None:
+            album.year = year_val
+        album.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        for track in album.tracks:
+            if genre_val is not None:
+                track.genre = genre_val
+            if not track.file:
+                continue
+            fp = Path(track.file.path)
+            if not fp.exists():
+                continue
+            kwargs: dict[str, object] = {}
+            if genre_val is not None:
+                kwargs["genre"] = genre_val
+            if year_val is not None:
+                kwargs["year"] = year_val
+            try:
+                await asyncio.to_thread(_write_tags, fp, **kwargs)
+                tracks_updated += 1
+            except Exception as exc:
+                logger.warning("albums bulk-edit: write_tags failed for %s: %s", fp, exc)
+                failed += 1
+
+    await session.commit()
+    await _do_scans()
+
+    msg = (f"Updated {len(albums)} album{'s' if len(albums) != 1 else ''} "
+           f"({tracks_updated} track{'s' if tracks_updated != 1 else ''})")
+    if failed:
+        msg += f", {failed} failed"
+    return HTMLResponse(f'<span class="badge-ok">{msg} ✓</span>')
+
+
 async def _fetch_mb_tracklist(album: Album) -> list:
     """Fetch the MB tracklist for a linked album (release group first, release fallback).
 

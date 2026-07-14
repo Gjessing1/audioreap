@@ -28,12 +28,56 @@
   <input type="hidden" id="album-view" name="view" value="{{ view|default('grid') }}">
 </form>
 
+{# Bulk edit toolbar — hidden until albums are checked (list view only; same
+   genre/year pattern as the Browse bulk edit, but per whole album). #}
+<div id="album-bulk-toolbar" style="display:none;margin-bottom:12px">
+  <form id="album-bulk-form"
+        hx-post="/library/albums/bulk-edit"
+        hx-target="#album-bulk-result"
+        hx-swap="innerHTML"
+        hx-include=".album-check:checked"
+        hx-confirm="Apply to every track of the selected albums?"
+        style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--s3);border:1px solid var(--b2);border-radius:var(--radius);padding:10px 12px">
+    <span id="album-bulk-count" style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap">0 selected</span>
+    <input type="text" name="genre" placeholder="Genre (leave blank to skip)"
+           autocomplete="off"
+           style="flex:1;min-width:120px;max-width:200px">
+    <input type="text" name="year" placeholder="Year" inputmode="numeric"
+           style="width:70px">
+    <button type="submit" class="btn btn-sm">
+      Apply
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+    <button type="button" class="btn btn-sm btn-ghost" onclick="clearAlbumBulkSelection()">Clear</button>
+  </form>
+  <div id="album-bulk-result" style="margin-top:6px"></div>
+</div>
+
 <script>
 function setAlbumView(v, btn) {
   document.getElementById('album-view').value = v;
   document.querySelectorAll('#album-view-toggle .view-toggle-btn')
     .forEach(function (b) { b.classList.toggle('view-toggle-btn--active', b === btn); });
   htmx.trigger('#album-search-form', 'submit');
+}
+function updateAlbumBulkBar() {
+  const checked = document.querySelectorAll('.album-check:checked');
+  const toolbar = document.getElementById('album-bulk-toolbar');
+  if (!toolbar) return;
+  toolbar.style.display = checked.length > 0 ? '' : 'none';
+  document.getElementById('album-bulk-count').textContent = checked.length + ' selected';
+}
+function clearAlbumBulkSelection() {
+  document.querySelectorAll('.album-check:checked').forEach(cb => cb.checked = false);
+  updateAlbumBulkBar();
+}
+// Selections live in the list DOM, so a reload (search, sort, bulk apply)
+// wipes them — hide the toolbar to match. Guarded: the view can be re-embedded.
+if (!window.__albumToolbarInit) {
+  window.__albumToolbarInit = true;
+  document.addEventListener('htmx:afterSwap', function(e) {
+    if (e.target.id === 'album-list') updateAlbumBulkBar();
+  });
 }
 </script>
 

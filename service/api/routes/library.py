@@ -674,3 +674,68 @@ async def trash_delete(ts: str, filename: str) -> HTMLResponse:
     except Exception as exc:
         raise HTTPException(500, f"Delete failed: {exc}") from exc
     return HTMLResponse("")
+
+
+@router.get("/nav/jump", response_class=HTMLResponse)
+async def nav_jump(
+    request: Request,
+    q: str = Query(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Global jump-to palette: artists, albums, tracks, and review-queue jobs.
+
+    Matching is case-insensitive AND-of-words substring search over the
+    entity's name plus its artist name — no search index, but forgiving about
+    word order ("dark floyd" finds Pink Floyd — The Dark Side of the Moon).
+    """
+    q = q.strip()
+    if len(q) < 2:
+        return HTMLResponse('<div class="jump-hint">Keep typing…</div>')
+    words = q.lower().split()[:6]
+
+    def _like_all(expr):  # every word must appear somewhere in expr
+        return [func.lower(expr).like(f"%{w}%") for w in words]
+
+    artists = (await session.execute(
+        select(Artist).join(Track, Track.artist_id == Artist.id).join(Track.file)
+        .where(*_like_all(Artist.name))
+        .distinct().order_by(Artist.name).limit(5)
+    )).scalars().all()
+
+    albums = (await session.execute(
+        select(Album).join(Album.artist)
+        .where(*_like_all(Album.title + " " + Artist.name))
+        .options(joinedload(Album.artist))
+        .order_by(Album.title).limit(6)
+    )).scalars().all()
+
+    tracks = (await session.execute(
+        select(Track).join(Track.artist).join(Track.file)
+        .where(*_like_all(Track.title + " " + Artist.name))
+        .options(joinedload(Track.artist))
+        .order_by(Track.title).limit(8)
+    )).scalars().all()
+
+    review_jobs = (await session.execute(
+        select(AcquisitionJobRow)
+        .where(AcquisitionJobRow.state == "needs_review",
+               *_like_all(AcquisitionJobRow.query))
+        .order_by(AcquisitionJobRow.updated_at.desc()).limit(4)
+    )).scalars().all()
+
+    # Cover art for album rows: any owned track in the album carries the art
+    cover_ids: dict[str, str] = {}
+    if albums:
+        rows = (await session.execute(
+            select(Track.album_id, func.min(Track.id))
+            .join(Track.file)
+            .where(Track.album_id.in_([a.id for a in albums]))
+            .group_by(Track.album_id)
+        )).all()
+        cover_ids = {aid: tid for aid, tid in rows}
+
+    return templates.TemplateResponse(
+        request, "partials/jump_results.html",
+        {"q": q, "artists": artists, "albums": albums, "tracks": tracks,
+         "review_jobs": review_jobs, "cover_ids": cover_ids},
+    )

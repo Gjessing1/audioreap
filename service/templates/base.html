@@ -26,6 +26,11 @@
 <body>
 <nav id="main-nav">
   <a href="/acquire" class="brand">audioreap</a>
+  <button class="theme-btn" id="jump-btn" type="button" aria-label="Jump to anything" title="Jump to… (Ctrl+K or /)" onclick="openJumpPalette()">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" style="vertical-align:-2px">
+      <circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/>
+    </svg>
+  </button>
   <button class="theme-btn" id="theme-btn" type="button" aria-label="Toggle theme" title="Theme">◐</button>
   <button class="nav-toggle" id="nav-toggle" aria-label="Menu" aria-expanded="false">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
@@ -80,6 +85,21 @@
     <span class="tab-label">Settings</span>
   </a>
 </nav>
+
+{# Jump-to palette — opened with Ctrl/Cmd+K, "/" outside inputs, or the nav ⌕
+   button. Results are full-page links rendered by GET /nav/jump. #}
+<div id="jump-palette" class="hidden">
+  <div id="jump-panel">
+    <input id="jump-input" name="q" type="search"
+           placeholder="Jump to artist, album, track…"
+           autocomplete="off" spellcheck="false"
+           hx-get="/nav/jump"
+           hx-trigger="input changed delay:200ms"
+           hx-target="#jump-results"
+           hx-swap="innerHTML">
+    <div id="jump-results"></div>
+  </div>
+</div>
 
 <div id="player-bar" class="hidden">
   <div id="player-art" class="hidden">

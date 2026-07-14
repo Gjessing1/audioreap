@@ -325,6 +325,72 @@ window.applyMbToLibraryEditor = function(trackId, recordingId, title, artist, al
 };
 
 
+/* ── Jump-to palette (Ctrl/Cmd+K or "/" outside inputs) ──────────────────────
+ * The overlay lives in base.html; results come from GET /nav/jump via the
+ * input's own hx-get. This block owns open/close and arrow-key/Enter
+ * navigation over the rendered .jump-item links.
+ */
+window.openJumpPalette = function () {
+  var pal = document.getElementById('jump-palette');
+  var inp = document.getElementById('jump-input');
+  if (!pal || !inp) return;
+  pal.classList.remove('hidden');
+  inp.value = '';
+  document.getElementById('jump-results').innerHTML = '';
+  setTimeout(function () { inp.focus(); }, 0);
+};
+
+window.closeJumpPalette = function () {
+  var pal = document.getElementById('jump-palette');
+  if (pal) pal.classList.add('hidden');
+};
+
+(function () {
+  function items() {
+    return Array.from(document.querySelectorAll('#jump-results .jump-item'));
+  }
+  function moveActive(dir) {
+    var list = items();
+    if (!list.length) return;
+    var cur = list.findIndex(function (el) { return el.classList.contains('jump-active'); });
+    var next = Math.max(0, Math.min(list.length - 1, cur + dir));
+    if (cur === -1) next = dir > 0 ? 0 : list.length - 1;
+    list.forEach(function (el, i) { el.classList.toggle('jump-active', i === next); });
+    list[next].scrollIntoView({ block: 'nearest' });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    var pal = document.getElementById('jump-palette');
+    if (!pal) return;
+    var open = !pal.classList.contains('hidden');
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.id !== 'jump-input';
+    if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !open && !typing)) {
+      e.preventDefault();
+      open ? closeJumpPalette() : openJumpPalette();
+      return;
+    }
+    if (!open) return;
+    if (e.key === 'Escape') {
+      closeJumpPalette();
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveActive(1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveActive(-1);
+    } else if (e.key === 'Enter') {
+      var target = document.querySelector('#jump-results .jump-active') ||
+                   document.querySelector('#jump-results .jump-item');
+      if (target) { e.preventDefault(); target.click(); }
+    }
+  });
+
+  // Click on the backdrop (not the panel) closes
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.id === 'jump-palette') closeJumpPalette();
+  });
+})();
+
 /* ── Review card keyboard shortcuts (a=approve, r=reject, s=MB search, p=play) ── */
 let _hoveredCard = null;
 
@@ -360,6 +426,103 @@ document.addEventListener("keydown", function(e) {
     if (playBtn) playBtn.click();
   }
 });
+
+/* ── Swipe-to-triage review cards (touch): right = approve, left = reject ────
+ * Compact needs_review cards in the jobs list only (the expanded review card
+ * has form fields and its own buttons). Vertical scrolling wins: the gesture
+ * captures only once horizontal movement clearly dominates (touch-action:
+ * pan-y keeps native scrolling for everything else). Swipe right approves
+ * with the stored metadata — identical to opening the review card and hitting
+ * Approve untouched. Swipe left asks for confirmation first, since reject
+ * trashes the staged file.
+ */
+(function () {
+  if (!('ontouchstart' in window)) return;
+
+  var card = null, startX = 0, startY = 0, dx = 0, decided = false, horizontal = false;
+
+  function badgeFor(el, kind, label) {
+    var b = el.querySelector('.swipe-badge--' + kind);
+    if (!b) {
+      b = document.createElement('span');
+      b.className = 'swipe-badge swipe-badge--' + kind;
+      b.textContent = label;
+      el.appendChild(b);
+    }
+    return b;
+  }
+
+  function resetSwipe(el) {
+    el.classList.remove('swipe-return', 'swipe-commit');
+    el.style.transform = '';
+    el.querySelectorAll('.swipe-badge').forEach(function (b) { b.remove(); });
+  }
+
+  function swipeThresh(el) {
+    return Math.max(72, Math.min(el.offsetWidth * 0.35, 150));
+  }
+
+  document.addEventListener('touchstart', function (e) {
+    card = null;
+    if (e.target.closest('button, a, input, select, textarea')) return;
+    var c = e.target.closest('#job-list .card[data-state="needs_review"]');
+    if (!c || c.dataset.swipeBusy) return;
+    card = c;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    dx = 0; decided = false; horizontal = false;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function (e) {
+    if (!card || !card.isConnected) return;
+    dx = e.touches[0].clientX - startX;
+    var dy = e.touches[0].clientY - startY;
+    if (!decided) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      decided = true;
+      horizontal = Math.abs(dx) > Math.abs(dy) * 1.4;
+    }
+    if (!horizontal) return;
+    e.preventDefault();   // suppress text selection / click-through while dragging
+    card.classList.remove('swipe-return');
+    card.style.transform = 'translateX(' + dx + 'px)';
+    var th = swipeThresh(card);
+    badgeFor(card, 'approve', '✓ Approve').style.opacity = dx > 0 ? Math.min(dx / th, 1) : 0;
+    badgeFor(card, 'reject', '✕ Reject').style.opacity = dx < 0 ? Math.min(-dx / th, 1) : 0;
+  }, { passive: false });
+
+  function endSwipe() {
+    var el = card;
+    card = null;
+    if (!el || !el.isConnected) return;
+    if (!horizontal || Math.abs(dx) < swipeThresh(el)) {
+      el.classList.add('swipe-return');
+      el.style.transform = '';
+      el.querySelectorAll('.swipe-badge').forEach(function (b) { b.style.opacity = 0; });
+      setTimeout(function () { if (el.isConnected) resetSwipe(el); }, 220);
+      return;
+    }
+    if (dx < 0 && !window.confirm('Reject this track and trash the staged file?')) {
+      resetSwipe(el);
+      return;
+    }
+    var jobId = el.id.replace(/^job-/, '');
+    el.dataset.swipeBusy = '1';
+    el.classList.add('swipe-commit');
+    el.style.transform = 'translateX(' + (dx > 0 ? 1 : -1) * el.offsetWidth + 'px)';
+    var p = htmx.ajax('POST', '/jobs/' + jobId + (dx > 0 ? '/approve' : '/reject'),
+      { target: '#' + el.id, swap: 'outerHTML' });
+    if (p && typeof p.catch === 'function') {
+      p.catch(function () {
+        delete el.dataset.swipeBusy;
+        if (el.isConnected) resetSwipe(el);
+      });
+    }
+  }
+
+  document.addEventListener('touchend', endSwipe);
+  document.addEventListener('touchcancel', endSwipe);
+})();
 
 /* ── Pause the job-list poll while reviewing ─────────────────────────────────
  * #job-list refreshes every 12s with an innerHTML swap. If a review card is

@@ -89,6 +89,10 @@
               hx-target="#album-list"
               hx-swap="innerHTML"
               hx-push-url="{{ push_url }}">Edit</button>
+      <input type="checkbox" class="album-check" name="album_id" value="{{ album.id }}"
+             title="Select for bulk edit"
+             onchange="updateAlbumBulkBar()"
+             style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;flex-shrink:0">
     </div>
   </div>
   {% endif %}
