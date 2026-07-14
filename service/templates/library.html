@@ -110,4 +110,8 @@
   </div>
 </div>
 {% endif %}
+
+{# ── Play-activity rails from Navidrome — lazy so its latency never blocks
+   the overview; renders nothing when Navidrome is unreachable or silent ── #}
+<div hx-get="/library/navidrome-rails" hx-trigger="load" hx-swap="outerHTML"></div>
 {% endblock %}

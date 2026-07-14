@@ -27,6 +27,15 @@
       <span class="badge badge-done" style="margin-left:6px;vertical-align:1px"
             title="Matches {{ c.owned_artist|e }} — {{ c.owned_title|e }} in your library">In library</span>
       {% endif %}
+      {# On-demand quality probe — flat search results carry no format data,
+         so this fetches the real audio stream specs for just this video. #}
+      <button class="btn btn-sm btn-ghost"
+              hx-get="/search/cloud/quality?url={{ c.provider_ref|urlencode }}"
+              hx-target="this" hx-swap="outerHTML" hx-indicator="this"
+              style="font-size:10px;padding:1px 6px;margin-left:6px;vertical-align:1px"
+              title="Check the audio quality of this upload (codec / bitrate) before downloading">
+        kbps? <span class="htmx-indicator"><span class="spinner" style="width:8px;height:8px"></span></span>
+      </button>
     </div>
   </div>
   <div class="card-actions">

@@ -212,6 +212,45 @@ async def cloud_search_page(
     )
 
 
+@router.get("/search/cloud/quality", response_class=HTMLResponse)
+async def cloud_quality_probe(url: str = "") -> HTMLResponse:
+    """On-demand audio-quality probe for one search result.
+
+    Flat search results carry no format data, so this runs a single full
+    yt-dlp extraction (disk-cached by video id) and reports the audio stream
+    a download would actually get — the deciding signal between an official
+    audio upload and a low-bitrate rip of the same track.
+    """
+    import asyncio
+    import html as _html
+
+    from service.providers.ytdlp import probe_source_quality
+
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        return HTMLResponse('<span class="badge badge-warn" title="Quality probe needs a direct video URL">n/a</span>')
+
+    try:
+        info = await asyncio.to_thread(probe_source_quality, url, settings.cache_dir)
+    except Exception as exc:
+        logger.debug("Quality probe failed for %s: %s", url, exc)
+        info = None
+    if not info or not info.get("abr_kbps"):
+        return HTMLResponse('<span class="badge badge-warn" title="Could not read format data for this video">?</span>')
+
+    codec = _html.escape(str(info.get("codec") or "audio"))
+    abr = int(info["abr_kbps"])
+    asr = info.get("sample_rate")
+    detail = f"{codec} · {abr} kbps" + (f" · {int(asr) / 1000:g} kHz" if asr else "")
+    # YouTube's best audio tops out around 130 kbps opus — treat that band as
+    # good; meaningfully below it usually means a re-encoded rip.
+    color = "var(--success)" if abr >= 110 else ("var(--warn)" if abr >= 70 else "var(--danger)")
+    return HTMLResponse(
+        f'<span class="badge" style="color:{color};font-family:var(--font-mono)"'
+        f' title="Best audio stream a download would get: {detail}">{codec} {abr}k</span>'
+    )
+
+
 @router.post("/search/acquire-url", response_class=HTMLResponse)
 async def acquire_from_url(
     request: Request,

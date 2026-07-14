@@ -191,6 +191,57 @@ def _canonical_source_url(info: object, provider_ref: str) -> str | None:
     return None
 
 
+def probe_source_quality(url: str, cache_dir: Path | None = None) -> dict | None:
+    """Full-extraction probe of one video's best available audio stream.
+
+    Flat search entries carry no format data, so choosing between two
+    near-duplicate uploads (official audio vs a low-bitrate rip) needs one real
+    extraction per video. Returns codec / bitrate / sample rate of the format
+    the downloader would actually pick, or None when nothing usable is found.
+    Cached by video id: the format ladder of an existing upload never improves.
+    """
+    import json
+
+    import yt_dlp
+
+    vid = video_id_from_url(url)
+    cache_file: Path | None = None
+    if cache_dir is not None and vid:
+        cache_file = Path(cache_dir) / "yt_quality" / f"{vid}.json"
+        if cache_file.exists():
+            try:
+                return json.loads(cache_file.read_text())
+            except (OSError, ValueError):
+                pass
+
+    with yt_dlp.YoutubeDL(_ydl_opts_base()) as ydl:
+        info = ydl.extract_info(url, download=False)
+    if not isinstance(info, dict):
+        return None
+    formats = [f for f in info.get("formats") or [] if isinstance(f, dict)]
+    audio = [f for f in formats if f.get("acodec") not in (None, "none")]
+    # Audio-only streams are what fetch() downloads; muxed A/V is the fallback
+    pool = [f for f in audio if f.get("vcodec") in (None, "none")] or audio
+    if not pool:
+        return None
+    best = max(pool, key=lambda f: f.get("abr") or f.get("tbr") or 0)
+    bitrate = best.get("abr") or best.get("tbr")
+    result = {
+        "codec": (best.get("acodec") or "").split(".")[0] or None,
+        "abr_kbps": round(bitrate) if bitrate else None,
+        "sample_rate": best.get("asr"),
+        "channel": info.get("channel") or info.get("uploader"),
+        "upload_date": info.get("upload_date"),
+    }
+    if cache_file is not None:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(result))
+        except OSError:
+            pass
+    return result
+
+
 def _ydl_opts_base() -> dict[str, object]:
     return {
         "quiet": True,

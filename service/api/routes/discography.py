@@ -442,21 +442,20 @@ async def discography_album_status(
     )
 
 
-@router.get("/{artist_mbid}", response_class=HTMLResponse)
-async def discography_view(
-    request: Request,
+async def _release_entries(
+    session: AsyncSession,
     artist_mbid: str,
-    # Bare `list[str] = []` is NOT bound to repeated ?types= query params by
-    # FastAPI — it needs an explicit Query default, else the filter chips are a
-    # server-side no-op (every request sees an empty selection).
-    types: list[str] = Query([]),
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+    selected_types: set[str],
+) -> tuple[str, list[dict], list[str]]:
+    """Fetch an artist's MB release groups and mark which are locally owned.
+
+    Returns (artist_name, release_entries, all_types). Ownership is anchored on
+    release-group ID when the local Album row has one, falling back to title
+    similarity — the same matching the artist page uses.
+    """
     from service.core.normalize import normalize as _normalize
     from service.metadata.musicbrainz import get_artist_release_groups
     from service.search.matcher import title_similarity
-
-    selected_types = set(types)
 
     artist_name, release_groups = await asyncio.to_thread(
         get_artist_release_groups, artist_mbid, settings.cache_dir
@@ -522,8 +521,67 @@ async def discography_view(
             "cover_track_id": cover_track_id,
         })
 
-    owned_count = sum(1 for r in release_entries if r["owned"])
     all_types = sorted({rg.release_type for rg in release_groups})
+    return artist_name, release_entries, all_types
+
+
+@router.post("/{artist_mbid}/acquire-missing", response_class=HTMLResponse)
+async def discography_acquire_missing(
+    request: Request,
+    artist_mbid: str,
+    types: list[str] = Form([]),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Queue album jobs for every un-owned release group shown in the Discography view.
+
+    Unlike the artist-page variant this needs no local Artist row — it works
+    straight from MB search results, before anything by the artist is owned.
+    Respects the active type-filter chips: only the release types currently
+    shown are queued.
+    """
+    try:
+        artist_name, release_entries, _ = await _release_entries(
+            session, artist_mbid, set(types)
+        )
+    except Exception as exc:
+        return _error_badge(f"MB lookup failed: {exc}")
+
+    unowned = [r for r in release_entries if not r["owned"]]
+    if not unowned:
+        return HTMLResponse('<span class="badge badge-done">All shown releases already owned ✓</span>')
+
+    try:
+        async with arq_pool() as redis:
+            for r in unowned:
+                await enqueue_album_from_mb(
+                    redis, str(uuid.uuid4()),
+                    release_group_id=r["release_group_id"],
+                    artist_name=artist_name,
+                )
+    except Exception as exc:
+        return _error_badge(f"Queue error: {exc}")
+
+    return HTMLResponse(
+        f'<span class="badge badge-busy">Queued {len(unowned)} release{"s" if len(unowned) != 1 else ""}'
+        f' → <a href="/jobs" style="color:inherit">Jobs</a></span>'
+    )
+
+
+@router.get("/{artist_mbid}", response_class=HTMLResponse)
+async def discography_view(
+    request: Request,
+    artist_mbid: str,
+    # Bare `list[str] = []` is NOT bound to repeated ?types= query params by
+    # FastAPI — it needs an explicit Query default, else the filter chips are a
+    # server-side no-op (every request sees an empty selection).
+    types: list[str] = Query([]),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    selected_types = set(types)
+    artist_name, release_entries, all_types = await _release_entries(
+        session, artist_mbid, selected_types
+    )
+    owned_count = sum(1 for r in release_entries if r["owned"])
 
     ctx = {
         "artist_name": artist_name,

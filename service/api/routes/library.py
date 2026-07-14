@@ -164,6 +164,78 @@ async def library_page(
     )
 
 
+@router.get("/library/navidrome-rails", response_class=HTMLResponse)
+async def library_navidrome_rails(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Most-played / recently-played cover rails, read from Navidrome.
+
+    Read-only personalization: Navidrome owns all playback state, audioreap
+    only displays it. Loaded lazily from the Library overview so a slow or
+    unreachable Navidrome never delays the page — no data renders nothing.
+    """
+    from service.core.normalize import normalize
+    from service.navidrome.client import get_album_list
+    from service.search.matcher import title_similarity
+
+    frequent, recent = await asyncio.gather(
+        get_album_list("frequent", 12),
+        get_album_list("recent", 12),
+    )
+    if not frequent and not recent:
+        return HTMLResponse("")
+
+    # Local-album lookup so rail cards get local cover art and click through to
+    # the album view. Navidrome album ids are its own — match on normalized
+    # title with an artist-name similarity tie-break.
+    rows = (await session.execute(
+        select(Album.id, Album.title, Artist.name, Track.id)
+        .join(Artist, Album.artist_id == Artist.id)
+        .join(Track, Track.album_id == Album.id)
+        .join(TrackFile, TrackFile.track_id == Track.id)
+    )).all()
+    by_title: dict[str, list[tuple[str, str, str]]] = {}
+    _seen: set[str] = set()
+    for album_id, title, artist_name, track_id in rows:
+        if album_id in _seen:
+            continue
+        _seen.add(album_id)
+        by_title.setdefault(normalize(title), []).append((album_id, artist_name, track_id))
+
+    def _entries(nd_albums: list[dict]) -> list[dict]:
+        out = []
+        for a in nd_albums:
+            name = str(a.get("name") or a.get("title") or "?")
+            artist = str(a.get("artist") or "")
+            album_id = cover_track_id = None
+            best_sim = 0.0
+            for cand_id, cand_artist, cand_track in by_title.get(normalize(name), []):
+                sim = title_similarity(cand_artist, artist)
+                if sim > best_sim:
+                    best_sim = sim
+                    album_id, cover_track_id = cand_id, cand_track
+            if best_sim < 0.60:
+                album_id = cover_track_id = None
+            out.append({
+                "name": name,
+                "artist": artist,
+                "play_count": a.get("playCount"),
+                "album_id": album_id,
+                "cover_track_id": cover_track_id,
+            })
+        return out
+
+    rails = [
+        {"title": "Most played", "entries": _entries(frequent)},
+        {"title": "Recently played", "entries": _entries(recent)},
+    ]
+    rails = [r for r in rails if r["entries"]]
+    return templates.TemplateResponse(
+        request, "partials/navidrome_rails.html", {"rails": rails}
+    )
+
+
 def _human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":

@@ -1,0 +1,37 @@
+{# Most played / Recently played cover rails — read-only data from Navidrome's
+   Subsonic API (getAlbumList2). Cards matched to a local album click through
+   to the album view and use local cover art; unmatched ones (e.g. albums that
+   predate audioreap's DB) render as plain cards with a placeholder. #}
+{% for rail in rails %}
+<div style="margin-top:20px">
+  <div class="section-title" style="margin-bottom:8px">
+    {{ rail.title }}
+    <span style="font-size:11px;font-weight:400;color:var(--t3);margin-left:6px"
+          title="Play activity read from Navidrome — audioreap never writes playback state">from Navidrome</span>
+  </div>
+  <div class="recent-rail">
+    {% for e in rail.entries %}
+    <div class="album-card"
+         {% if e.album_id %}
+         hx-get="/library/albums?embed=1&open={{ e.album_id|urlencode }}"
+         hx-target="#library-view" hx-swap="innerHTML"
+         hx-push-url="/library/albums?open={{ e.album_id|urlencode }}"
+         hx-on::after-request="document.getElementById('library-view').scrollIntoView({behavior:'smooth'})"
+         {% endif %}>
+      <div class="album-card-art">
+        {% if e.cover_track_id %}
+        <img src="/library/tracks/{{ e.cover_track_id }}/cover-art?size=256"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+             loading="lazy" alt="">
+        <div class="album-card-ph" style="display:none">♪</div>
+        {% else %}
+        <div class="album-card-ph">♪</div>
+        {% endif %}
+      </div>
+      <div class="album-card-title" title="{{ e.name }}">{{ e.name }}</div>
+      <div class="album-card-meta">{{ e.artist }}{% if e.play_count %} · {{ e.play_count }} play{% if e.play_count != 1 %}s{% endif %}{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}

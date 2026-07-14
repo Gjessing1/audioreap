@@ -9,6 +9,30 @@
   </button>
 </div>
 
+{% set unowned_count = total_count - owned_count %}
+{% if unowned_count > 0 %}
+{# One-action full-discography grab — works before anything by this artist is
+   owned. Queues one album job per un-owned release group; the type-filter
+   chips scope what gets queued (empty selection = everything). #}
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+  <form hx-post="/discography/{{ artist_mbid }}/acquire-missing"
+        hx-target="#disco-acquire-missing-result"
+        hx-swap="innerHTML"
+        hx-indicator="#disco-acquire-missing-spinner"
+        hx-confirm="Queue all {{ unowned_count }} missing release group(s){% if selected_types %} of the selected type(s){% endif %} for download? Each becomes a full album job."
+        style="display:contents">
+    {% for t in selected_types %}
+    <input type="hidden" name="types" value="{{ t|e }}">
+    {% endfor %}
+    <button type="submit" class="btn btn-sm">
+      Acquire all missing ({{ unowned_count }})
+      <span id="disco-acquire-missing-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </form>
+  <span id="disco-acquire-missing-result"></span>
+</div>
+{% endif %}
+
 <input id="disco-search" type="search" placeholder="Filter releases…"
        oninput="filterDiscoReleases(this.value)"
        autocomplete="off"
