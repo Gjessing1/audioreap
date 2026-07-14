@@ -3,16 +3,15 @@
 
   {# Header: cover art + status badges #}
   <div class="rv-header">
-    {# Cover art — click zooms (lightbox); the "change" strip opens the art panel #}
-    <div class="rv-art rv-art--lg" style="cursor:zoom-in;position:relative"
-         data-lightbox="/library/tracks/{{ track.id }}/cover-art"
-         data-lightbox-caption="{{ track.artist.name }} — {{ track.title }}">
+    {# Cover art — click to open art panel #}
+    <div class="rv-art rv-art--lg" style="cursor:pointer;position:relative"
+         onclick="togglePanel('art-panel-{{ safe_id }}')">
       <img src="/library/tracks/{{ track.id }}/cover-art?size=144"
            id="edit-cover-{{ safe_id }}"
            onerror="this.style.display='none';document.getElementById('edit-cover-placeholder-{{ safe_id }}').style.display='flex'"
            style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">
       <div id="edit-cover-placeholder-{{ safe_id }}" style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
-      <div class="rv-art-change" onclick="event.stopPropagation();togglePanel('art-panel-{{ safe_id }}')">change</div>
+      <div class="rv-art-change" style="pointer-events:none">change</div>
     </div>
     <div class="rv-info">
       <div class="rv-badges">

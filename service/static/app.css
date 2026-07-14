@@ -1205,24 +1205,6 @@ input::placeholder { color: var(--t4); }
   background: rgba(10, 12, 20, 0.72);
   padding: 2px 5px; border-radius: 3px;
 }
-/* Explicit edit affordance on grid cards — the cover itself is a view (zoom)
- * target, not an edit trigger. Hidden until hover on pointer devices; always
- * visible (subtle) where hover doesn't exist. */
-.album-card-edit {
-  position: absolute; bottom: 6px; right: 6px;
-  width: 26px; height: 26px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 13px; line-height: 1; cursor: pointer;
-  color: #fff; background: rgba(10, 12, 20, 0.62);
-  border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 8px;
-  padding: 0;
-}
-.album-card-edit:hover { background: rgba(10, 12, 20, 0.85); }
-@media (hover: hover) {
-  .album-card-edit { opacity: 0; transition: opacity 0.12s; }
-  .album-card:hover .album-card-edit,
-  .album-card-edit:focus-visible { opacity: 1; }
-}
 .album-card-title {
   margin-top: 7px;
   font-size: 13px; font-weight: 600; color: var(--t1);
@@ -1390,7 +1372,6 @@ input::placeholder { color: var(--t4); }
   background: var(--primary-dim);
 }
 
-/* ── Cover-art lightbox ───────────────────────────────────────────────────── */
 /* ── Jump-to palette ─────────────────────────────────────────────────────── */
 #jump-palette {
   position: fixed; inset: 0; z-index: 320;
@@ -1399,7 +1380,7 @@ input::placeholder { color: var(--t4); }
   -webkit-backdrop-filter: blur(4px);
   padding: 10vh 16px 16px;
   display: flex; justify-content: center; align-items: flex-start;
-  animation: lightboxIn 0.12s ease;
+  animation: overlayIn 0.12s ease;
 }
 #jump-palette.hidden { display: none; }
 #jump-panel {
@@ -1452,47 +1433,16 @@ input::placeholder { color: var(--t4); }
 .jump-kind { font-size: 10px; color: var(--t4); flex-shrink: 0; }
 .jump-hint { padding: 14px 16px; font-size: 13px; color: var(--t3); }
 
-#ar-lightbox {
-  position: fixed; inset: 0; z-index: 300;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(6, 8, 14, 0.82);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  cursor: zoom-out;
-  animation: lightboxIn 0.15s ease;
-}
-#ar-lightbox.hidden { display: none; }
-#ar-lightbox figure {
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  max-width: 92vw; max-height: 90vh;
-}
-#ar-lightbox img {
-  max-width: 92vw;
-  max-height: calc(90vh - 34px);
-  border-radius: var(--radius);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
-  background: var(--s3);
-}
-#ar-lightbox figcaption {
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 13px;
-  text-align: center;
-  max-width: 80vw;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
-}
-@keyframes lightboxIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes overlayIn { from { opacity: 0; } to { opacity: 1; } }
 
-/* The "change" strip on editable art tiles — clickable, above the zoom area */
+/* The "change" strip on editable art tiles — the tile itself handles the click */
 .rv-art-change {
   position: absolute; bottom: 0; left: 0; right: 0;
   text-align: center; font-size: 10px; color: #cfd3dd;
   background: rgba(0, 0, 0, 0.45);
   padding: 2px 0;
   border-radius: 0 0 var(--radius-s) var(--radius-s);
-  cursor: pointer;
 }
-.rv-art-change:hover { background: rgba(0, 0, 0, 0.65); color: #fff; }
 
 /* ── Breadcrumbs ─────────────────────────────────────────────────────────── */
 .crumbs {

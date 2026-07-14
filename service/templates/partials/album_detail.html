@@ -18,24 +18,18 @@
 
   {# ── Album header ──────────────────────────────────────────────────────── #}
   <div class="rv-header">
-    {# Art click zooms (lightbox); the "change" strip opens the art panel #}
-    {% if cover_track.value %}
-    <div class="rv-art rv-art--lg" style="cursor:zoom-in;position:relative"
-         data-lightbox="/library/tracks/{{ cover_track.value.id }}/cover-art"
-         data-lightbox-caption="{{ album.artist.name }} — {{ album.title }}">
+    <div class="rv-art rv-art--lg" style="cursor:pointer;position:relative"
+         onclick="togglePanel('album-art-panel-{{ aid }}')">
+      {% if cover_track.value %}
       <img src="/library/tracks/{{ cover_track.value.id }}/cover-art?size=144"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
            style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">
       <div style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
-      <div class="rv-art-change" onclick="event.stopPropagation();togglePanel('album-art-panel-{{ aid }}')">change</div>
-    </div>
-    {% else %}
-    <div class="rv-art rv-art--lg" style="cursor:pointer;position:relative"
-         onclick="togglePanel('album-art-panel-{{ aid }}')">
+      {% else %}
       <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--t4);font-size:20px">♪</div>
+      {% endif %}
       <div class="rv-art-change" style="pointer-events:none">change</div>
     </div>
-    {% endif %}
     <div class="rv-info">
       <div class="rv-badges">
         {% if album.musicbrainz_release_id or album.mb_release_group_id %}
