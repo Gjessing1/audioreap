@@ -1,0 +1,30 @@
+{# Genre/tag browse results — same click-through as artist_candidates.html
+   (load the artist's discography in #disco-detail). Owned artists are badged
+   so the "surprise me" flow highlights what's NOT in the library yet. #}
+{% if artists %}
+<div class="section-title">Artists tagged "{{ q }}"</div>
+{% for a in artists %}
+<div class="card" style="margin-bottom:6px;cursor:pointer"
+     hx-get="/discography/{{ a.artist_id }}"
+     hx-target="#disco-detail"
+     hx-swap="innerHTML"
+     hx-push-url="true"
+     hx-indicator="#disco-detail">
+  <div class="card-info">
+    <div class="card-title">{{ a.name }}</div>
+    <div class="card-sub">
+      {%- if a.disambiguation %}{{ a.disambiguation }}{% if a.tags %} · {% endif %}{% endif -%}
+      {{ a.tags[:4]|join(", ") }}
+    </div>
+  </div>
+  <div class="card-actions">
+    {% if a.artist_id in owned_names %}
+    <span class="badge badge-done" title="Already in your library">Owned</span>
+    {% endif %}
+    <span class="btn btn-sm btn-ghost" style="color:var(--text)">View →</span>
+  </div>
+</div>
+{% endfor %}
+{% elif q %}
+<p class="empty">No artists on MusicBrainz tagged "{{ q }}". Tags are folksonomy — try a broader genre (e.g. "electronic" instead of "future garage").</p>
+{% endif %}

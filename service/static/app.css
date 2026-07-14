@@ -1205,6 +1205,24 @@ input::placeholder { color: var(--t4); }
   background: rgba(10, 12, 20, 0.72);
   padding: 2px 5px; border-radius: 3px;
 }
+/* Explicit edit affordance on grid cards — the cover itself is a view (zoom)
+ * target, not an edit trigger. Hidden until hover on pointer devices; always
+ * visible (subtle) where hover doesn't exist. */
+.album-card-edit {
+  position: absolute; bottom: 6px; right: 6px;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1; cursor: pointer;
+  color: #fff; background: rgba(10, 12, 20, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 8px;
+  padding: 0;
+}
+.album-card-edit:hover { background: rgba(10, 12, 20, 0.85); }
+@media (hover: hover) {
+  .album-card-edit { opacity: 0; transition: opacity 0.12s; }
+  .album-card:hover .album-card-edit,
+  .album-card-edit:focus-visible { opacity: 1; }
+}
 .album-card-title {
   margin-top: 7px;
   font-size: 13px; font-weight: 600; color: var(--t1);

@@ -233,7 +233,7 @@ window.closeLightbox = function () {
  * The "change" strip inside editable art tiles keeps its own handler. */
 document.body.addEventListener("click", function (e) {
   const zoom = e.target.closest("[data-lightbox]");
-  if (!zoom || e.target.closest(".rv-art-change")) return;
+  if (!zoom || e.target.closest(".rv-art-change") || e.target.closest("[data-no-lightbox]")) return;
   const img = zoom.querySelector("img");
   // Thumbnail failed → placeholder is showing; a zoom would just be broken
   if (img && (!img.getAttribute("src") || img.style.display === "none")) return;

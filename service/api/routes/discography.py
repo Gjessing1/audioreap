@@ -64,6 +64,89 @@ async def discography_search(
     )
 
 
+async def _owned_artist_names(session: AsyncSession) -> set[str]:
+    """Normalized names of every artist in the local library (owned-marker set)."""
+    from service.core.normalize import normalize as _norm
+
+    names = (await session.execute(select(Artist.name))).scalars().all()
+    return {_norm(n) for n in names if n}
+
+
+@router.get("/genre-search", response_class=HTMLResponse)
+async def discography_genre_search(
+    request: Request,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Browse MB artists by genre/tag — the 'surprise me' discovery mode.
+
+    Same result target as the artist-name search; each hit deep-links into the
+    artist's discography. Owned artists are badged so unexplored names stand out.
+    """
+    if not q.strip():
+        return HTMLResponse("")
+
+    from service.core.normalize import normalize as _norm
+    from service.metadata.musicbrainz import search_artists_by_tag
+
+    artists = await asyncio.to_thread(
+        search_artists_by_tag, q.strip().lower(), 20, settings.cache_dir
+    )
+    owned = await _owned_artist_names(session)
+    return templates.TemplateResponse(
+        request, "partials/genre_artist_results.html",
+        {
+            "artists": artists,
+            "q": q,
+            "owned_names": {a.artist_id for a in artists if _norm(a.name) in owned},
+        },
+    )
+
+
+@router.get("/for-you", response_class=HTMLResponse)
+async def discography_for_you(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Proactive suggestion rail: un-owned artists connected to the library.
+
+    Seeds = the most-owned artists with MB IDs plus the library's top genres;
+    ranking happens in metadata/suggest.py. Loaded lazily when the Discover tab
+    is first shown — a cold cache costs ~1 MB request/second, so the rail can
+    take a few seconds on first build, then it's disk-cached for 24 h.
+    """
+    from service.metadata.suggest import MAX_SEED_ARTISTS, MAX_SEED_GENRES, build_for_you
+
+    seed_rows = (await session.execute(
+        select(Artist.musicbrainz_artist_id, Artist.name)
+        .join(Track, Track.artist_id == Artist.id)
+        .where(Artist.musicbrainz_artist_id.is_not(None))
+        .group_by(Artist.id)
+        .order_by(func.count(Track.id).desc())
+        .limit(MAX_SEED_ARTISTS)
+    )).all()
+    seeds = [(mbid, name) for mbid, name in seed_rows if mbid]
+
+    genres = (await session.execute(
+        select(Track.genre)
+        .where(Track.genre.is_not(None), Track.genre != "")
+        .group_by(Track.genre)
+        .order_by(func.count(Track.id).desc())
+        .limit(MAX_SEED_GENRES)
+    )).scalars().all()
+
+    if not seeds and not genres:
+        return HTMLResponse("")  # empty/unlinked library — the rail simply doesn't exist
+
+    owned = await _owned_artist_names(session)
+    suggestions = await asyncio.to_thread(
+        build_for_you, seeds, list(genres), owned, settings.cache_dir
+    )
+    return templates.TemplateResponse(
+        request, "partials/for_you_rail.html", {"suggestions": suggestions}
+    )
+
+
 @router.get("/{artist_mbid}/related", response_class=HTMLResponse)
 async def discography_related_artists(
     request: Request,

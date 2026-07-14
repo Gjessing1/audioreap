@@ -36,12 +36,23 @@
   {# Bookmarkable URL for the open album — refresh/back restores this state #}
   {% set push_url = "/library/albums?q=" ~ (q|default('')|urlencode) ~ "&sort=" ~ (sort|default('artist')|urlencode) ~ "&view=grid&open=" ~ (album.id|urlencode) %}
   {% set aq = album_quality[album.id] if album_quality is defined and album.id in album_quality else none %}
+  {# View vs edit: clicking the cover zooms it (lightbox) — art is the visual
+     anchor, not an edit trigger. The detail/edit form opens from the explicit
+     ✎ button, the quality badge, or the title/meta text. The trigger filter
+     keeps art clicks out of the card's hx-get; [data-no-lightbox] elements
+     opt back in (and are skipped by the lightbox delegate in app.js). #}
   <div class="album-card" id="album-{{ album.id | replace(':', '_') }}"
        hx-get="{{ open_url }}"
        hx-target="#album-list"
        hx-swap="innerHTML"
-       hx-push-url="{{ push_url }}">
-    <div class="album-card-art">
+       hx-push-url="{{ push_url }}"
+       hx-trigger="click[!event.target.closest('[data-lightbox]') || !!event.target.closest('[data-no-lightbox]')]">
+    <div class="album-card-art"
+         {% if cover_track.value %}
+         style="cursor:zoom-in"
+         data-lightbox="/library/tracks/{{ cover_track.value.id }}/cover-art"
+         data-lightbox-caption="{{ album.artist.name }} — {{ album.title }}"
+         {% endif %}>
       {% if cover_track.value %}
       <img src="/library/tracks/{{ cover_track.value.id }}/cover-art?size=256"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
@@ -50,9 +61,11 @@
       {% else %}
       <div class="album-card-ph">♪</div>
       {% endif %}
+      <button type="button" class="album-card-edit" data-no-lightbox
+              title="Edit album">✎</button>
       {# Attention badge only below the "good" threshold — clean albums stay clean #}
       {% if aq is not none and aq < 0.7 %}
-      <span class="album-card-q {% if aq >= 0.4 %}quality-mid{% else %}quality-low{% endif %}"
+      <span class="album-card-q {% if aq >= 0.4 %}quality-mid{% else %}quality-low{% endif %}" data-no-lightbox
             title="Metadata quality score: {{ '%.0f'|format(aq * 100) }}% — open to review tags">{{ "%.0f"|format(aq * 100) }}%</span>
       {% endif %}
     </div>

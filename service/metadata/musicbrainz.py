@@ -11,7 +11,7 @@ import logging
 import re
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import musicbrainzngs
@@ -59,6 +59,7 @@ class MBArtist:
     name: str
     disambiguation: str | None
     score: float
+    tags: list[str] = field(default_factory=list)  # top genre/folksonomy tags, most-used first
 
 
 @dataclass
@@ -597,6 +598,73 @@ def search_artists(
             name=str(a.get("name", "")),
             disambiguation=str(a.get("disambiguation") or "") or None,
             score=int(a.get("ext:score", 0)) / 100.0,
+        ))
+    return artists
+
+
+def _parse_artist_tags(a: dict[str, object], limit: int = 4) -> list[str]:
+    """Top tag names from an artist search/lookup dict, most-voted first."""
+    tags = a.get("tag-list") or []
+    scored: list[tuple[int, str]] = []
+    for t in tags:
+        if not isinstance(t, dict) or not t.get("name"):
+            continue
+        try:
+            count = int(t.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        scored.append((count, str(t["name"])))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [name for _, name in scored[:limit]]
+
+
+# MB special-purpose artists (https://musicbrainz.org/doc/Style/Unknown_and_untitled/Special_purpose_artist)
+# rank absurdly high in tag searches because every compilation links them —
+# never useful as a browse/discovery result.
+_SPECIAL_PURPOSE_ARTIST_IDS = {
+    "89ad4ac3-39f7-470e-963a-56509c546377",  # Various Artists
+    "125ec42a-7229-4250-afc5-e057484327fe",  # [unknown]
+    "f731ccc4-e22a-43af-a747-64213329e088",  # [anonymous]
+    "9be7f096-97ec-4615-8957-8d40b5dcbc41",  # [traditional]
+    "eec63d3c-3b81-4ad4-b1e4-7c147d4d2b61",  # [no artist]
+}
+
+
+def search_artists_by_tag(
+    tag: str,
+    limit: int = 20,
+    cache_dir: Path | None = None,
+) -> list[MBArtist]:
+    """Browse MB artists by genre/folksonomy tag (e.g. "shoegaze", "jazz").
+
+    Uses the artist search index's tag field, so results are ranked by MB's
+    own relevance score. Each hit carries its top tags for display.
+    Special-purpose artists (Various Artists, [unknown], …) are dropped.
+    """
+    key = f"artist_tag_search:{_cache_key(tag, '')}"
+    raw = _load_cache(cache_dir, key) if cache_dir else None
+    if raw is None:
+        try:
+            result = _mb_call("MB artist tag search", lambda: musicbrainzngs.search_artists(
+                tag=tag, limit=limit
+            ))
+            raw = dict(result)
+            if cache_dir is not None:
+                _save_cache(cache_dir, key, raw)
+        except Exception as exc:
+            logger.warning("MB artist tag search failed for %r: %s", tag, exc)
+            return []
+
+    artists: list[MBArtist] = []
+    for a in raw.get("artist-list") or []:
+        if not isinstance(a, dict) or str(a.get("id", "")) in _SPECIAL_PURPOSE_ARTIST_IDS:
+            continue
+        artists.append(MBArtist(
+            artist_id=str(a.get("id", "")),
+            name=str(a.get("name", "")),
+            disambiguation=str(a.get("disambiguation") or "") or None,
+            score=int(a.get("ext:score", 0)) / 100.0,
+            tags=_parse_artist_tags(a),
         ))
     return artists
 

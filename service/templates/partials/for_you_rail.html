@@ -1,0 +1,23 @@
+{# "For you" rail: un-owned artists connected to the library via MB
+   relationships and genre/tag overlap (metadata/suggest.py). Chips deep-link
+   into the artist's discography — same target/push as artist_candidates.html.
+   Empty result renders nothing so the rail doesn't exist for tiny libraries. #}
+{% if suggestions %}
+<div class="section-title" style="margin-top:4px">For you</div>
+<p class="empty" style="font-size:12px;padding:0 0 8px;text-align:left">Artists you don't own yet, connected to your library.</p>
+<div style="display:flex;gap:6px;flex-wrap:wrap">
+  {% for s in suggestions %}
+  <button type="button"
+          hx-get="/discography/{{ s.artist_id }}"
+          hx-target="#disco-detail"
+          hx-swap="innerHTML"
+          hx-push-url="true"
+          hx-indicator="#disco-detail"
+          title="{{ s.reasons[:4]|join(' · ') }}"
+          style="border:1px solid var(--b2);background:var(--s2);color:var(--t1);border-radius:16px;padding:5px 12px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">
+    {{ s.name }}
+    <span style="font-size:10px;color:var(--t3)">{{ s.reasons[0].split(' · ')[0] if s.reasons else '' }}</span>
+  </button>
+  {% endfor %}
+</div>
+{% endif %}

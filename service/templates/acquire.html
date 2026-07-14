@@ -63,6 +63,12 @@
 {# ── Discover ─────────────────────────────────────────────────────────────── #}
 <section class="acq-panel" id="acq-panel-discover" hidden>
   <p class="empty" style="font-size:13px;padding:0 0 10px;text-align:left">Browse an artist's full MusicBrainz discography and acquire missing albums.</p>
+  {# Two discovery modes share one input slot + result area: artist name search
+     and genre/tag browse ("I don't know what I want, surprise me"). #}
+  <div id="disco-modes" style="display:flex;gap:6px;margin-bottom:8px">
+    <button type="button" class="btn btn-sm disco-mode active" data-mode="artist" style="font-size:12px">Artist</button>
+    <button type="button" class="btn btn-sm btn-ghost disco-mode" data-mode="genre" style="font-size:12px">Genre / tag</button>
+  </div>
   <input id="disco-q" name="q" type="search"
          placeholder="Search artist (e.g. Radiohead, Daft Punk)…"
          inputmode="search" enterkeyhint="search" autocomplete="off"
@@ -70,6 +76,13 @@
          style="width:100%;margin-bottom:10px"
          hx-get="/discography/search"
          hx-trigger="input changed delay:400ms, keyup[key=='Enter']{% if disco_q %}, load{% endif %}"
+         hx-target="#artist-candidates">
+  <input id="disco-genre-q" name="q" type="search" hidden
+         placeholder="Browse by genre or tag (e.g. shoegaze, jazz, synthwave)…"
+         inputmode="search" enterkeyhint="search" autocomplete="off"
+         style="width:100%;margin-bottom:10px"
+         hx-get="/discography/genre-search"
+         hx-trigger="input changed delay:500ms, keyup[key=='Enter']"
          hx-target="#artist-candidates">
   <div id="artist-candidates"></div>
   {% if disco_preload_url %}
@@ -81,6 +94,15 @@
   {% else %}
   <div id="disco-detail" style="margin-top:8px"></div>
   {% endif %}
+  {# "For you" suggestions: built from MB caches + library DB, so it loads
+     lazily the first time the Discover tab is actually shown (custom event
+     fired by the tab JS below) — never on plain page loads of other tabs. #}
+  <div id="for-you-rail" style="margin-top:16px"
+       hx-get="/discography/for-you"
+       hx-trigger="reveal-discover once"
+       hx-swap="innerHTML">
+    <span class="muted" style="font-size:12px"><span class="spinner" style="width:10px;height:10px"></span> Finding artists for you…</span>
+  </div>
 </section>
 
 {# ── Playlists ────────────────────────────────────────────────────────────── #}
@@ -141,6 +163,7 @@
   var KEY = 'ar-acquire-tab';
   var tabs = document.querySelectorAll('#acq-tabs .acq-tab');
   var serverHint = {{ active_section|default('')|tojson }};
+  var railFired = false;
 
   function show(name) {
     tabs.forEach(function (t) {
@@ -151,6 +174,19 @@
       if (panel) panel.hidden = !on;
     });
     try { localStorage.setItem(KEY, name); } catch (e) {}
+    // First reveal of Discover kicks off the lazy "For you" rail. This inline
+    // script runs before htmx.min.js (loaded at the end of base.html), so on
+    // initial page load we defer the trigger to htmx's first processing pass.
+    if (name === 'discover' && !railFired) {
+      var fire = function () {
+        if (railFired) return;
+        railFired = true;
+        var rail = document.getElementById('for-you-rail');
+        if (rail) htmx.trigger(rail, 'reveal-discover');
+      };
+      if (window.htmx && document.readyState !== 'loading') fire();
+      else document.body.addEventListener('htmx:load', fire, { once: true });
+    }
     // Focus the tab's main input on desktop (skip on touch to avoid keyboard pop)
     if (!('ontouchstart' in window)) {
       var input = document.querySelector('#acq-panel-' + name + ' input[type=search], #acq-panel-' + name + ' input[type=url]');
@@ -163,6 +199,24 @@
       e.preventDefault();  // client-side switch; the href stays a real deep link
       show(t.dataset.tab);
       try { history.replaceState(null, '', t.getAttribute('href')); } catch (err) {}
+    });
+  });
+
+  // Discover: artist-name vs genre/tag mode toggle (one input slot, one result area)
+  var modeBtns = document.querySelectorAll('#disco-modes .disco-mode');
+  modeBtns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      modeBtns.forEach(function (x) {
+        var on = x === b;
+        x.classList.toggle('active', on);
+        x.classList.toggle('btn-ghost', !on);
+      });
+      var artist = document.getElementById('disco-q');
+      var genre = document.getElementById('disco-genre-q');
+      var genreMode = b.dataset.mode === 'genre';
+      artist.hidden = genreMode;
+      genre.hidden = !genreMode;
+      if (!('ontouchstart' in window)) (genreMode ? genre : artist).focus();
     });
   });
 
