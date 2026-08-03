@@ -26,19 +26,30 @@ env:
   PUSH_IMAGE: localhost:3000/gjessing1/audioreap
 
 jobs:
-  build-and-push:
+  # Build, push and deploy in ONE job. A separate `needs:` deploy job would have to
+  # queue for a second turn on this instance's single capacity-1 runner (shared by
+  # every repo, and often held by atlas's 30-50 minute builds). If a new commit lands
+  # during that wait, Forgejo auto-cancels the previous run's still-queued job and the
+  # deploy is silently skipped, leaving a stale container behind a green run.
+  build-and-deploy:
     runs-on: docker
+    env:
+      # Deploy project (compose file + .env), bind-mounted into the job by the runner.
+      DEPLOY_DIR: /home/gjessing/docker/audioreap
     steps:
       - uses: actions/checkout@v4
 
       # Written directly instead of `docker login`: login pings the registry
       # from the job container (where localhost:3000 is unreachable), but the
-      # push runs on the host daemon (where it works).
+      # push runs on the host daemon (where it works). Both hostnames are authed
+      # here — pushes go to localhost:3000, the deploy's compose pull to
+      # git.gjessing.io (HTTPS via Caddy; downloads aren't subject to the 413).
       - name: Registry auth
         run: |
           mkdir -p ~/.docker
           auth=$(printf 'gjessing1:%s' "${{ secrets.REGISTRY_TOKEN }}" | base64 -w0)
-          printf '{"auths":{"localhost:3000":{"auth":"%s"}}}' "$auth" > ~/.docker/config.json
+          printf '{"auths":{"localhost:3000":{"auth":"%s"},"git.gjessing.io":{"auth":"%s"}}}' \
+            "$auth" "$auth" > ~/.docker/config.json
 
       - name: Build images
         run: |
@@ -57,30 +68,32 @@ jobs:
             docker push "$PUSH_IMAGE/$target:$SHA_TAG"
           done
 
-  # Redeploy on the host after a successful main build. Runs against the host
-  # daemon via the mounted Docker socket; the deploy project (compose file +
-  # .env) is bind-mounted into the job by the runner (see runner-config.yml).
-  # The deploy compose pulls git.gjessing.io/... :latest — the images this
-  # workflow just pushed — so this is self-consistent (no race with the GitHub
-  # build that mirrors to ghcr.io).
-  deploy:
-    needs: build-and-push
-    if: github.ref == 'refs/heads/main'
-    runs-on: docker
-    env:
-      DEPLOY_DIR: /home/gjessing/docker/audioreap
-    steps:
-      # The host daemon pulls from git.gjessing.io (HTTPS via Caddy — downloads
-      # aren't subject to the upload 413), so the CLI in this job needs read
-      # auth for that hostname.
-      - name: Registry auth
-        run: |
-          mkdir -p ~/.docker
-          auth=$(printf 'gjessing1:%s' "${{ secrets.REGISTRY_TOKEN }}" | base64 -w0)
-          printf '{"auths":{"git.gjessing.io":{"auth":"%s"}}}' "$auth" > ~/.docker/config.json
-
+      # Redeploy on the host, against the host daemon via the mounted Docker
+      # socket. The deploy compose pulls git.gjessing.io/... :latest — the images
+      # this workflow just pushed — so this is self-consistent (no race with the
+      # GitHub build that mirrors to ghcr.io). Guarded on main because this
+      # workflow also runs for v* tags and workflow_dispatch.
       - name: Pull and restart
+        if: github.ref == 'refs/heads/main'
         run: |
           cd "$DEPLOY_DIR"
           docker compose pull
           docker compose up -d --remove-orphans
+
+      # Fail loudly if the stack came back on the old images, so a lost deploy shows
+      # up as a red run instead of a green one. Both images must be live: a worker
+      # left on the previous build is exactly the kind of half-deploy that hides here.
+      - name: Verify deploy
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cd "$DEPLOY_DIR"
+          running=$(docker compose ps -q | xargs -r docker inspect --format '{{.Image}}')
+          for target in api worker; do
+            built=$(docker image inspect --format '{{.Id}}' "$IMAGE/$target:latest")
+            if ! printf '%s\n' "$running" | grep -qFx "$built"; then
+              echo "no running container uses the $target image just built ($built)" >&2
+              docker compose ps >&2
+              exit 1
+            fi
+            echo "deployed $target $built"
+          done
