@@ -1936,3 +1936,317 @@ button.htmx-request:disabled { cursor: wait; }
   .rv-comparison-side--check { box-shadow: inset 3px 0 0 var(--warn); }
   .rv-approve-next { order: 2; }
 }
+
+/* ── Settings ────────────────────────────────────────────────────────────── */
+/* One row grammar: description left, control right, on a shared control column.
+ * The 3px left gutter on a row is the page's status channel — blue when the
+ * value differs from the shipped default, amber while an edit is unsaved — and
+ * the sticky save bar counts the amber ones. */
+.set-head { margin-bottom: 22px; }
+.set-head .page-title { font-size: 22px; }
+.set-head__lede {
+  margin-top: 6px;
+  max-width: 58ch;
+  color: var(--t2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.set-head__lede code {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--t1); background: var(--s2);
+  padding: 1px 5px; border-radius: 4px;
+}
+
+.set-summary {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-top: 12px;
+  padding: 5px 12px;
+  border: 1px solid var(--b1);
+  border-radius: 999px;
+  background: var(--s1);
+  color: var(--t3);
+  font-size: 12px;
+}
+.set-summary strong { color: var(--t1); font-weight: 700; }
+.set-summary code { font-family: var(--font-mono); font-size: 11px; color: var(--t2); }
+.set-summary--custom {
+  border-color: color-mix(in srgb, var(--primary) 32%, transparent);
+  background: var(--primary-dim);
+  color: var(--primary-fg);
+}
+.set-summary--custom strong { color: var(--primary-fg); }
+.set-summary--custom code { color: var(--primary-fg); }
+.set-summary__mark {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--primary);
+  box-shadow: 0 0 6px var(--primary-glow);
+}
+
+/* No-JS full-page-POST confirmation; the htmx path uses the toast layer. */
+.set-saved {
+  margin-bottom: 18px; padding: 9px 14px;
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+  border-radius: var(--radius-s);
+  background: var(--success-bg);
+  color: var(--success);
+  font-size: 13px; font-weight: 600;
+}
+
+.set-group { margin-bottom: 26px; }
+.set-group--standalone { margin-top: 34px; }
+.set-group__head { margin-bottom: 10px; }
+.set-group__name {
+  font-family: var(--font-head);
+  font-size: 11px; font-weight: 700;
+  color: var(--t3);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.set-group__hint { margin-top: 3px; color: var(--t4); font-size: 12px; }
+
+.set-rows {
+  border: 1px solid var(--b1);
+  border-radius: var(--radius);
+  background: var(--s1);
+  overflow: hidden;
+}
+
+.set-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 26px;
+  padding: 15px 18px;
+  border-top: 1px solid var(--b1);
+  box-shadow: inset 3px 0 0 transparent;
+  transition: background 0.14s, box-shadow 0.14s;
+}
+.set-row:first-child { border-top: none; }
+.set-row--custom { box-shadow: inset 3px 0 0 var(--primary); }
+/* Unsaved beats "differs from default" — it's the state you must act on. */
+.set-row--dirty { box-shadow: inset 3px 0 0 var(--warn); background: var(--warn-bg); }
+
+.set-row__text { min-width: 0; }
+.set-row__label {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 14px; font-weight: 600; color: var(--t1);
+  line-height: 1.35;
+}
+label.set-row__label { cursor: pointer; }
+.set-row__desc {
+  margin-top: 4px;
+  max-width: 60ch;
+  color: var(--t2);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.set-row__desc code, .set-row__meta code {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--t1); background: var(--s3);
+  padding: 1px 5px; border-radius: 4px;
+}
+/* Row metadata is only worth space once the row has drifted from its default. */
+.set-row__meta { margin-top: 7px; font-size: 11px; color: var(--t3); display: none; }
+.set-row--custom > .set-row__text > .set-row__meta,
+.set-row--dirty > .set-row__text > .set-row__meta { display: block; }
+.set-row__meta--always { display: block; }
+.set-row__wide { grid-column: 1 / -1; min-width: 0; }
+
+.set-restore {
+  display: inline; background: none; border: none;
+  padding: 0; height: auto; min-width: 0;
+  color: var(--t3);
+  font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+  letter-spacing: 0;
+  text-decoration: underline; text-underline-offset: 2px;
+  cursor: pointer;
+}
+.set-restore:hover { background: none; color: var(--primary); box-shadow: none; }
+.set-restore:active { transform: none; }
+
+.set-tag {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--warn-bg); color: var(--warn);
+  font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.07em;
+  white-space: nowrap;
+}
+
+.set-row__control {
+  display: flex; align-items: center; gap: 10px;
+  justify-self: end;
+}
+.set-row__control--stack { flex-direction: column; align-items: flex-end; gap: 8px; }
+
+/* Number + unit. The unit sits outside the field with a fixed width so every
+ * row's input ends on the same x regardless of "min" vs "kbps" vs nothing. */
+.set-num { display: inline-flex; align-items: center; gap: 7px; }
+.set-row .set-num .rv-input {
+  flex: none;
+  width: 84px; height: 36px;
+  text-align: right;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.set-num__unit {
+  min-width: 30px;
+  color: var(--t3); font-size: 12px;
+}
+
+.set-quick { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.set-chip {
+  height: 24px; min-width: 0; padding: 0 9px;
+  background: var(--s3); color: var(--t3);
+  border: 1px solid var(--b1); border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0;
+}
+.set-chip:hover { background: var(--s4); color: var(--t1); border-color: var(--b2); box-shadow: none; }
+.set-chip--on {
+  background: var(--primary-dim);
+  border-color: color-mix(in srgb, var(--primary) 36%, transparent);
+  color: var(--primary-fg);
+}
+.set-chip--on:hover { background: var(--primary-dim); color: var(--primary-fg); }
+
+/* ── Switch ──────────────────────────────────────────────────────────────── */
+.switch { position: relative; display: inline-flex; flex-shrink: 0; }
+.switch input {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  margin: 0; opacity: 0; cursor: pointer;
+}
+.switch__track {
+  display: block; position: relative;
+  width: 44px; height: 26px;
+  background: var(--s4);
+  border: 1px solid var(--b2);
+  border-radius: 999px;
+  transition: background 0.16s, border-color 0.16s;
+}
+.switch__thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px;
+  background: var(--t3);
+  border-radius: 50%;
+  transition: transform 0.16s, background 0.16s;
+}
+.switch input:checked + .switch__track { background: var(--primary); border-color: var(--primary); }
+.switch input:checked + .switch__track .switch__thumb { transform: translateX(18px); background: #fff; }
+.switch input:focus-visible + .switch__track { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-dim); }
+
+/* ── Save bar ────────────────────────────────────────────────────────────── */
+/* Sticks to the bottom of the viewport while the form is taller than it, and
+ * comes to rest at the end of the form otherwise. Offsets clear the fixed
+ * player and the mobile tab bar. */
+.set-savebar {
+  position: sticky;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  z-index: 80;
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px 9px 14px;
+  border: 1px solid var(--b2);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--s2) 92%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  transition: background 0.16s, border-color 0.16s;
+}
+.set-savebar__mark {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--b3);
+  transition: background 0.16s;
+}
+.set-savebar__count {
+  flex: 1; min-width: 0;
+  font-size: 12px; font-weight: 600; color: var(--t3);
+}
+.set-savebar[data-clean] .set-savebar__discard { display: none; }
+.set-savebar:not([data-clean]) {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn-bg) 55%, var(--s2));
+}
+.set-savebar:not([data-clean]) .set-savebar__mark {
+  background: var(--warn);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 55%, transparent);
+}
+.set-savebar:not([data-clean]) .set-savebar__count { color: var(--warn); }
+body:has(#player-bar:not(.hidden)) .set-savebar { bottom: calc(var(--player-h) + 10px); }
+
+/* ── Settings: disclosure + small pieces ─────────────────────────────────── */
+.set-details { margin-top: 10px; }
+.set-details > summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 0;
+  color: var(--t2); font-size: 12px; font-weight: 600;
+  cursor: pointer; list-style: none;
+}
+.set-details > summary::-webkit-details-marker { display: none; }
+.set-details > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--t4);
+  transition: transform 0.15s;
+}
+.set-details[open] > summary::before { transform: rotate(90deg); }
+.set-details > summary:hover { color: var(--t1); }
+
+.set-subform { display: flex; flex-direction: column; gap: 9px; margin-top: 8px; }
+.set-subform__actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.set-textarea { height: auto; padding: 9px 11px; line-height: 1.5; resize: vertical; }
+.set-file input[type="file"] {
+  max-width: 100%;
+  font-size: 12px; color: var(--t3);
+  font-family: var(--font-ui);
+}
+.set-file input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  height: 30px; padding: 0 10px;
+  background: transparent; color: var(--t2);
+  border: 1px solid var(--b2); border-radius: 5px;
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.set-file input[type="file"]::file-selector-button:hover {
+  color: var(--t1); border-color: var(--b3); background: var(--s3);
+}
+.set-inline-status { font-size: 12px; }
+
+.set-state {
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.set-state--ok  { background: var(--success-bg); color: var(--success); }
+.set-state--off { background: var(--s3); color: var(--t3); }
+
+.set-version {
+  padding: 3px 8px;
+  background: var(--s3); border-radius: 5px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--t2);
+}
+
+.set-foot { margin-top: 28px; color: var(--t3); font-size: 12px; line-height: 1.7; }
+
+@media (max-width: 599px) {
+  /* Switch rows keep the control on the label's line; the taller number+chips
+     controls get the full width underneath. */
+  .set-row:has(.set-row__control--stack) { grid-template-columns: 1fr; }
+  .set-row:has(.set-row__control--stack) .set-row__control { justify-self: start; align-items: flex-start; }
+  .set-quick { justify-content: flex-start; }
+  .set-row { padding: 14px 15px; }
+}
+
+@media (max-width: 639px) {
+  .set-savebar { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px); }
+  body:has(#player-bar:not(.hidden)) .set-savebar {
+    bottom: calc(var(--player-h) + var(--tabbar-h) + env(safe-area-inset-bottom) + 8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .set-row, .set-savebar, .set-savebar__mark,
+  .switch__track, .switch__thumb, .set-details > summary::before { transition: none; }
+}

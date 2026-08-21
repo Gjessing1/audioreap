@@ -1212,3 +1212,111 @@ if ("serviceWorker" in navigator) {
     startY = null; pulling = false; dist = 0;
   });
 })();
+
+/* ── Settings: unsaved-change tracking ───────────────────────────────────── */
+/* The page marks every row that drifts from its shipped default (data-default)
+ * and every row edited since the last save, counts the unsaved ones in the save
+ * bar, and guards against navigating away with them pending. Without JS the
+ * form still posts normally — this layer only adds the live state. */
+(function () {
+  const form = document.getElementById('settings-form');
+  if (!form) return;
+
+  const bar = document.getElementById('settings-savebar');
+  const countLabel = document.getElementById('settings-change-count');
+  const discard = document.getElementById('settings-discard');
+  const fields = Array.from(form.querySelectorAll('[data-setting]'));
+  const baseline = new Map();
+
+  function valueOf(el) {
+    if (el.type === 'checkbox') return String(el.checked);
+    if (el.type === 'number') return el.value === '' ? '' : String(Number(el.value));
+    return String(el.value);
+  }
+
+  function defaultOf(el) {
+    const raw = el.dataset.default || '';
+    return el.type === 'number' ? String(Number(raw)) : raw;
+  }
+
+  function setValue(el, value) {
+    if (el.type === 'checkbox') el.checked = value === 'true';
+    else el.value = value;
+  }
+
+  function snapshot() {
+    fields.forEach(function (el) { baseline.set(el, valueOf(el)); });
+  }
+
+  function sync() {
+    let dirty = 0;
+    fields.forEach(function (el) {
+      const value = valueOf(el);
+      const row = el.closest('[data-set-row]');
+      const changed = value !== baseline.get(el);
+      if (changed) dirty++;
+      if (row) {
+        row.classList.toggle('set-row--dirty', changed);
+        row.classList.toggle('set-row--custom', value !== defaultOf(el));
+      }
+      form.querySelectorAll('[data-set-quick="' + el.dataset.setting + '"]').forEach(function (chip) {
+        chip.classList.toggle('set-chip--on', String(Number(chip.dataset.value)) === value);
+        chip.setAttribute('aria-pressed', String(chip.classList.contains('set-chip--on')));
+      });
+    });
+    if (bar) bar.toggleAttribute('data-clean', dirty === 0);
+    if (countLabel) {
+      countLabel.textContent = dirty === 0
+        ? 'No unsaved changes'
+        : dirty + (dirty === 1 ? ' unsaved change' : ' unsaved changes');
+    }
+    return dirty;
+  }
+
+  let pending = 0;
+  function refresh() { pending = sync(); }
+
+  form.addEventListener('input', refresh);
+  form.addEventListener('change', refresh);
+
+  form.addEventListener('click', function (event) {
+    const target = event.target.closest ? event.target.closest('[data-set-restore], [data-set-quick]') : null;
+    if (!target) return;
+    const key = target.dataset.setRestore || target.dataset.setQuick;
+    const field = fields.find(function (el) { return el.dataset.setting === key; });
+    if (!field) return;
+    setValue(field, target.dataset.setRestore ? defaultOf(field) : target.dataset.value);
+    field.focus({ preventScroll: true });
+    refresh();
+  });
+
+  if (discard) {
+    discard.addEventListener('click', function () {
+      fields.forEach(function (el) { setValue(el, baseline.get(el)); });
+      refresh();
+    });
+  }
+
+  /* The response only swaps the summary strip, so the fields keep what the user
+     typed — re-baseline against them instead of re-reading the server. */
+  form.addEventListener('htmx:afterRequest', function (event) {
+    const detail = event.detail || {};
+    if (detail.successful && !detail.failed) { snapshot(); refresh(); }
+  });
+
+  window.addEventListener('beforeunload', function (event) {
+    if (!pending) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (!(event.metaKey || event.ctrlKey) || event.key !== 's') return;
+    if (!pending) return;
+    event.preventDefault();
+    form.requestSubmit();
+  });
+
+  snapshot();
+  refresh();
+})();

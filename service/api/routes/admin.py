@@ -106,16 +106,32 @@ async def admin_update_ytdlp(request: Request) -> HTMLResponse:
 
 
 def _admin_config_ctx(*, saved: bool = False) -> dict:
-    from service.config import CONFIG_EDITABLE_KEYS
+    from service.config import (
+        CONFIG_EDITABLE_KEYS,
+        config_defaults,
+        read_config_overrides,
+    )
     from service.providers.ytdlp import active_cookies_file
     try:
         import yt_dlp
         ytdlp_version = yt_dlp.version.__version__
     except Exception:
         ytdlp_version = None
+
+    current = {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS}
+    defaults = config_defaults()
     return {
         "active": "settings",
-        "current": {k: getattr(settings, k) for k in CONFIG_EDITABLE_KEYS},
+        "current": current,
+        "defaults": defaults,
+        # Per-key "this isn't the shipped default" flag. Settings paints a marker
+        # and a restore link from it, so the page always answers "what did I
+        # change?" without diffing against the docs.
+        "modified": {k: current[k] != defaults[k] for k in CONFIG_EDITABLE_KEYS},
+        "modified_count": sum(current[k] != defaults[k] for k in CONFIG_EDITABLE_KEYS),
+        # Whether anything has ever been saved from the UI. Not a count: a save
+        # writes every editable key, so counting them would always say "all".
+        "has_overrides": bool(read_config_overrides()),
         "cookies_active": active_cookies_file(),
         "ytdlp_version": ytdlp_version,
         "saved": saved,
@@ -188,21 +204,37 @@ async def admin_cookies_save(request: Request) -> HTMLResponse:
 
 @router.post("/admin/config", response_class=HTMLResponse)
 async def admin_config_save(request: Request) -> HTMLResponse:
+    """Persist the Settings form.
+
+    Toggles post as a hidden "false" immediately followed by the checkbox's
+    "true", so an unchecked switch still submits a value instead of vanishing
+    from the form. Reading the *last* value for a key is what makes that work —
+    don't swap this back to ``form.get()``.
+    """
     from service.config import CONFIG_EDITABLE_KEYS, save_config_overrides
     form = await request.form()
     overrides: dict = {}
     for key in CONFIG_EDITABLE_KEYS:
-        val = form.get(key)
-        if val is not None:
-            field_type = type(getattr(settings, key))
-            if field_type is bool:
-                overrides[key] = val == "true"
-            else:
-                try:
-                    overrides[key] = field_type(val)
-                except Exception as exc:
-                    logger.debug("config override value not coercible, skipped: %s", exc)
+        submitted = form.getlist(key)
+        if not submitted:
+            continue
+        val = submitted[-1]
+        field_type = type(getattr(settings, key))
+        if field_type is bool:
+            overrides[key] = val == "true"
+        else:
+            try:
+                overrides[key] = field_type(val)
+            except Exception as exc:
+                logger.debug("config override value not coercible, skipped: %s", exc)
     save_config_overrides(overrides)
-    return templates.TemplateResponse(
-        request, "admin_config.html", _admin_config_ctx(saved=True)
-    )
+
+    ctx = _admin_config_ctx(saved=True)
+    if request.headers.get("HX-Request"):
+        # Swap only the summary strip; the form keeps the values the user just
+        # typed. The shared toast layer announces the save from this header.
+        return templates.TemplateResponse(
+            request, "partials/settings_summary.html", ctx,
+            headers={"X-Feedback-Message": "Settings saved."},
+        )
+    return templates.TemplateResponse(request, "admin_config.html", ctx)

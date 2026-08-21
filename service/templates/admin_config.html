@@ -1,181 +1,266 @@
 {% extends "base.html" %}
 {% block title %}Settings — audioreap{% endblock %}
 
-{% block content %}
-<div class="page-toolbar">
-  <h2 class="page-title">Settings</h2>
-</div>
+{#
+  Settings uses one row grammar throughout: what the setting does on the left,
+  the control on the right, aligned to a single column. Two control idioms only —
+  a switch for booleans, a number field with quick-set chips for the rest — so
+  the page stays learnable as settings are added.
 
-<p style="font-size:13px;color:var(--t3);margin-bottom:16px;max-width:560px">
-  Saved to <code>/data/config_overrides.json</code> and applied immediately — the worker
-  picks changes up within a minute. Environment variables take precedence again after a
-  container restart.
-</p>
+  Each row carries its shipped default in data-default. The client marks rows
+  that drift from it, marks rows edited but not yet saved, and counts the
+  unsaved ones in the save bar; see the Settings block in app.js.
+#}
+
+{% macro row_switch(key, label, note='') %}
+{% set default_on = defaults[key] %}
+<div class="set-row{% if modified[key] %} set-row--custom{% endif %}" data-set-row>
+  <div class="set-row__text">
+    <label class="set-row__label" for="{{ key }}">
+      {{ label }}{% if note %}<span class="set-tag">{{ note }}</span>{% endif %}
+    </label>
+    <p class="set-row__desc" id="{{ key }}-desc">{{ caller() }}</p>
+    <p class="set-row__meta">
+      <button type="button" class="set-restore" data-set-restore="{{ key }}">
+        Restore default ({{ 'on' if default_on else 'off' }})
+      </button>
+    </p>
+  </div>
+  <div class="set-row__control">
+    {# Hidden "false" first, checkbox "true" second: an unchecked switch must
+       still submit a value. The route reads the last value for the key. #}
+    <input type="hidden" name="{{ key }}" value="false">
+    <label class="switch">
+      <input type="checkbox" id="{{ key }}" name="{{ key }}" value="true"
+             role="switch" aria-describedby="{{ key }}-desc"
+             data-setting="{{ key }}" data-default="{{ 'true' if default_on else 'false' }}"
+             {% if current[key] %}checked{% endif %}>
+      <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+    </label>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro row_number(key, label, unit, min, max, step, presets, note='') %}
+<div class="set-row{% if modified[key] %} set-row--custom{% endif %}" data-set-row>
+  <div class="set-row__text">
+    <label class="set-row__label" for="{{ key }}">
+      {{ label }}{% if note %}<span class="set-tag">{{ note }}</span>{% endif %}
+    </label>
+    <p class="set-row__desc" id="{{ key }}-desc">{{ caller() }}</p>
+    <p class="set-row__meta">
+      <button type="button" class="set-restore" data-set-restore="{{ key }}">
+        Restore default ({{ defaults[key] }}{{ ' ' ~ unit if unit }})
+      </button>
+    </p>
+  </div>
+  <div class="set-row__control set-row__control--stack">
+    <span class="set-num">
+      <input class="rv-input" id="{{ key }}" name="{{ key }}" type="number"
+             min="{{ min }}" max="{{ max }}" step="{{ step }}"
+             inputmode="numeric" aria-describedby="{{ key }}-desc"
+             data-setting="{{ key }}" data-default="{{ defaults[key] }}"
+             value="{{ current[key] }}">
+      {% if unit %}<span class="set-num__unit" aria-hidden="true">{{ unit }}</span>{% endif %}
+    </span>
+    {% if presets %}
+    <span class="set-quick">
+      {% for value, chip_label in presets %}
+      <button type="button" class="set-chip" data-set-quick="{{ key }}" data-value="{{ value }}">{{ chip_label }}</button>
+      {% endfor %}
+    </span>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<header class="set-head">
+  <h1 class="page-title">Settings</h1>
+  <p class="set-head__lede">
+    Saved to <code>/data/config_overrides.json</code> and picked up by the worker
+    within a minute. These values override the matching <code>AUDIOREAP_*</code>
+    environment variables.
+  </p>
+  {% include "partials/settings_summary.html" %}
+</header>
 
 {% if saved %}
-<div class="rv-alert rv-alert--warn" style="margin-bottom:16px;color:var(--success)">
-  ✓ Settings saved and applied.
-</div>
+{# Only rendered on the no-JS full page POST; the htmx path gets a toast. #}
+<p class="set-saved" role="status">Settings saved.</p>
 {% endif %}
 
-<form method="post" action="/admin/config" style="display:flex;flex-direction:column;gap:24px;max-width:520px">
+<form id="settings-form" method="post" action="/admin/config"
+      hx-post="/admin/config" hx-target="#settings-summary" hx-swap="outerHTML"
+      data-feedback-working="Saving…" data-feedback-success="Settings saved.">
 
-  <section>
-    <div class="section-title" style="margin-top:0">Review &amp; quality</div>
-    <div style="display:flex;flex-direction:column;gap:14px">
-      <div class="rv-field rv-field--full">
-        <label class="rv-label">Staging quality threshold
-          <span style="font-weight:400;color:var(--t4)">(0.0 = off, 0.4 = default)</span>
-        </label>
-        <input class="rv-input" name="staging_quality_threshold" type="number"
-               step="0.05" min="0.0" max="1.0"
-               value="{{ current.staging_quality_threshold }}">
-        <div style="font-size:11px;color:var(--t3);margin-top:4px">
-          Tracks below this 7-factor score go to staging for manual review instead of landing directly in /music.
-        </div>
-      </div>
-
-      <div class="rv-field rv-field--full">
-        <label class="rv-label">Min bitrate (kbps)
-          <span style="font-weight:400;color:var(--t4)">(default 128)</span>
-        </label>
-        <input class="rv-input" name="min_bitrate_kbps" type="number"
-               step="32" min="0" max="1411"
-               value="{{ current.min_bitrate_kbps }}">
-        <div style="font-size:11px;color:var(--t3);margin-top:4px">
-          Tracks below this bitrate are flagged as low quality in Library → Health.
-        </div>
-      </div>
-
-      <div class="rv-field rv-field--full">
-        <label class="rv-label">Prefer explicit versions</label>
-        <select class="rv-input" name="prefer_explicit">
-          <option value="true" {% if current.prefer_explicit %}selected{% endif %}>Yes (default)</option>
-          <option value="false" {% if not current.prefer_explicit %}selected{% endif %}>No</option>
-        </select>
-        <div style="font-size:11px;color:var(--t3);margin-top:4px">
-          Rank explicit results above clean in search, source selection, and source replacement.
-        </div>
-      </div>
+  <section class="set-group">
+    <div class="set-group__head">
+      <h2 class="set-group__name">Choosing sources</h2>
+      <p class="set-group__hint">How audioreap picks between versions of the same song.</p>
+    </div>
+    <div class="set-rows">
+      {% call row_switch('prefer_explicit', 'Prefer explicit versions') %}
+        Rank explicit releases above clean ones in search results, source picking,
+        and source replacement.
+      {% endcall %}
     </div>
   </section>
 
-  <section>
-    <div class="section-title">Library maintenance</div>
-    <div style="display:flex;flex-direction:column;gap:14px">
-      <div class="rv-field rv-field--full">
-        <label class="rv-label">Fetch lyrics (LRCLIB)</label>
-        <select class="rv-input" name="lyrics_enabled">
-          <option value="true" {% if current.lyrics_enabled %}selected{% endif %}>On (default)</option>
-          <option value="false" {% if not current.lyrics_enabled %}selected{% endif %}>Off</option>
-        </select>
-        <div style="font-size:11px;color:var(--t3);margin-top:4px">
-          On approval, fetch synced/plain lyrics and write a .lrc sidecar next to the track.
-          Navidrome serves these to any Subsonic client; audio tags are never modified.
-          Per-track lyrics can be viewed and edited from any track's Edit card.
-        </div>
-      </div>
+  <section class="set-group">
+    <div class="set-group__head">
+      <h2 class="set-group__name">Library upkeep</h2>
+      <p class="set-group__hint">What happens to files after you approve them.</p>
+    </div>
+    <div class="set-rows">
+      {% call row_switch('lyrics_enabled', 'Fetch lyrics') %}
+        On approval, look the track up on LRCLIB and write a <code>.lrc</code> file
+        next to it. Navidrome serves that to any Subsonic client, and audio tags stay
+        untouched. Every track's Edit card can show and change its lyrics.
+      {% endcall %}
 
-      <div class="rv-field rv-field--full">
-        <label class="rv-label">Auto-rescan interval (minutes)
-          <span style="font-weight:400;color:var(--t4)">(0 = disabled)</span>
-        </label>
-        <input class="rv-input" name="rescan_interval_minutes" type="number"
-               step="1" min="0" max="1440"
-               value="{{ current.rescan_interval_minutes }}">
-        <div style="font-size:11px;color:var(--t3);margin-top:4px">
-          Automatically scan /music and sync to Navidrome at this interval. 0 disables it
-          (audioreap already scans after every approval — this only catches files added outside audioreap).
-        </div>
-      </div>
+      {% call row_switch('auto_fix_tags_enabled', 'Repair album tags daily') %}
+        Around 04:00, rewrite album, album artist, year, and the canonical MusicBrainz
+        album ID across every album's files. Keeps Navidrome from splitting one album
+        into several.
+      {% endcall %}
 
-      <div class="rv-field rv-field--full">
-        <label class="rv-label">Daily "fix file tags" sweep</label>
-        <select class="rv-input" name="auto_fix_tags_enabled">
-          <option value="false" {% if not current.auto_fix_tags_enabled %}selected{% endif %}>Off (default)</option>
-          <option value="true" {% if current.auto_fix_tags_enabled %}selected{% endif %}>On — run daily for all albums</option>
-        </select>
-        <div style="font-size:11px;color:var(--t3);margin-top:4px">
-          Once a day (≈04:00), rewrite album / albumartist / year and the canonical MusicBrainz
-          album ID on every album's files, keeping Navidrome from splitting albums.
-        </div>
-      </div>
+      {% call row_number('rescan_interval_minutes', 'Rescan /music every',
+                         'min', 0, 1440, 1,
+                         [(0, 'Off'), (15, '15m'), (30, '30m'), (60, '1h'), (360, '6h'), (1440, '24h')]) %}
+        Picks up files added outside audioreap. Approving a track already triggers its
+        own scan, so this only matters if you drop files into <code>/music</code>
+        yourself. Set 0 to turn it off.
+      {% endcall %}
+
+      {% call row_number('min_bitrate_kbps', 'Flag tracks under',
+                         'kbps', 0, 1411, 1,
+                         [(0, 'Off'), (128, '128'), (192, '192'), (256, '256'), (320, '320')]) %}
+        <a href="/library/health">Library health</a> lists anything below this bitrate as
+        low quality so you can replace it. Nothing is deleted or re-downloaded on its own.
+      {% endcall %}
     </div>
   </section>
 
-  <section>
-    <div class="section-title">Downloads</div>
-    <div class="rv-field rv-field--full">
-      <label class="rv-label">Worker concurrency
-        <span style="font-weight:400;color:var(--t4)">(default 2)</span>
-        <span class="badge badge-queued" style="font-size:10px;margin-left:4px">restart required</span>
-      </label>
-      <input class="rv-input" name="worker_concurrency" type="number"
-             step="1" min="1" max="8"
-             value="{{ current.worker_concurrency }}">
-      <div style="font-size:11px;color:var(--t3);margin-top:4px">
-        Max simultaneous acquisition jobs. The only setting that needs a worker restart.
-      </div>
+  <section class="set-group">
+    <div class="set-group__head">
+      <h2 class="set-group__name">Downloads</h2>
+      <p class="set-group__hint">How hard the worker pushes the queue.</p>
+    </div>
+    <div class="set-rows">
+      {% call row_number('worker_concurrency', 'Downloads at once',
+                         '', 1, 8, 1,
+                         [(1, '1'), (2, '2'), (3, '3'), (4, '4'), (6, '6'), (8, '8')],
+                         'Restart required') %}
+        How many tracks the worker fetches in parallel. Raising it hits YouTube harder
+        and makes rate limiting more likely. This is the one setting that waits for a
+        worker restart.
+      {% endcall %}
     </div>
   </section>
 
-  <div>
-    <button type="submit" class="btn btn-lg">Save settings</button>
+  <div class="set-savebar" id="settings-savebar" data-clean>
+    <span class="set-savebar__mark" aria-hidden="true"></span>
+    <span class="set-savebar__count" id="settings-change-count">No unsaved changes</span>
+    <button type="button" class="btn btn-ghost btn-sm set-savebar__discard" id="settings-discard">Discard</button>
+    <button type="submit" class="btn btn-sm">Save changes</button>
   </div>
 </form>
 
-<section style="margin-top:36px;max-width:560px">
-  <div class="section-title">YouTube access</div>
-  <p style="font-size:13px;color:var(--t3);margin-bottom:8px">
-    Age-gated videos (“Sign in to confirm your age”) need cookies from a logged-in Google
-    account. In a browser where you’re signed in to YouTube, export <code>cookies.txt</code>
-    with a “Get cookies.txt” extension, then upload or paste it below. Stored in the writable
-    <code>/data/cookies.txt</code> and read live by the worker — no restart needed.
-  </p>
-  <p style="font-size:13px;margin-bottom:12px">
-    {% if cookies_active %}
-      <span class="badge-ok">Active jar: {{ cookies_active }}</span>
-    {% else %}
-      <span class="badge-warn">No usable cookies — age-gated videos fall back to a non-gated source.</span>
-    {% endif %}
-  </p>
+<section class="set-group set-group--standalone">
+  <div class="set-group__head">
+    <h2 class="set-group__name">YouTube access</h2>
+    <p class="set-group__hint">Credentials and tooling for the downloader itself.</p>
+  </div>
 
-  <form hx-post="/admin/cookies" hx-target="#cookies-status" hx-swap="innerHTML"
-        hx-encoding="multipart/form-data"
-        style="display:flex;flex-direction:column;gap:10px">
-    <input class="rv-input" type="file" name="file" accept=".txt,text/plain">
-    <textarea class="rv-input" name="cookies" rows="6"
-              placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	0	NID	..."
-              style="font-family:monospace;font-size:12px"></textarea>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button type="submit" name="action" value="save" class="btn">Save cookies</button>
-      {# Own hx-post: hx-confirm on a submit button is ignored (the form issues
-         the request), so Clear fires its own confirmed request instead. #}
-      <button type="button" class="btn btn-ghost"
-              hx-post="/admin/cookies"
-              hx-vals='{"action":"clear"}'
-              hx-target="#cookies-status"
-              hx-swap="innerHTML"
-              hx-confirm="Clear the saved cookies jar?">Clear</button>
-      <span id="cookies-status" style="font-size:13px"></span>
+  <div class="set-rows">
+    <div class="set-row set-row--block">
+      <div class="set-row__text">
+        <span class="set-row__label">Cookies</span>
+        <p class="set-row__desc">
+          Age-gated videos (“Sign in to confirm your age”) need cookies from a signed-in
+          Google account. In a browser where you're signed in to YouTube, export
+          <code>cookies.txt</code> with a “Get cookies.txt” extension, then upload or paste
+          it here. It's stored in <code>/data/cookies.txt</code> and read live by the
+          worker — no restart.
+        </p>
+      </div>
+      <div class="set-row__control">
+        {% if cookies_active %}
+          <span class="set-state set-state--ok">Active</span>
+        {% else %}
+          <span class="set-state set-state--off">Not set</span>
+        {% endif %}
+      </div>
+
+      <div class="set-row__wide">
+        {% if cookies_active %}
+        <p class="set-row__meta set-row__meta--always">
+          Reading <code>{{ cookies_active }}</code>
+        </p>
+        {% else %}
+        <p class="set-row__meta set-row__meta--always">
+          Age-gated videos fall back to a source that isn't gated, which is sometimes a
+          worse match.
+        </p>
+        {% endif %}
+
+        <details class="set-details"{% if not cookies_active %} open{% endif %}>
+          <summary>{{ 'Replace cookies' if cookies_active else 'Add cookies' }}</summary>
+          <form hx-post="/admin/cookies" hx-target="#cookies-status" hx-swap="innerHTML"
+                hx-encoding="multipart/form-data" class="set-subform">
+            <label class="set-file">
+              <input type="file" name="file" accept=".txt,text/plain">
+            </label>
+            <textarea class="rv-input rv-input--mono set-textarea" name="cookies" rows="5"
+                      aria-label="Paste cookies.txt"
+                      placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	0	NID	…"></textarea>
+            <div class="set-subform__actions">
+              <button type="submit" name="action" value="save" class="btn btn-sm">Save cookies</button>
+              {# Own hx-post: hx-confirm on a submit button is ignored (the form issues
+                 the request), so Clear fires its own confirmed request instead. #}
+              <button type="button" class="btn btn-sm btn-ghost"
+                      hx-post="/admin/cookies"
+                      hx-vals='{"action":"clear"}'
+                      hx-target="#cookies-status"
+                      hx-swap="innerHTML"
+                      hx-confirm="Clear the saved cookies jar?">Clear</button>
+              <span id="cookies-status" class="set-inline-status"></span>
+            </div>
+          </form>
+        </details>
+      </div>
     </div>
-  </form>
 
-  <div style="margin-top:20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-    <span style="font-size:13px;color:var(--t3)">
-      yt-dlp{% if ytdlp_version %} <code>{{ ytdlp_version }}</code>{% endif %}
-    </span>
-    <button class="btn btn-sm btn-ghost"
-            hx-post="/admin/update-ytdlp"
-            hx-target="#ytdlp-update-status"
-            hx-swap="innerHTML"
-            data-feedback-working="Updating…"
-            data-feedback-success="yt-dlp update finished."
-            title="Update yt-dlp inside the running container — fixes most sudden download failures">
-      Update yt-dlp
-      <span class="htmx-indicator"><span class="spinner"></span></span>
-    </button>
-    <span id="ytdlp-update-status" style="font-size:12px"></span>
+    <div class="set-row">
+      <div class="set-row__text">
+        <span class="set-row__label">yt-dlp</span>
+        <p class="set-row__desc">
+          The download engine. Updating it inside the running container fixes most
+          downloads that suddenly start failing. Reverts on the next image pull.
+        </p>
+        <p class="set-row__meta set-row__meta--always">
+          <span id="ytdlp-update-status" class="set-inline-status"></span>
+        </p>
+      </div>
+      <div class="set-row__control set-row__control--stack">
+        <code class="set-version">{{ ytdlp_version or 'unknown' }}</code>
+        <button class="btn btn-sm btn-ghost"
+                hx-post="/admin/update-ytdlp"
+                hx-target="#ytdlp-update-status"
+                hx-swap="innerHTML"
+                data-feedback-working="Updating…"
+                data-feedback-success="yt-dlp update finished.">
+          Update
+          <span class="htmx-indicator"><span class="spinner"></span></span>
+        </button>
+      </div>
+    </div>
   </div>
 </section>
+
+<p class="set-foot">
+  Looking for queue and disk status? That's <a href="/health">System health</a>.
+  Duplicates, splits and missing artwork live in <a href="/library/health">Library health</a>.
+</p>
 {% endblock %}

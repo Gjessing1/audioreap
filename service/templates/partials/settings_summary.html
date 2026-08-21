@@ -1,0 +1,12 @@
+{# Live status strip under the Settings header. Swapped in after every save so
+   it keeps matching the row gutters without a page reload. #}
+<div id="settings-summary" class="set-summary{% if modified_count %} set-summary--custom{% endif %}"
+     role="status">
+  {% if modified_count %}
+    <span class="set-summary__mark" aria-hidden="true"></span>
+    <span><strong>{{ modified_count }}</strong> setting{{ '' if modified_count == 1 else 's' }}
+      differ{{ 's' if modified_count == 1 else '' }} from the defaults</span>
+  {% else %}
+    <span>Everything is at its default{% if has_overrides %}, saved in <code>/data/config_overrides.json</code>{% endif %}.</span>
+  {% endif %}
+</div>

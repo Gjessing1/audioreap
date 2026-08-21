@@ -47,7 +47,10 @@ class Settings(BaseSettings):
 
     # Staging (tracks below threshold land here for review before Navidrome sees them)
     staging_dir: Path = Path("/music-staging")
-    staging_quality_threshold: float = 0.40  # ~3/7 factors; set 0.0 to disable staging
+    # Unused since the review gate became universal (every track stops at
+    # needs_review regardless of score). Kept so an existing env var stays
+    # harmless; not exposed in Settings.
+    staging_quality_threshold: float = 0.40
 
     # Quality review
     min_bitrate_kbps: int = 128  # Tracks below this are flagged as low quality
@@ -93,9 +96,11 @@ settings = Settings()
 # Path for runtime config overrides (written by /admin/config UI)
 _OVERRIDES_FILE = settings.data_dir / "config_overrides.json"
 
-# Keys that the config UI may override (must match Settings field names)
+# Keys that the config UI may override (must match Settings field names).
+# staging_quality_threshold is deliberately absent: the universal review gate
+# replaced score-based staging, so the knob no longer influences anything and
+# showing it in Settings only promised behaviour that never happens.
 CONFIG_EDITABLE_KEYS = (
-    "staging_quality_threshold",
     "min_bitrate_kbps",
     "prefer_explicit",
     "lyrics_enabled",
@@ -103,6 +108,31 @@ CONFIG_EDITABLE_KEYS = (
     "rescan_interval_minutes",
     "auto_fix_tags_enabled",
 )
+
+
+def config_defaults() -> dict:
+    """The value each editable key ships with, straight off the model fields.
+
+    Settings renders a "differs from default" marker and a one-click restore from
+    this, so it stays correct automatically when a default is ever retuned.
+    """
+    return {key: Settings.model_fields[key].default for key in CONFIG_EDITABLE_KEYS}
+
+
+def read_config_overrides() -> dict:
+    """Overrides currently persisted by the Settings UI ({} when none/unreadable).
+
+    Unlike the live ``settings`` object this shows what the *UI* set, which is
+    what "stored in config_overrides.json" in Settings reports.
+    """
+    import json
+    try:
+        stored = json.loads(_OVERRIDES_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {k: v for k, v in stored.items() if k in CONFIG_EDITABLE_KEYS}
 
 
 def load_config_overrides() -> None:
