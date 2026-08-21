@@ -46,6 +46,7 @@
     <form hx-post="/api/acquire"
           hx-target="#cloud-{{ (offset|default(0)) + loop.index }}"
           hx-swap="outerHTML"
+          hx-disabled-elt="find button"
           style="display:contents">
       <input type="hidden" name="provider_name" value="ytdlp">
       <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
@@ -109,6 +110,7 @@ if (!window.__cloudBatchInit) {
   <form hx-post="/search/acquire-url"
         hx-target="#cloud-url-row"
         hx-swap="outerHTML"
+        hx-disabled-elt="find button"
         hx-indicator="#cloud-url-spin"
         style="display:flex;gap:6px">
     <input class="rv-input" name="url" type="url"

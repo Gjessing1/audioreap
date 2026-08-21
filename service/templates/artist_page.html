@@ -201,6 +201,7 @@
   <form hx-post="/artist/{{ artist.id }}/acquire-missing"
         hx-target="#acquire-missing-result"
         hx-swap="innerHTML"
+        hx-disabled-elt="find button"
         hx-indicator="#acquire-missing-spinner"
         hx-confirm="Queue all {{ unowned_count }} missing release group(s) for download?"
         style="display:contents">
@@ -242,9 +243,11 @@
     <form hx-post="/discography/{{ artist.musicbrainz_artist_id }}/{{ rg.release_group_id }}/acquire"
           hx-target="this"
           hx-swap="outerHTML"
+          hx-disabled-elt="find button"
           hx-indicator="this"
           style="display:contents">
       <input type="hidden" name="artist" value="{{ artist.name|e }}">
+      <input type="hidden" name="album_title" value="{{ rg.title|e }}">
       <button type="submit" class="btn btn-sm">
         Acquire
         <span class="htmx-indicator"><span class="spinner"></span></span>

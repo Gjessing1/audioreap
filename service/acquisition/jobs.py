@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from service.acquisition.pipeline import run_acquisition
@@ -15,6 +16,19 @@ from service.db.schema import AcquisitionJobRow
 from service.providers.base import Provider
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_ACQUISITION_STATES = (
+    "queued",
+    "waiting",
+    "downloading",
+    "processing",
+    "enriching",
+    "tagging",
+    "importing",
+    "placing",
+    "staged",
+    "needs_review",
+)
 
 # Module-level set tracking fire-and-forget progress tasks so they can be
 # cancelled cleanly on worker shutdown instead of being abandoned mid-flight.
@@ -50,6 +64,61 @@ async def create_job(
     session.add(row)
     await session.flush()
     return job_id
+
+
+async def create_or_get_active_job(
+    session: AsyncSession,
+    *,
+    provider_name: str,
+    provider_ref: str,
+    candidate: TrackCandidate,
+    query: str | None = None,
+    playlist_import_id: str | None = None,
+) -> tuple[str, bool]:
+    """Return an active job for a provider reference, or create one.
+
+    UI Get actions use this to acknowledge repeated clicks deterministically.
+    Completed, failed, and cancelled work is deliberately excluded so a later
+    intentional re-acquisition can still create fresh work.
+    """
+    existing_id = (await session.execute(
+        select(AcquisitionJobRow.id)
+        .where(
+            AcquisitionJobRow.provider == provider_name,
+            AcquisitionJobRow.provider_ref == provider_ref,
+            AcquisitionJobRow.state.in_(ACTIVE_ACQUISITION_STATES),
+        )
+        .order_by(AcquisitionJobRow.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if existing_id is not None:
+        return existing_id, False
+
+    job_id = await create_job(
+        session,
+        provider_name=provider_name,
+        provider_ref=provider_ref,
+        candidate=candidate,
+        query=query,
+        playlist_import_id=playlist_import_id,
+    )
+    return job_id, True
+
+
+async def mark_enqueue_failed(
+    session: AsyncSession,
+    job_id: str,
+    error: Exception,
+) -> None:
+    """Make a committed-but-not-enqueued job retryable from the UI."""
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        return
+    row.state = "failed"
+    row.failure_class = "queue_unavailable"
+    row.error = f"Queue unavailable: {error}"
+    row.updated_at = _now()
+    await session.commit()
 
 
 async def acquire_album(

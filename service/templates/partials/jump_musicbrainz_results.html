@@ -1,0 +1,18 @@
+<div class="jump-provider-block">
+  <div class="jump-section">MusicBrainz discographies</div>
+  {% if error %}
+  <div class="jump-hint">{{ error }}</div>
+  {% elif artists %}
+    {% for a in artists %}
+    <a class="jump-item" href="/discography/{{ a.artist_id }}">
+      <span class="jump-art">◎</span>
+      <span class="jump-main">{{ a.name }}
+        {% if a.disambiguation %}<span class="jump-sub">{{ a.disambiguation }}</span>{% endif %}
+      </span>
+      <span class="jump-kind">discography · {{ "%.0f"|format(a.score * 100) }}%</span>
+    </a>
+    {% endfor %}
+  {% else %}
+  <div class="jump-hint">No MusicBrainz artists for “{{ q }}”.</div>
+  {% endif %}
+</div>

@@ -1,4 +1,4 @@
-<div class="card card-review" id="job-{{ job_id }}">
+<div class="card card-review" id="job-{{ job_id }}" data-job-id="{{ job_id }}" tabindex="-1">
 
   {# ── Header ─────────────────────────────────────────────────────────── #}
   <div class="rv-header">
@@ -105,6 +105,26 @@
   {% if error %}
   <div class="rv-alert rv-alert--error">{{ error }}</div>
   {% endif %}
+
+  <div class="rv-comparison" aria-label="Source and destination metadata comparison">
+    <section class="rv-comparison-side">
+      <h3>Source</h3>
+      <strong>{{ (src.title if src is defined and src else query) or 'Downloaded audio' }}</strong>
+      <span>
+        {% if src is defined and src and src.channel %}{{ src.channel }}{% else %}{{ query or 'Provider metadata unavailable' }}{% endif %}
+        {% if src is defined and src and src.duration %} · {{ src.duration }}{% endif %}
+      </span>
+    </section>
+    <section class="rv-comparison-side{% if confidence|default('probable') != 'verified' %} rv-comparison-side--check{% endif %}">
+      <h3>Will be saved as</h3>
+      <strong>{{ meta.artist or 'Unknown artist' }} — {{ meta.title or 'Unknown title' }}</strong>
+      <span>
+        {% if meta.album %}{{ meta.album }}{% if meta.track_number %} · track {{ meta.track_number }}{% endif %}{% else %}Singles{% endif %}
+        {% if meta.year %} · {{ meta.year }}{% endif %}
+      </span>
+      <small>{{ review_reason|default('Confirm the metadata before approving') }}</small>
+    </section>
+  </div>
 
   {# ── Metadata form (disabled if file missing) ────────────────────────── #}
   <form class="rv-form"
@@ -269,12 +289,19 @@
         <kbd class="rv-kbd">a</kbd>
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
+      <button type="submit" class="btn btn-sm btn-success rv-approve-next"
+              name="advance" value="next"
+              title="Approve this track and open the next review item">
+        Approve and open next
+      </button>
       <button type="button" class="btn btn-sm btn-ghost"
+              data-review-mb
               onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}','art-panel-{{ job_id }}')"
               title="Search MusicBrainz to override the matched recording — keyboard: s">
         Find recording <kbd class="rv-kbd">s</kbd>
       </button>
       <button type="button" class="btn btn-sm btn-ghost"
+              data-review-play
               onclick="playJobStaged('{{ job_id }}','{{ meta.title|e }}')" title="Preview the staged audio file before approving — keyboard: p">▶ Play <kbd class="rv-kbd">p</kbd></button>
       <button type="button" class="btn btn-sm btn-ghost"
               onclick="togglePanel('art-panel-{{ job_id }}','mb-panel-{{ job_id }}','src-panel-{{ job_id }}')"
@@ -307,10 +334,19 @@
               hx-post="/jobs/{{ job_id }}/reject"
               hx-target="#job-{{ job_id }}"
               hx-swap="outerHTML"
-              hx-confirm="{% if is_enrichment %}Dismiss this enrichment suggestion?{% else %}Reject and remove this job?{% endif %}"
+              hx-confirm="{% if is_enrichment %}Dismiss this enrichment suggestion?{% else %}Reject this track and move its staged file to Trash?{% endif %}"
+              data-confirm-title="{% if is_enrichment %}Dismiss suggestion?{% else %}Reject {{ meta.title or 'track' }}?{% endif %}"
+              data-confirm-message="{% if is_enrichment %}Dismiss this metadata suggestion without changing the library file.{% else %}Reject this review item and move its staged file to Trash.{% endif %}"
+              {% if not is_enrichment %}data-confirm-recovery="You can undo this action or restore the file later from Failed jobs."{% endif %}
+              data-confirm-action-label="{% if is_enrichment %}Dismiss{% else %}Move to Trash{% endif %}"
+              data-confirm-variant="danger"
               title="Keyboard: r">
         {% if is_enrichment %}Dismiss{% else %}Reject{% endif %} <kbd class="rv-kbd">r</kbd>
       </button>
+      <details class="rv-shortcuts">
+        <summary aria-label="Keyboard shortcut help" title="Keyboard shortcut help">?</summary>
+        <div><kbd>a</kbd> approve<br><kbd>r</kbd> reject<br><kbd>p</kbd> preview<br><kbd>s</kbd> find recording</div>
+      </details>
     </div>
   </form>
 

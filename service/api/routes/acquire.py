@@ -3,19 +3,20 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
-from service.config import settings
-from service.core.models import TrackCandidate, TrackQuality, TrackRef
-from service.db.schema import Artist, Track
-from service.db.session import get_session
-from service.providers.ytdlp import explicit_score as _explicit_score
 
 from service.acquisition.queue import arq_pool, enqueue_acquire_track
-from service.api.shared import _acquire_ctx, templates
+from service.api.shared import _acquire_ctx, _acquisition_receipt, templates
+from service.config import settings
+from service.core.models import TrackCandidate, TrackQuality, TrackRef
+from service.db.schema import AcquisitionJobRow, Artist, Track
+from service.db.session import get_session
+from service.providers.ytdlp import explicit_score as _explicit_score
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -124,7 +125,7 @@ async def _find_owned_match(
     ILIKE-prefiltered pool — cheap enough to run per result card.
     """
     from service.core.normalize import normalize
-    from service.search.matcher import track_similarity, DEDUP_THRESHOLD
+    from service.search.matcher import DEDUP_THRESHOLD, track_similarity
 
     tokens = [t for t in normalize(title).split() if len(t) >= 3]
     if not tokens:
@@ -151,6 +152,66 @@ async def _find_owned_match(
     return best if best is not None and best_score >= DEDUP_THRESHOLD else None
 
 
+async def _search_cloud_candidates(
+    q: str,
+    session: AsyncSession,
+    *,
+    offset: int = 0,
+    page_size: int = 5,
+) -> list[dict[str, object]]:
+    """Search yt-dlp and decorate one result page with local ownership.
+
+    Both the full Acquire search and the global command bar use this path.  In
+    particular, keeping the explicit-version ordering and fuzzy owned check in
+    one place prevents the compact command results from disagreeing with the
+    focused YouTube view.
+    """
+    if not q.strip():
+        return []
+
+    import service.providers.ytdlp  # noqa: F401
+    from service.core.models import SearchQuery
+    from service.providers import get
+
+    provider = get("ytdlp")()
+    fetch_limit = offset + page_size * 2
+    raw: list[dict[str, object]] = []
+    async for candidate in provider.search(SearchQuery(q=q, limit=fetch_limit)):
+        raw.append({
+            "title": candidate.title,
+            "artist": candidate.artist,
+            "duration_seconds": candidate.duration_seconds,
+            "provider_ref": candidate.provider_ref,
+            "thumbnail_url": candidate.thumbnail_url,
+            "candidate_json": candidate.model_dump_json(),
+            "owned_title": None,
+            "owned_artist": None,
+            "_score": _explicit_score(candidate.title),
+        })
+
+    if settings.prefer_explicit:
+        raw.sort(key=lambda item: -int(str(item["_score"])))
+    for item in raw:
+        del item["_score"]
+
+    candidates = raw[offset: offset + page_size]
+    for item in candidates:
+        try:
+            owned = await _find_owned_match(
+                session,
+                str(item["title"]),
+                str(item["artist"]),
+                item["duration_seconds"],  # type: ignore[arg-type]
+            )
+        except Exception as exc:
+            logger.debug("Owned check failed for %r: %s", item["title"], exc)
+            owned = None
+        if owned is not None:
+            item["owned_title"] = owned.title
+            item["owned_artist"] = owned.artist.name if owned.artist else ""
+    return candidates
+
+
 @router.get("/search/cloud", response_class=HTMLResponse)
 async def cloud_search_page(
     request: Request,
@@ -159,56 +220,73 @@ async def cloud_search_page(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     candidates: list[dict[str, object]] = []
-    PAGE = 5
+    page_size = 5
     if q:
         try:
-            import service.providers.ytdlp  # noqa: F401
-            from service.core.models import SearchQuery
-            from service.providers import get
-
-            provider = get("ytdlp")()
-            # Fetch enough for this page + ranking headroom
-            fetch_limit = offset + PAGE * 2
-            raw: list[dict[str, object]] = []
-            async for c in provider.search(SearchQuery(q=q, limit=fetch_limit)):
-                raw.append({
-                    "title": c.title,
-                    "artist": c.artist,
-                    "duration_seconds": c.duration_seconds,
-                    "provider_ref": c.provider_ref,
-                    "thumbnail_url": c.thumbnail_url,
-                    "candidate_json": c.model_dump_json(),
-                    "_score": _explicit_score(c.title),
-                })
-
-            # Sort: explicit first (when prefer_explicit is on), clean last; stable
-            if settings.prefer_explicit:
-                raw.sort(key=lambda x: -int(x["_score"]))  # type: ignore[arg-type]
-            for item in raw:
-                del item["_score"]
-
-            candidates = raw[offset: offset + PAGE]
-
-            for item in candidates:
-                try:
-                    owned = await _find_owned_match(
-                        session,
-                        str(item["title"]),
-                        str(item["artist"]),
-                        item["duration_seconds"],  # type: ignore[arg-type]
-                    )
-                except Exception as exc:
-                    logger.debug("Owned check failed for %r: %s", item["title"], exc)
-                    owned = None
-                if owned is not None:
-                    item["owned_title"] = owned.title
-                    item["owned_artist"] = owned.artist.name if owned.artist else ""
+            candidates = await _search_cloud_candidates(
+                q, session, offset=offset, page_size=page_size
+            )
         except Exception as exc:
             logger.warning("Cloud search failed: %s", exc)
 
     return templates.TemplateResponse(
         request, "partials/cloud_results.html",
-        {"candidates": candidates, "q": q, "offset": offset, "limit": PAGE},
+        {"candidates": candidates, "q": q, "offset": offset, "limit": page_size},
+    )
+
+
+@router.get("/nav/jump/musicbrainz", response_class=HTMLResponse)
+async def unified_musicbrainz_results(
+    request: Request,
+    q: str = "",
+) -> HTMLResponse:
+    """MusicBrainz branch of the global unified-search command bar."""
+    q = q.strip()
+    if len(q) < 2:
+        return HTMLResponse("")
+
+    try:
+        import asyncio
+
+        from service.metadata.musicbrainz import search_artists
+
+        artists = await asyncio.to_thread(search_artists, q, 5, settings.cache_dir)
+        error = None
+    except Exception as exc:
+        logger.warning("Unified MusicBrainz search failed for %r: %s", q, exc)
+        artists = []
+        error = "MusicBrainz is unavailable right now."
+
+    return templates.TemplateResponse(
+        request,
+        "partials/jump_musicbrainz_results.html",
+        {"artists": artists, "q": q, "error": error},
+    )
+
+
+@router.get("/nav/jump/youtube", response_class=HTMLResponse)
+async def unified_youtube_results(
+    request: Request,
+    q: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """YouTube branch of the global unified-search command bar."""
+    q = q.strip()
+    if len(q) < 2:
+        return HTMLResponse("")
+
+    try:
+        candidates = await _search_cloud_candidates(q, session, page_size=5)
+        error = None
+    except Exception as exc:
+        logger.warning("Unified YouTube search failed for %r: %s", q, exc)
+        candidates = []
+        error = "YouTube search is unavailable right now."
+
+    return templates.TemplateResponse(
+        request,
+        "partials/jump_youtube_results.html",
+        {"candidates": candidates, "q": q, "error": error},
     )
 
 
@@ -258,8 +336,7 @@ async def acquire_from_url(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Queue an acquisition from a manually entered URL."""
-    from service.acquisition.jobs import create_job
-    from service.core.models import TrackCandidate
+    from service.acquisition.jobs import create_or_get_active_job, mark_enqueue_failed
 
     url = url.strip()
     candidate = TrackCandidate(
@@ -268,7 +345,7 @@ async def acquire_from_url(
         title=url,
         artist="Unknown",
     )
-    job_id = await create_job(
+    job_id, created = await create_or_get_active_job(
         session,
         provider_name="ytdlp",
         provider_ref=url,
@@ -277,19 +354,25 @@ async def acquire_from_url(
     )
     await session.commit()
 
-    try:
-        async with arq_pool() as redis:
-            await enqueue_acquire_track(
-                redis, job_id,
-                provider_name="ytdlp",
-                provider_ref=url,
-                candidate_json=candidate.model_dump_json(),
-            )
-    except Exception as exc:
-        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+    if created:
+        try:
+            async with arq_pool() as redis:
+                await enqueue_acquire_track(
+                    redis, job_id,
+                    provider_name="ytdlp",
+                    provider_ref=url,
+                    candidate_json=candidate.model_dump_json(),
+                )
+        except Exception as exc:
+            await mark_enqueue_failed(session, job_id, exc)
+            raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 
-    return HTMLResponse(
-        '<div id="cloud-url-row" style="padding:8px 0">'
-        f'<span class="badge badge-done">Queued → <a href="/jobs">Jobs ↗</a></span>'
-        '</div>'
+    row = await session.get(AcquisitionJobRow, job_id)
+    return _acquisition_receipt(
+        request,
+        job_id=job_id,
+        title=candidate.title,
+        artist=candidate.artist,
+        state=row.state if row else "queued",
+        created=created,
     )

@@ -2,35 +2,51 @@
 from __future__ import annotations
 
 import asyncio
-import html
-import json
 import logging
 import uuid
-import httpx
 from datetime import UTC, datetime
+
+import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
-from service.config import settings
-from service.core.models import TrackCandidate
-from service.db.schema import Artist, PlaylistImport, Track
-from service.db.session import get_session
 
 from service.acquisition.queue import arq_pool, enqueue_acquire_track
-from service.api.shared import _acquire_ctx, templates
+from service.api.shared import _acquire_ctx, _acquisition_batch_receipt, templates
+from service.config import settings
+from service.core.models import TrackCandidate
+from service.db.schema import AcquisitionJobRow, Artist, PlaylistImport, Track
+from service.db.session import get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/playlists")
 
 
+def _failed_playlist_items(rows: list[AcquisitionJobRow]) -> list[dict[str, str]]:
+    """Small retry rows for a partial playlist failure receipt."""
+    items: list[dict[str, str]] = []
+    for row in rows:
+        try:
+            candidate = TrackCandidate.model_validate_json(row.candidate_json or "")
+            title = candidate.title
+            artist = candidate.artist
+        except Exception:
+            title = row.query or row.provider_ref
+            artist = ""
+        items.append({"id": row.id, "title": title, "artist": artist})
+    return items
+
+
 @router.get("", response_class=HTMLResponse)
 async def playlists_page(
     request: Request,
+    url: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     ctx = await _acquire_ctx(request, "", "playlists", session)
+    ctx["playlist_url"] = url.strip()
     return templates.TemplateResponse(request, "acquire.html", ctx)
 
 
@@ -145,10 +161,11 @@ async def acquire_playlist(
     import_url: str = Form(...),
     import_title: str = Form(...),
     import_source: str = Form(default="unknown"),
+    owned_count: int = Form(default=0),
     candidates: list[str] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from service.acquisition.jobs import create_job
+    from service.acquisition.jobs import create_job, mark_enqueue_failed
 
     if not candidates:
         return HTMLResponse('<p class="empty">No tracks selected.</p>')
@@ -161,9 +178,9 @@ async def acquire_playlist(
         url=import_url,
         title=import_title or "Untitled Playlist",
         source=import_source,
-        track_count=len(candidates),
+        track_count=len(candidates) + max(owned_count, 0),
         enqueued_count=0,
-        owned_count=0,
+        owned_count=max(owned_count, 0),
         state="active",
         created_at=now,
         updated_at=now,
@@ -183,22 +200,150 @@ async def acquire_playlist(
         )
         job_data.append((job_id, candidate_json, candidate))
 
-    pl_row.enqueued_count = len(job_data)
     await session.commit()
 
+    failed_ids: list[str] = []
+    queued_ids: set[str] = set()
+    queued_count = 0
     try:
         async with arq_pool() as redis:
             for job_id, candidate_json, candidate in job_data:
-                await enqueue_acquire_track(
-                    redis, job_id,
-                    provider_name=candidate.provider,
-                    provider_ref=candidate.provider_ref,
-                    candidate_json=candidate_json,
-                )
+                try:
+                    await enqueue_acquire_track(
+                        redis, job_id,
+                        provider_name=candidate.provider,
+                        provider_ref=candidate.provider_ref,
+                        candidate_json=candidate_json,
+                    )
+                    queued_count += 1
+                    queued_ids.add(job_id)
+                except Exception as exc:
+                    failed_ids.append(job_id)
+                    await mark_enqueue_failed(session, job_id, exc)
     except Exception as exc:
-        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+        # Pool creation failed, so none of the still-unaccounted jobs reached
+        # Redis. Persist them as retryable instead of leaving false "queued"
+        # cards behind.
+        accounted = set(failed_ids) | queued_ids
+        for job_id, _candidate_json, _candidate in job_data:
+            if job_id not in accounted:
+                failed_ids.append(job_id)
+                await mark_enqueue_failed(session, job_id, exc)
 
-    return RedirectResponse("/jobs", status_code=303)
+    saved_playlist = await session.get(PlaylistImport, import_id)
+    if saved_playlist is not None:
+        saved_playlist.enqueued_count = queued_count
+        saved_playlist.state = "failed" if failed_ids and not queued_count else "active"
+        saved_playlist.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.commit()
+
+    return _acquisition_batch_receipt(
+        request,
+        batch_id=import_id,
+        title=import_title or "Untitled Playlist",
+        queued_count=queued_count,
+        owned_count=max(owned_count, 0),
+        failed_count=len(failed_ids),
+        jobs_anchor=f"playlist-{import_id}",
+        unit="track",
+        retry_url=f"/playlists/{import_id}/retry-failed" if failed_ids else None,
+        retry_ids=failed_ids,
+        retry_field="job_ids",
+        failed_items=[
+            {"id": job_id, "title": candidate.title, "artist": candidate.artist}
+            for job_id, _candidate_json, candidate in job_data
+            if job_id in failed_ids
+        ],
+    )
+
+
+@router.post("/{import_id}/retry-failed", response_class=HTMLResponse)
+async def retry_failed_playlist(
+    request: Request,
+    import_id: str,
+    session: AsyncSession = Depends(get_session),
+    job_ids: list[str] = Form([]),
+) -> HTMLResponse:
+    """Retry only playlist tracks that failed before reaching the worker."""
+    from service.acquisition.jobs import mark_enqueue_failed
+    playlist = await session.get(PlaylistImport, import_id)
+    if playlist is None:
+        raise HTTPException(404, "Playlist import not found")
+    # Direct route-function calls in unit tests receive FastAPI's Form default
+    # object rather than a parsed list; HTTP requests always provide a list.
+    if not isinstance(job_ids, list):
+        job_ids = []
+
+    failed_stmt = select(AcquisitionJobRow).where(
+            AcquisitionJobRow.playlist_import_id == import_id,
+            AcquisitionJobRow.state == "failed",
+            AcquisitionJobRow.failure_class == "queue_unavailable",
+        )
+    if job_ids:
+        failed_stmt = failed_stmt.where(AcquisitionJobRow.id.in_(job_ids))
+    failed = (await session.execute(failed_stmt)).scalars().all()
+
+    retried = 0
+    retried_ids: set[str] = set()
+    still_failed: list[str] = []
+    try:
+        async with arq_pool() as redis:
+            for row in failed:
+                try:
+                    candidate = TrackCandidate.model_validate_json(row.candidate_json or "")
+                    await enqueue_acquire_track(
+                        redis,
+                        row.id,
+                        provider_name=row.provider,
+                        provider_ref=row.provider_ref,
+                        candidate_json=candidate.model_dump_json(),
+                        unique_retry=True,
+                    )
+                    row.state = "queued"
+                    row.failure_class = None
+                    row.error = None
+                    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                    retried += 1
+                    retried_ids.add(row.id)
+                except Exception as exc:
+                    still_failed.append(row.id)
+                    await mark_enqueue_failed(session, row.id, exc)
+    except Exception as exc:
+        for row in failed:
+            if row.id not in retried_ids and row.id not in still_failed:
+                still_failed.append(row.id)
+                await mark_enqueue_failed(session, row.id, exc)
+
+    playlist = await session.get(PlaylistImport, import_id)
+    if playlist is not None:
+        playlist.enqueued_count += retried
+        playlist.state = "failed" if still_failed and not playlist.enqueued_count else "active"
+        playlist.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await session.commit()
+
+    queued_count = playlist.enqueued_count if playlist else retried
+    owned = playlist.owned_count if playlist else 0
+    remaining_failed = (await session.execute(
+        select(AcquisitionJobRow).where(
+            AcquisitionJobRow.playlist_import_id == import_id,
+            AcquisitionJobRow.state == "failed",
+            AcquisitionJobRow.failure_class == "queue_unavailable",
+        )
+    )).scalars().all()
+    return _acquisition_batch_receipt(
+        request,
+        batch_id=import_id,
+        title=(playlist.title if playlist else None) or "Untitled Playlist",
+        queued_count=queued_count,
+        owned_count=owned,
+        failed_count=len(remaining_failed),
+        jobs_anchor=f"playlist-{import_id}",
+        unit="track",
+        retry_url=f"/playlists/{import_id}/retry-failed" if remaining_failed else None,
+        retry_ids=[row.id for row in remaining_failed],
+        retry_field="job_ids",
+        failed_items=_failed_playlist_items(list(remaining_failed)),
+    )
 
 
 async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandidate]]:
@@ -225,7 +370,6 @@ async def _resolve_spotify_playlist(url: str) -> tuple[str, str, list[TrackCandi
 
     token = await _spotify_client_token()
 
-    import httpx
     async with httpx.AsyncClient(
         timeout=30.0,
         headers={
@@ -312,7 +456,6 @@ async def _resolve_spotify_playlist_embed(
     import json as _json
     import re as _re
 
-    import httpx
 
     embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
     async with httpx.AsyncClient(
@@ -393,7 +536,6 @@ async def _resolve_spotify_playlist_embed(
 
 async def _spotify_client_token() -> str:
     import base64
-    import httpx
 
     creds = base64.b64encode(
         f"{settings.spotify_client_id}:{settings.spotify_client_secret}".encode()

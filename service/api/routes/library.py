@@ -4,20 +4,49 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
-from service.config import settings
-from service.db.schema import AcquisitionJobRow, Album, Artist, Track, TrackFile
-from service.db.session import get_session
 
 from service.acquisition.queue import arq_pool
 from service.api.shared import _BROWSE_PAGE, _do_scans, _error_badge, templates
+from service.config import settings
+from service.db.schema import AcquisitionJobRow, Album, Artist, PlaylistImport, Track, TrackFile
+from service.db.session import get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _classify_search_url(query: str) -> tuple[str | None, str | None]:
+    """Return (playlist_url, direct_youtube_url) for command-bar input.
+
+    Hostnames are checked exactly (after an optional ``www.``) so lookalike
+    domains cannot turn into trusted acquire/import actions.
+    """
+    try:
+        parsed = urlsplit(query.strip())
+    except ValueError:
+        return None, None
+    if parsed.scheme not in {"http", "https"}:
+        return None, None
+
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    spotify_playlist = (
+        host == "open.spotify.com" and "/playlist/" in parsed.path
+    )
+    youtube_host = host in {"youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+    youtube_playlist = youtube_host and bool(parse_qs(parsed.query).get("list"))
+    if spotify_playlist or youtube_playlist:
+        return query.strip(), None
+    if youtube_host:
+        return None, query.strip()
+    return None, None
 
 
 async def _library_stats_context(session: AsyncSession) -> dict:
@@ -100,7 +129,6 @@ async def library_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from service.metadata.quality import LOW_QUALITY_THRESHOLD
 
     stats_ctx = await _library_stats_context(session)
     _not_suppressed = (Track.quality_suppressed.is_(None)) | (Track.quality_suppressed == 0)
@@ -721,6 +749,7 @@ async def library_enrich_filtered(
     a specific artist or album rather than the entire library.
     """
     from sqlalchemy.orm import joinedload as _jl
+
     from service.core.normalize import normalize as _norm
 
     stmt = (
@@ -875,18 +904,20 @@ async def nav_jump(
     q: str = Query(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Global jump-to palette: artists, albums, tracks, and review-queue jobs.
+    """Fast/local branch and shell of the global unified-search palette.
 
     Matching is case-insensitive AND-of-words substring search over the
     entity's name plus its artist name — no search index, but forgiving about
     word order ("dark floyd" finds Pink Floyd — The Dark Side of the Moon).
+    MusicBrainz and YouTube load from independent child requests rendered by
+    the response template, so a slow provider never holds up local matches.
     """
     q = q.strip()
     if len(q) < 2:
         return HTMLResponse('<div class="jump-hint">Keep typing…</div>')
     words = q.lower().split()[:6]
 
-    def _like_all(expr):  # every word must appear somewhere in expr
+    def _like_all(expr: Any) -> list[Any]:  # every word must appear somewhere in expr
         return [func.lower(expr).like(f"%{w}%") for w in words]
 
     artists = (await session.execute(
@@ -916,6 +947,22 @@ async def nav_jump(
         .order_by(AcquisitionJobRow.updated_at.desc()).limit(4)
     )).scalars().all()
 
+    playlists = (await session.execute(
+        select(PlaylistImport)
+        .where(*[
+            or_(
+                func.lower(func.coalesce(PlaylistImport.title, "")).like(f"%{word}%"),
+                func.lower(PlaylistImport.source).like(f"%{word}%"),
+                func.lower(PlaylistImport.url).like(f"%{word}%"),
+            )
+            for word in words
+        ])
+        .order_by(PlaylistImport.updated_at.desc())
+        .limit(5)
+    )).scalars().all()
+
+    playlist_url, direct_url = _classify_search_url(q)
+
     # Cover art for album rows: any owned track in the album carries the art
     cover_ids: dict[str, str] = {}
     if albums:
@@ -930,5 +977,6 @@ async def nav_jump(
     return templates.TemplateResponse(
         request, "partials/jump_results.html",
         {"q": q, "artists": artists, "albums": albums, "tracks": tracks,
-         "review_jobs": review_jobs, "cover_ids": cover_ids},
+         "review_jobs": review_jobs, "cover_ids": cover_ids, "playlists": playlists,
+         "playlist_url": playlist_url, "direct_url": direct_url},
     )

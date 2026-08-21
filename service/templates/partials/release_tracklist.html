@@ -37,7 +37,8 @@
         <form style="display:inline"
               hx-post="/discography/{{ artist_mbid }}/{{ release_group_id }}/acquire-track"
               hx-target="#disco-track-{{ t.recording_id }} td:last-child"
-              hx-swap="innerHTML">
+              hx-swap="innerHTML"
+              hx-disabled-elt="find button">
           <input type="hidden" name="recording_id" value="{{ t.recording_id }}">
           <input type="hidden" name="title" value="{{ t.title|e }}">
           <input type="hidden" name="artist" value="{{ artist|e }}">
@@ -68,8 +69,10 @@
         hx-post="/discography/{{ artist_mbid }}/{{ release_group_id }}/acquire"
         hx-target="closest .release-tracklist"
         hx-swap="innerHTML"
+        hx-disabled-elt="find button"
         hx-indicator="#disco-spinner-{{ release_group_id }}">
     <input type="hidden" name="artist" value="{{ artist }}">
+    <input type="hidden" name="album_title" value="{{ album_title|e }}">
     <button type="submit" class="btn btn-sm">
       Acquire {% if n_missing < tracks|length %}{{ n_missing }} missing{% else %}all {{ n_missing }}{% endif %}
       <span id="disco-spinner-{{ release_group_id }}" class="htmx-indicator"><span class="spinner"></span></span>

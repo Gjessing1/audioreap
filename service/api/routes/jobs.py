@@ -4,39 +4,50 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
-from sqlalchemy import delete as sa_delete, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from service.config import settings
-from service.core.models import AcquisitionJob, TrackCandidate
-from service.db.schema import AcquisitionJobRow, Album, Artist, Track
-from service.library.writer import safe_trash
-from service.db.session import get_session
-from service.core.job_model import job_row_to_model as _job_to_model
-from service.library.tagger import read_mb_release_id as _read_mb_release_id
 
-from service.api.routes.artwork import _fetch_user_art
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, Response
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from service.acquisition.queue import arq_pool, enqueue_acquire_track
-from service.api.shared import _ACTIVE_STATES_EXCLUDE, _COMPLETED_STATES, _JOBS_COMPLETED_PAGE, _do_scans, _mb_recording_search, templates
+from service.api.routes.artwork import _fetch_user_art
+from service.api.shared import (
+    _COMPLETED_STATES,
+    _JOBS_COMPLETED_PAGE,
+    _do_scans,
+    _mb_recording_search,
+    templates,
+)
+from service.config import settings
+from service.core.job_model import job_row_to_model as _job_to_model
+from service.core.models import AcquisitionJob, TrackCandidate
+from service.db.schema import AcquisitionJobRow, Album, Artist, PlaylistImport, Track
+from service.db.session import get_session
+from service.library.tagger import read_mb_release_id as _read_mb_release_id
+from service.library.writer import atomic_place, safe_trash
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_REJECTION_META_KEY = "_audioreap_rejection"
+
 
 def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
-    """Split job rows into review / active / completed groups for the UI."""
-    review, active, completed = [], [], []
+    """Split job rows into the four first-level queue views."""
+    review, active, failed, completed = [], [], [], []
     for r in rows:
         j = _job_to_model(r)
         if r.state == "needs_review":
             review.append(j)
-        elif r.state in _COMPLETED_STATES:
+        elif r.state == "failed":
+            failed.append(j)
+        elif r.state in ("done", "cancelled"):
             completed.append(j)
         else:
             active.append(j)
@@ -45,10 +56,36 @@ def _grouped_jobs(rows: list[AcquisitionJobRow]) -> dict[str, object]:
         # Keyed "active_jobs" (not "active") so it doesn't shadow the nav-highlight
         # key when jobs_page renders {"active": "jobs", **ctx}.
         "active_jobs": active,
+        "failed_jobs": failed,
         "completed": completed,
         "completed_has_more": False,
         "completed_next_offset": 0,
     }
+
+
+def _queue_counts(rows: list[tuple[str, int]]) -> dict[str, int]:
+    """Fold raw state counts into the queue's four user-facing views."""
+    counts = {"review": 0, "active": 0, "failed": 0, "completed": 0}
+    for state, count in rows:
+        if state == "needs_review":
+            counts["review"] += count
+        elif state == "failed":
+            counts["failed"] += count
+        elif state in ("done", "cancelled"):
+            counts["completed"] += count
+        else:
+            counts["active"] += count
+    return counts
+
+
+def _jobs_view(requested: str | None, counts: dict[str, int]) -> str:
+    """Validate an explicit view or choose the highest-value non-empty queue."""
+    if requested in counts:
+        return requested
+    for view in ("review", "active", "failed", "completed"):
+        if counts[view]:
+            return view
+    return "review"
 
 
 def _row_resolved_meta(row: AcquisitionJobRow) -> dict:
@@ -60,6 +97,117 @@ def _row_resolved_meta(row: AcquisitionJobRow) -> dict:
     except Exception as exc:
         logger.debug("corrupt resolved_metadata_json on job %s: %s", row.id, exc)
         return {}
+
+
+def _rejection_record(row: AcquisitionJobRow) -> dict[str, str] | None:
+    """Return the private trash recovery record stored with a rejected job."""
+    record = _row_resolved_meta(row).get(_REJECTION_META_KEY)
+    if not isinstance(record, dict):
+        return None
+    if not isinstance(record.get("trash_path"), str) or not isinstance(
+        record.get("original_path"), str
+    ):
+        return None
+    return record
+
+
+def _path_under(path: Path, root: Path) -> bool:
+    """Defend restore against corrupt/tampered path data in the job row."""
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _restore_available(row: AcquisitionJobRow) -> bool:
+    record = _rejection_record(row)
+    if not record:
+        return False
+    trash_path = Path(record["trash_path"])
+    original_path = Path(record["original_path"])
+    return (
+        _path_under(trash_path, settings.staging_dir / ".trash")
+        and _path_under(original_path, settings.staging_dir)
+        and trash_path.exists()
+    )
+
+
+def _job_label(row: AcquisitionJobRow | None, job_id: str) -> str:
+    if row is None:
+        return job_id[:8]
+    return _job_to_model(row).track_ref.title or row.query or job_id[:8]
+
+
+def _reject_row(row: AcquisitionJobRow, *, bulk: bool = False) -> tuple[bool, bool]:
+    """Reject one review row while retaining validated file recovery data."""
+    meta = _row_resolved_meta(row)
+    is_enrichment = bool(meta.get("is_enrichment"))
+    restore_available = False
+
+    if row.staging_path and not is_enrichment:
+        original_path = Path(row.staging_path)
+        if original_path.exists():
+            trash_path = safe_trash(original_path, settings.staging_dir / ".trash")
+            meta[_REJECTION_META_KEY] = {
+                "trash_path": str(trash_path),
+                "original_path": str(original_path),
+                "rejected_at": datetime.now(UTC).isoformat(),
+            }
+            row.resolved_metadata_json = json.dumps(meta)
+            restore_available = True
+
+            parent = original_path.parent
+            for _ in range(3):
+                if parent == settings.staging_dir or not parent.exists():
+                    break
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+
+    row.state = "failed"
+    row.failure_class = "permanent"
+    row.error = "Rejected (bulk)" if bulk else "Rejected by user"
+    row.staging_path = None
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    return is_enrichment, restore_available
+
+
+def _restore_rejected_row(row: AcquisitionJobRow) -> None:
+    """Move a rejected staged file out of Trash and return the job to Review."""
+    record = _rejection_record(row)
+    if row.state != "failed" or not record:
+        raise ValueError("This job no longer has a rejected file to restore")
+
+    trash_path = Path(record["trash_path"])
+    original_path = Path(record["original_path"])
+    if not _path_under(trash_path, settings.staging_dir / ".trash"):
+        raise ValueError("The stored Trash path is invalid")
+    if not _path_under(original_path, settings.staging_dir):
+        raise ValueError("The stored staging path is invalid")
+    if not trash_path.exists():
+        raise ValueError("The rejected file is no longer in Trash")
+    if original_path.exists():
+        raise ValueError("A file already exists at the original staging path")
+
+    atomic_place(trash_path, original_path)
+    sidecar = trash_path.parent / f"{trash_path.name}.restore_path"
+    try:
+        sidecar.unlink(missing_ok=True)
+        trash_path.parent.rmdir()
+    except OSError:
+        pass
+
+    meta = _row_resolved_meta(row)
+    meta.pop(_REJECTION_META_KEY, None)
+    row.resolved_metadata_json = json.dumps(meta) if meta else None
+    row.staging_path = str(original_path)
+    row.state = "needs_review"
+    row.failure_class = None
+    row.error = None
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
 
 
 def _classify_review_confidence(row: AcquisitionJobRow, m: dict) -> tuple[str, str | None]:
@@ -83,6 +231,20 @@ def _classify_review_confidence(row: AcquisitionJobRow, m: dict) -> tuple[str, s
         ):
             return "verified", None
     return "probable", None
+
+
+def _review_reason(confidence: str, flag_reason: str | None, meta: dict) -> str:
+    """One-line explanation shown before a review card is expanded."""
+    changes = _enrichment_change_count(meta)
+    if changes is not None:
+        return f"Review {changes} suggested metadata field{'s' if changes != 1 else ''}"
+    if flag_reason:
+        return flag_reason
+    if confidence == "verified":
+        if meta.get("mb_match_source") == "acoustid":
+            return "Ready to approve — audio fingerprint confirmed the match"
+        return "Ready to approve — title and artist are a strong match"
+    return "Confirm the metadata — this match is below the verified threshold"
 
 
 def _enrichment_change_count(meta: dict) -> int | None:
@@ -197,6 +359,7 @@ async def _build_review_groups(
             "flag_reason": flag_reason,
             "confidence": confidence,
             "src": src,
+            "reason": _review_reason(confidence, flag_reason, meta),
         }
         if r.album_job_id:
             album_buckets.setdefault(r.album_job_id, []).append(item)
@@ -204,21 +367,20 @@ async def _build_review_groups(
             singles.append({
                 "type": "single", "job": j, "confidence": confidence, "src": src,
                 "enrich_changes": _enrichment_change_count(meta),
+                "reason": item["reason"],
             })
 
-    # Within an album batch, order tracks by review status so the approvable ones
-    # cluster at the top and problems escalate toward the bottom:
-    # verified → probable → flagged → fingerprint-mismatch. Stable sort preserves
-    # the arrival (≈track) order within each rank.
+    # Put items requiring the most judgment first. Stable sort preserves arrival
+    # (approximately track) order within each confidence band.
     def _item_rank(it: dict) -> int:
         conf = it.get("confidence")
-        if conf == "verified":
+        if conf == "flagged":
             return 0
         if conf == "probable":
             return 1
-        reason = (it.get("flag_reason") or "").lower()
-        return 3 if "fingerprint mismatch" in reason else 2
+        return 2
 
+    singles.sort(key=_item_rank)
     groups: list[dict] = list(singles)
     for ajid, items in album_buckets.items():
         items.sort(key=_item_rank)
@@ -232,14 +394,16 @@ async def _build_review_groups(
             "clean_count": len(clean_ids),
             "flagged_count": sum(1 for it in items if it["is_flagged"]),
             "total_count": len(items),
+            "priority": min((_item_rank(it) for it in items), default=2),
         })
+    groups.sort(key=lambda group: _item_rank(group) if group["type"] == "single" else group["priority"])
     return groups, safe_ids
 
 
 async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
     """Build resolved_metadata for staged items that pre-date Phase 13."""
-    from service.library.tagger import primary_artist, read_tags
     from service.core.models import TrackCandidate
+    from service.library.tagger import primary_artist, read_tags
 
     staging_path = Path(row.staging_path) if row.staging_path else None
     tagged = None
@@ -293,27 +457,60 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
     }
 
 
-async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
-    """Build the paginated job list template context (first page of completed)."""
+async def _job_list_ctx(
+    session: AsyncSession, requested_view: str | None = None
+) -> dict[str, object]:
+    """Build one queue view plus global counts for the queue tabs."""
+    raw_counts = (await session.execute(
+        select(AcquisitionJobRow.state, func.count(AcquisitionJobRow.id))
+        .group_by(AcquisitionJobRow.state)
+    )).all()
+    queue_counts = _queue_counts([(state, count) for state, count in raw_counts])
+    view = _jobs_view(requested_view, queue_counts)
+
+    active_stmt = select(AcquisitionJobRow)
+    if view == "review":
+        active_stmt = active_stmt.where(AcquisitionJobRow.state == "needs_review")
+    elif view == "active":
+        active_stmt = active_stmt.where(
+            AcquisitionJobRow.state.notin_(_COMPLETED_STATES),
+            AcquisitionJobRow.state != "needs_review",
+        )
+    else:
+        active_stmt = active_stmt.where(AcquisitionJobRow.id.is_(None))
     active_rows = (await session.execute(
-        select(AcquisitionJobRow)
-        .where(AcquisitionJobRow.state.notin_(_ACTIVE_STATES_EXCLUDE))
-        .order_by(AcquisitionJobRow.created_at.desc())
-        .limit(200)
+        active_stmt.order_by(AcquisitionJobRow.created_at.desc()).limit(200)
     )).scalars().all()
+
+    completed_states: tuple[str, ...]
+    if view == "failed":
+        completed_states = ("failed",)
+    elif view == "completed":
+        completed_states = ("done", "cancelled")
+    else:
+        completed_states = ()
+    completed_stmt = select(AcquisitionJobRow).where(AcquisitionJobRow.id.is_(None))
+    if completed_states:
+        completed_stmt = select(AcquisitionJobRow).where(
+            AcquisitionJobRow.state.in_(completed_states)
+        )
     completed_rows = (await session.execute(
-        select(AcquisitionJobRow)
-        .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
-        .order_by(AcquisitionJobRow.created_at.desc(), AcquisitionJobRow.id.desc())
-        .limit(_JOBS_COMPLETED_PAGE + 1)
+        completed_stmt.order_by(
+            AcquisitionJobRow.created_at.desc(), AcquisitionJobRow.id.desc()
+        ).limit(_JOBS_COMPLETED_PAGE + 1)
     )).scalars().all()
     has_more = len(completed_rows) > _JOBS_COMPLETED_PAGE
     page = list(completed_rows[:_JOBS_COMPLETED_PAGE])
     rows = list(active_rows) + page
     ctx = _grouped_jobs(rows)
+    ctx["jobs_view"] = view
+    ctx["queue_counts"] = queue_counts
     ctx["completed_has_more"] = has_more
     ctx["completed_cursor_ts"] = page[-1].created_at.isoformat() if page else ""
     ctx["completed_cursor_id"] = page[-1].id if page else ""
+    ctx["rejected_job_ids"] = {
+        row.id for row in completed_rows if _restore_available(row)
+    }
 
     # Build structured review groups (album batches + solo items)
     review_rows_only = [r for r in active_rows if r.state == "needs_review"]
@@ -322,17 +519,110 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     ctx["review_groups"] = review_groups
     ctx["safe_review_ids"] = safe_ids
     ctx["safe_review_count"] = len(safe_ids)
-    ctx["has_active_jobs"] = bool(active_rows)
+    ctx["has_active_jobs"] = bool(queue_counts["review"] or queue_counts["active"])
 
     # At-a-glance queue summary chips (in-progress states only).
     from collections import Counter as _Counter
-    _sc = _Counter(r.state for r in active_rows)
+    active_state_rows = (await session.execute(
+        select(AcquisitionJobRow.state, func.count(AcquisitionJobRow.id))
+        .where(
+            AcquisitionJobRow.state.notin_(_COMPLETED_STATES),
+            AcquisitionJobRow.state != "needs_review",
+        )
+        .group_by(AcquisitionJobRow.state)
+    )).all()
+    _sc = _Counter({state: count for state, count in active_state_rows})
     ctx["status_counts"] = {
         "downloading": _sc.get("downloading", 0),
         "working": sum(_sc.get(s, 0) for s in ("processing", "enriching", "tagging", "importing", "placing")),
         "waiting": _sc.get("waiting", 0),
         "queued": _sc.get("queued", 0),
     }
+
+    # Stable destinations for playlist receipts. Track cards can move between
+    # Active, Review, and Completed while a playlist import is running; this
+    # compact group summary keeps /jobs#playlist-<id> valid throughout.
+    playlist_rows = (await session.execute(
+        select(PlaylistImport)
+        .order_by(PlaylistImport.created_at.desc())
+        .limit(10)
+    )).scalars().all()
+    playlist_counts: dict[str, dict[str, int]] = {}
+    if playlist_rows:
+        count_rows = (await session.execute(
+            select(
+                AcquisitionJobRow.playlist_import_id,
+                AcquisitionJobRow.state,
+                func.count(AcquisitionJobRow.id),
+            )
+            .where(AcquisitionJobRow.playlist_import_id.in_([p.id for p in playlist_rows]))
+            .group_by(AcquisitionJobRow.playlist_import_id, AcquisitionJobRow.state)
+        )).all()
+        for playlist_id, state, count in count_rows:
+            playlist_counts.setdefault(playlist_id, {})[state] = count
+    ctx["playlist_batches"] = [
+        {
+            "id": playlist.id,
+            "title": playlist.title or "Untitled Playlist",
+            "owned": playlist.owned_count,
+            "active": sum(
+                counts.get(state, 0)
+                for state in (
+                    "queued", "waiting", "downloading", "processing",
+                    "enriching", "tagging", "importing", "placing",
+                )
+            ),
+            "review": counts.get("needs_review", 0),
+            "done": counts.get("done", 0),
+            "failed": counts.get("failed", 0),
+        }
+        for playlist in playlist_rows
+        for counts in [playlist_counts.get(playlist.id, {})]
+    ] if view == "active" else []
+
+    from service.db.schema import AlbumAcquisitionJob as _AlbumJob
+
+    album_rows = (await session.execute(
+        select(_AlbumJob)
+        .where(_AlbumJob.state.in_(("queued", "running", "failed")))
+        .order_by(_AlbumJob.created_at.desc())
+        .limit(10)
+    )).scalars().all()
+    album_counts: dict[str, dict[str, int]] = {}
+    if album_rows:
+        count_rows = (await session.execute(
+            select(
+                AcquisitionJobRow.album_job_id,
+                AcquisitionJobRow.state,
+                func.count(AcquisitionJobRow.id),
+            )
+            .where(AcquisitionJobRow.album_job_id.in_([a.id for a in album_rows]))
+            .group_by(AcquisitionJobRow.album_job_id, AcquisitionJobRow.state)
+        )).all()
+        for album_id, state, count in count_rows:
+            album_counts.setdefault(album_id, {})[state] = count
+    ctx["album_batches"] = [
+        {
+            "id": album.id,
+            "label": " — ".join(
+                part for part in [album.album_artist, album.album_title] if part
+            ) or album.query or album.id[:8],
+            "state": album.state,
+            "fetching": not counts and album.state in ("queued", "running"),
+            "active": sum(
+                counts.get(state, 0)
+                for state in (
+                    "queued", "waiting", "downloading", "processing",
+                    "enriching", "tagging", "importing", "placing",
+                )
+            ),
+            "review": counts.get("needs_review", 0),
+            "done": counts.get("done", 0),
+            "failed": counts.get("failed", 0),
+        }
+        for album in album_rows
+        for counts in [album_counts.get(album.id, {})]
+    ] if view == "active" else []
 
     # Album batches whose child track jobs don't exist yet (worker still fetching
     # the MB tracklist) would otherwise be invisible on /jobs. Surface a ghost
@@ -344,11 +634,13 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
     # the precise "still fetching" signal. Also bound by age — acquire_album_from_mb
     # leaves the row in "running" indefinitely (independent child jobs finish on
     # their own), so without a recency window every past album would reappear.
-    from datetime import UTC as _UTC, datetime as _dt, timedelta as _td
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
 
     from sqlalchemy import or_ as _or
-    from service.db.schema import AlbumAcquisitionJob as _AlbumJob
     represented_album_ids = {r.album_job_id for r in rows if r.album_job_id}
+    summarized_album_ids = {album.id for album in album_rows}
     _placeholder_cutoff = _dt.now(_UTC).replace(tzinfo=None) - _td(minutes=15)
     pending_album_rows = (await session.execute(
         select(_AlbumJob)
@@ -365,17 +657,18 @@ async def _job_list_ctx(session: AsyncSession) -> dict[str, object]:
                      or (a.query or a.id[:8]),
         }
         for a in pending_album_rows
-        if a.id not in represented_album_ids
-    ]
+        if a.id not in represented_album_ids and a.id not in summarized_album_ids
+    ] if view == "active" else []
     return ctx
 
 
 @router.get("/jobs", response_class=HTMLResponse)
 async def jobs_page(
     request: Request,
+    view: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    ctx = await _job_list_ctx(session)
+    ctx = await _job_list_ctx(session, view)
     return templates.TemplateResponse(
         request, "jobs.html", {"active": "jobs", **ctx}
     )
@@ -384,9 +677,10 @@ async def jobs_page(
 @router.get("/jobs/list", response_class=HTMLResponse)
 async def jobs_list_partial(
     request: Request,
+    view: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    ctx = await _job_list_ctx(session)
+    ctx = await _job_list_ctx(session, view)
     resp = templates.TemplateResponse(request, "partials/job_list.html", ctx)
     if not ctx["has_active_jobs"]:
         resp.headers["HX-Trigger"] = "stopJobPoll"
@@ -396,15 +690,17 @@ async def jobs_list_partial(
 @router.get("/jobs/completed/more", response_class=HTMLResponse)
 async def jobs_completed_more(
     request: Request,
+    view: str = "completed",
     after_ts: str = "",
     after_id: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Return additional completed job cards, cursor-paginated by (created_at, id)."""
     from datetime import datetime as _dt
+    states = ("failed",) if view == "failed" else ("done", "cancelled")
     stmt = (
         select(AcquisitionJobRow)
-        .where(AcquisitionJobRow.state.in_(_COMPLETED_STATES))
+        .where(AcquisitionJobRow.state.in_(states))
         .order_by(AcquisitionJobRow.created_at.desc(), AcquisitionJobRow.id.desc())
         .limit(_JOBS_COMPLETED_PAGE + 1)
     )
@@ -429,7 +725,9 @@ async def jobs_completed_more(
     return templates.TemplateResponse(
         request, "partials/jobs_completed_more.html",
         {"completed": jobs, "completed_has_more": has_more,
-         "completed_cursor_ts": next_ts, "completed_cursor_id": next_id},
+         "completed_cursor_ts": next_ts, "completed_cursor_id": next_id,
+         "jobs_view": view,
+         "rejected_job_ids": {row.id for row in page if _restore_available(row)}},
     )
 
 
@@ -707,6 +1005,7 @@ async def _review_card_ctx(
         (staging_exists and "title mismatch" in force_reason.lower())
         or (not staging_exists and "no confident" in force_reason.lower())
     )
+    confidence, flag_reason = _classify_review_confidence(row, meta)
 
     return {
         "job_id": job_id,
@@ -727,6 +1026,8 @@ async def _review_card_ctx(
         "album_names": album_names,
         "candidate_track_number": candidate_track_number,
         "enrich_change_count": _enrichment_change_count(meta),
+        "confidence": confidence,
+        "review_reason": _review_reason(confidence, flag_reason, meta),
     }
 
 
@@ -902,6 +1203,7 @@ async def _rollback_failed_approval(
 @router.post("/jobs/batch-approve", response_class=HTMLResponse)
 async def batch_approve(
     request: Request,
+    view: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Approve multiple needs_review jobs at once using their stored metadata."""
@@ -911,7 +1213,7 @@ async def batch_approve(
     job_ids: list[str] = list(form.getlist("job_id"))  # type: ignore[arg-type]
 
     done_count = 0
-    fail_count = 0
+    outcomes: list[dict[str, str]] = []
 
     async def _noop_scan() -> None:
         # One Navidrome scan at the end of the batch instead of one per track.
@@ -923,9 +1225,17 @@ async def batch_approve(
     async with _approval_redis() as _redis:
         for jid in job_ids:
             async with _approval_lock(_redis, jid) as acquired:
+                initial_row = await session.get(AcquisitionJobRow, jid)
+                label = _job_label(initial_row, jid)
                 if not acquired:
                     # Another approval for this job is already in flight — skip it
                     # rather than racing (and clobbering) that placement.
+                    outcomes.append({
+                        "id": jid,
+                        "label": label,
+                        "status": "failed",
+                        "message": "Approval is already in progress",
+                    })
                     continue
                 try:
                     await place_approved_track(
@@ -943,10 +1253,21 @@ async def batch_approve(
                     except Exception as exc:
                         logger.debug("heal-target metadata parse failed: %s", exc)
                     done_count += 1
+                    outcomes.append({
+                        "id": jid,
+                        "label": label,
+                        "status": "success",
+                        "message": "Approved and placed",
+                    })
                 except Exception as exc:
                     logger.error("Batch approve failed for %s: %s", jid, exc)
                     await _rollback_failed_approval(session, jid, exc)
-                    fail_count += 1
+                    outcomes.append({
+                        "id": jid,
+                        "label": label,
+                        "status": "failed",
+                        "message": str(exc)[:200],
+                    })
 
     # Auto-heal Navidrome album splits for any discography batch that just landed.
     scanned = False
@@ -973,9 +1294,15 @@ async def batch_approve(
     if done_count and not scanned:
         await _do_scans()
 
-    return templates.TemplateResponse(
-        request, "partials/job_list.html", await _job_list_ctx(session)
-    )
+    ctx = await _job_list_ctx(session, view)
+    ctx["batch_result"] = {
+        "action": "approve",
+        "success_count": sum(item["status"] == "success" for item in outcomes),
+        "failed_count": sum(item["status"] == "failed" for item in outcomes),
+        "items": outcomes,
+        "undo_ids": [],
+    }
+    return templates.TemplateResponse(request, "partials/job_list.html", ctx)
 
 
 @router.post("/jobs/{job_id}/approve", response_class=HTMLResponse)
@@ -989,6 +1316,7 @@ async def approve_job(
     track_number: str = Form(""),
     mb_recording_id: str = Form(""),
     genre: str = Form(""),
+    advance: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from service.acquisition.pipeline import place_approved_track
@@ -1047,15 +1375,21 @@ async def approve_job(
     placed_title = meta.get("title") or (row.query if row else "") or "Track"
     placed_album = meta.get("album") or ""
     dest_hint = f" → {placed_album}" if placed_album else ""
-    return HTMLResponse(
+    response = HTMLResponse(
         f'<div id="job-{job_id}" class="job-placed-feedback">'
         f'✓ {_html.escape(placed_title + dest_hint)} · placed'
         f'</div>'
     )
+    response.headers["HX-Trigger"] = json.dumps({
+        "jobsChanged": {"jobId": job_id, "state": "done"},
+        "reviewApproved": {"jobId": job_id, "openNext": advance == "next"},
+    })
+    return response
 
 
 @router.post("/jobs/{job_id}/reject", response_class=HTMLResponse)
 async def reject_job(
+    request: Request,
     job_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
@@ -1063,43 +1397,74 @@ async def reject_job(
     if row is None:
         raise HTTPException(404)
 
-    # Enrichment suggestions point to the real /music file — never trash it
-    is_enrichment = False
-    if row.resolved_metadata_json:
-        try:
-            is_enrichment = bool(json.loads(row.resolved_metadata_json).get("is_enrichment"))
-        except Exception as exc:
-            logger.debug("is_enrichment probe failed: %s", exc)
+    label = _job_label(row, job_id)
+    restore_available = False
+    try:
+        is_enrichment, restore_available = _reject_row(row)
+        await session.commit()
+    except Exception as exc:
+        logger.error("Reject failed for %s: %s", job_id, exc)
+        if restore_available:
+            try:
+                _restore_rejected_row(row)
+            except Exception:
+                logger.error("Compensating restore failed for %s", job_id, exc_info=True)
+        await session.rollback()
+        raise HTTPException(500, f"Could not reject the staged file: {exc}") from exc
+    return templates.TemplateResponse(
+        request,
+        "partials/job_rejected_feedback.html",
+        {
+            "job_id": job_id,
+            "label": label,
+            "is_enrichment": is_enrichment,
+            "restore_available": restore_available,
+        },
+    )
 
-    if row.staging_path and not is_enrichment:
-        try:
-            p = Path(row.staging_path)
-            if p.exists():
-                safe_trash(p, settings.staging_dir / ".trash")
-            parent = p.parent
-            for _ in range(3):
-                if parent == settings.staging_dir or not parent.exists():
-                    break
-                try:
-                    parent.rmdir()
-                except OSError:
-                    break
-                parent = parent.parent
-        except Exception as exc:
-            logger.debug("Reject cleanup failed: %s", exc)
 
-    row.state = "failed"
-    row.failure_class = "permanent"
-    row.error = "Rejected by user"
-    row.staging_path = None
-    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-    await session.commit()
-    return HTMLResponse("")
+@router.post("/jobs/{job_id}/restore", response_class=HTMLResponse)
+async def restore_rejected_job(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None:
+        raise HTTPException(404)
+    try:
+        _restore_rejected_row(row)
+        await session.commit()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        logger.error("Restore failed for %s: %s", job_id, exc)
+        raise HTTPException(500, f"Could not restore the staged file: {exc}") from exc
+
+    meta = _row_resolved_meta(row)
+    confidence, flag_reason = _classify_review_confidence(row, meta)
+    response = templates.TemplateResponse(
+        request,
+        "partials/job_card.html",
+        {
+            "job": _job_to_model(row),
+            "confidence": confidence,
+            "src": _source_summary(row, meta),
+            "enrich_changes": _enrichment_change_count(meta),
+            "review_reason": _review_reason(confidence, flag_reason, meta),
+            "rejected_job_ids": set(),
+        },
+    )
+    response.headers["HX-Trigger"] = json.dumps({
+        "jobsChanged": {"jobId": job_id, "state": "needs_review"}
+    })
+    return response
 
 
 @router.post("/jobs/bulk-action", response_class=HTMLResponse)
 async def jobs_bulk_action(
     request: Request,
+    view: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Reject or dismiss multiple selected jobs at once."""
@@ -1107,29 +1472,21 @@ async def jobs_bulk_action(
     job_ids: list[str] = list(form.getlist("job_id"))  # type: ignore[arg-type]
     action: str = str(form.get("action", "reject"))
 
+    outcomes: list[dict[str, str]] = []
+    undo_ids: list[str] = []
     for jid in job_ids:
+        label = jid[:8]
         try:
             row = await session.get(AcquisitionJobRow, jid)
             if row is None:
-                continue
+                raise ValueError("Job not found")
+            label = _job_label(row, jid)
+            changed = False
             if action == "reject" and row.state == "needs_review":
-                is_enrichment = False
-                if row.resolved_metadata_json:
-                    try:
-                        is_enrichment = bool(json.loads(row.resolved_metadata_json).get("is_enrichment"))
-                    except Exception as exc:
-                        logger.debug("is_enrichment probe failed: %s", exc)
-                if row.staging_path and not is_enrichment:
-                    try:
-                        p = Path(row.staging_path)
-                        if p.exists():
-                            safe_trash(p, settings.staging_dir / ".trash")
-                    except Exception as exc:
-                        logger.warning("trashing staged file on reject failed: %s", exc)
-                row.state = "failed"
-                row.failure_class = "permanent"
-                row.error = "Rejected (bulk)"
-                row.staging_path = None
+                _, can_restore = _reject_row(row, bulk=True)
+                if can_restore:
+                    undo_ids.append(jid)
+                changed = True
             elif action == "cancel" and row.state in ("queued", "waiting", "downloading", "processing", "tagging", "importing"):
                 try:
                     async with arq_pool() as redis:
@@ -1138,21 +1495,87 @@ async def jobs_bulk_action(
                     logger.debug("best-effort dequeue failed: %s", exc)
                 row.state = "cancelled"
                 row.error = "Cancelled (bulk)"
+                changed = True
             elif action == "dismiss" and row.state in _COMPLETED_STATES:
                 await session.delete(row)
+                changed = True
+            if not changed:
+                raise ValueError(f"Job is not eligible for {action}")
             row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-            await session.flush()
+            await session.commit()
+            outcomes.append({
+                "id": jid,
+                "label": label,
+                "status": "success",
+                "message": {"reject": "Moved to Trash", "cancel": "Cancelled", "dismiss": "Dismissed"}.get(action, "Completed"),
+            })
         except Exception as exc:
             logger.error("Bulk action %s failed for %s: %s", action, jid, exc)
+            if jid in undo_ids:
+                undo_ids.remove(jid)
+                try:
+                    _restore_rejected_row(row)
+                except Exception:
+                    logger.error("Compensating restore failed for %s", jid, exc_info=True)
             try:
                 await session.rollback()
             except Exception as rb_exc:
                 logger.debug("rollback after bulk-action failure also failed: %s", rb_exc)
+            outcomes.append({
+                "id": jid,
+                "label": label,
+                "status": "failed",
+                "message": str(exc)[:200],
+            })
 
-    await session.commit()
-    return templates.TemplateResponse(
-        request, "partials/job_list.html", await _job_list_ctx(session)
-    )
+    ctx = await _job_list_ctx(session, view)
+    ctx["batch_result"] = {
+        "action": action,
+        "success_count": sum(item["status"] == "success" for item in outcomes),
+        "failed_count": sum(item["status"] == "failed" for item in outcomes),
+        "items": outcomes,
+        "undo_ids": undo_ids,
+    }
+    return templates.TemplateResponse(request, "partials/job_list.html", ctx)
+
+
+@router.post("/jobs/bulk-restore", response_class=HTMLResponse)
+async def bulk_restore_rejected_jobs(
+    request: Request,
+    view: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    form = await request.form()
+    job_ids: list[str] = list(form.getlist("job_id"))  # type: ignore[arg-type]
+    outcomes: list[dict[str, str]] = []
+    for jid in job_ids:
+        row = await session.get(AcquisitionJobRow, jid)
+        label = _job_label(row, jid)
+        try:
+            if row is None:
+                raise ValueError("Job not found")
+            _restore_rejected_row(row)
+            await session.commit()
+            outcomes.append({
+                "id": jid, "label": label, "status": "success",
+                "message": "Restored to Review",
+            })
+        except Exception as exc:
+            await session.rollback()
+            outcomes.append({
+                "id": jid, "label": label, "status": "failed",
+                "message": str(exc)[:200],
+            })
+
+    ctx = await _job_list_ctx(session, view)
+    ctx["batch_result"] = {
+        "action": "restore",
+        "success_count": sum(item["status"] == "success" for item in outcomes),
+        "failed_count": sum(item["status"] == "failed" for item in outcomes),
+        "items": outcomes,
+        "undo_ids": [],
+    }
+    return templates.TemplateResponse(request, "partials/job_list.html", ctx)
 
 
 @router.post("/jobs/{job_id}/requeue", response_class=HTMLResponse)
@@ -1315,6 +1738,7 @@ async def suggest_track_number(
 @router.post("/jobs/retry-all-failed", response_class=HTMLResponse)
 async def retry_all_failed(
     request: Request,
+    view: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     rows = (
@@ -1344,26 +1768,26 @@ async def retry_all_failed(
         except Exception as exc:
             raise HTTPException(503, str(exc)) from exc
 
-    return templates.TemplateResponse(request, "partials/job_list.html", await _job_list_ctx(session))
+    return templates.TemplateResponse(
+        request, "partials/job_list.html", await _job_list_ctx(session, view)
+    )
 
 
 @router.delete("/jobs/clear", response_class=HTMLResponse)
 async def clear_done_jobs(
     request: Request,
+    view: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     await session.execute(
         sa_delete(AcquisitionJobRow).where(
-            AcquisitionJobRow.state.in_(_COMPLETED_STATES)
+            AcquisitionJobRow.state.in_(("done", "cancelled"))
         )
     )
     await session.commit()
-    rows = (
-        await session.execute(
-            select(AcquisitionJobRow).order_by(AcquisitionJobRow.created_at.desc()).limit(50)
-        )
-    ).scalars().all()
-    return templates.TemplateResponse(request, "partials/job_list.html", _grouped_jobs(rows))
+    return templates.TemplateResponse(
+        request, "partials/job_list.html", await _job_list_ctx(session, view)
+    )
 
 
 @router.get("/jobs/{job_id}/stream")
@@ -1578,6 +2002,7 @@ async def job_cover_art(
 ) -> Response:
     """Return embedded cover art from a staged review file."""
     from fastapi.responses import Response as Resp
+
     from service.library.tagger import read_cover_art_bytes
 
     row = await session.get(AcquisitionJobRow, job_id)

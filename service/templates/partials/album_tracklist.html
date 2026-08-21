@@ -88,7 +88,8 @@
       <span style="flex:1;min-width:0;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span>
       <form style="flex-shrink:0"
             hx-post="/discography/{{ artist_mbid }}/{{ release_ref }}/acquire-track"
-            hx-target="closest .track-row" hx-swap="innerHTML">
+            hx-target="closest .track-row" hx-swap="innerHTML"
+            hx-disabled-elt="find button">
         <input type="hidden" name="recording_id" value="{{ r.recording_id }}">
         <input type="hidden" name="title" value="{{ r.title|e }}">
         <input type="hidden" name="artist" value="{{ album.artist.name if album.artist else '' }}">

@@ -14,6 +14,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from service.acquisition.jobs import create_job
@@ -25,6 +26,7 @@ from service.providers.base import Provider
 logger = logging.getLogger(__name__)
 
 AlbumPolicy = str  # "partial_ok" | "all_or_nothing"
+ACTIVE_ALBUM_STATES = ("queued", "running")
 
 
 def _now() -> datetime:
@@ -69,6 +71,40 @@ async def create_album_job(
     session.add(row)
     await session.flush()
     return album_job_id
+
+
+async def create_or_get_active_album_job(
+    session: AsyncSession,
+    *,
+    provider_name: str,
+    album_ref: str,
+    album_candidate: AlbumCandidate,
+    query: str | None = None,
+    policy: AlbumPolicy = "partial_ok",
+) -> tuple[str, bool]:
+    """Reuse an active coordinator for the same provider album reference."""
+    existing_id = (await session.execute(
+        select(AlbumAcquisitionJob.id)
+        .where(
+            AlbumAcquisitionJob.provider == provider_name,
+            AlbumAcquisitionJob.album_ref == album_ref,
+            AlbumAcquisitionJob.state.in_(ACTIVE_ALBUM_STATES),
+        )
+        .order_by(AlbumAcquisitionJob.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if existing_id is not None:
+        return existing_id, False
+
+    album_job_id = await create_album_job(
+        session,
+        provider_name=provider_name,
+        album_ref=album_ref,
+        album_candidate=album_candidate,
+        query=query,
+        policy=policy,
+    )
+    return album_job_id, True
 
 
 async def run_album_acquisition(

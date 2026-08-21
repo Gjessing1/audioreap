@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 from pathlib import Path
 from fastapi import HTTPException, Request
@@ -69,6 +70,86 @@ def _error_badge(message: str, *, level: str = "warn") -> HTMLResponse:
     """
     cls = "badge badge-fail" if level == "fail" else "badge badge-warn"
     return HTMLResponse(f'<span class="{cls}">{html.escape(str(message))}</span>')
+
+
+def _acquisition_receipt(
+    request: Request,
+    *,
+    job_id: str,
+    title: str,
+    artist: str | None = None,
+    state: str = "queued",
+    created: bool = True,
+) -> HTMLResponse:
+    """Render the shared acknowledgement returned by individual Get actions."""
+    response = templates.TemplateResponse(
+        request,
+        "partials/acquisition_receipt.html",
+        {
+            "job_id": job_id,
+            "title": title,
+            "artist": artist,
+            "state": state,
+            "created": created,
+        },
+    )
+    response.headers["HX-Trigger"] = json.dumps({
+        "jobsChanged": {
+            "jobId": job_id,
+            "state": state,
+            "created": created,
+        }
+    })
+    return response
+
+
+def _acquisition_batch_receipt(
+    request: Request,
+    *,
+    batch_id: str,
+    title: str,
+    queued_count: int,
+    owned_count: int = 0,
+    failed_count: int = 0,
+    jobs_anchor: str = "",
+    unit: str = "track",
+    retry_url: str | None = None,
+    retry_ids: list[str] | None = None,
+    retry_field: str = "batch_ids",
+    failed_items: list[dict[str, str]] | None = None,
+) -> HTMLResponse:
+    """Render one acknowledgement for playlist and album mutations.
+
+    Batch routes intentionally return HTTP 200 even when only part of the work
+    reached Redis: HTMX can then keep the actionable failed summary in place
+    and let the user retry just those coordinator/job IDs.
+    """
+    response = templates.TemplateResponse(
+        request,
+        "partials/acquisition_batch_receipt.html",
+        {
+            "batch_id": batch_id,
+            "title": title,
+            "queued_count": queued_count,
+            "owned_count": owned_count,
+            "failed_count": failed_count,
+            "jobs_anchor": jobs_anchor,
+            "unit": unit,
+            "retry_url": retry_url,
+            "retry_ids": retry_ids or [],
+            "retry_field": retry_field,
+            "failed_items": failed_items or [],
+        },
+    )
+    response.headers["HX-Trigger"] = json.dumps({
+        "jobsChanged": {
+            "batchId": batch_id,
+            "queued": queued_count,
+            "owned": owned_count,
+            "failed": failed_count,
+        }
+    })
+    return response
 
 
 _ACTIVE_STATES_EXCLUDE = _COMPLETED_STATES  # states NOT in active list

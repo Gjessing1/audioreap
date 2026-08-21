@@ -17,12 +17,15 @@
 
 <form hx-post="/playlists/acquire"
       hx-target="#playlist-preview"
-      hx-swap="innerHTML">
+      hx-swap="innerHTML"
+      hx-disabled-elt="find button">
   <input type="hidden" name="import_url" value="{{ url|e }}">
   <input type="hidden" name="import_title" value="{{ title|e }}">
   <input type="hidden" name="import_source" value="{{ source|e }}">
+  <input type="hidden" name="owned_count" value="{{ owned_count }}">
 
-  <div style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:12px">
+  <div id="playlist-track-list" data-acquire-scroll
+       style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:12px">
     {% for t in tracks %}
     <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:{% if t.owned %}default{% else %}pointer{% endif %}">
       {% if t.owned %}

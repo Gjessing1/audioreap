@@ -26,7 +26,7 @@
 <body>
 <nav id="main-nav">
   <a href="/acquire" class="brand">audioreap</a>
-  <button class="theme-btn" id="jump-btn" type="button" aria-label="Jump to anything" title="Jump to… (Ctrl+K or /)" onclick="openJumpPalette()">
+  <button class="theme-btn" id="jump-btn" type="button" aria-label="Search anything" title="Search… (Ctrl+K or /)" onclick="openJumpPalette()">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" style="vertical-align:-2px">
       <circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/>
     </svg>
@@ -86,20 +86,34 @@
   </a>
 </nav>
 
-{# Jump-to palette — opened with Ctrl/Cmd+K, "/" outside inputs, or the nav ⌕
-   button. Results are full-page links rendered by GET /nav/jump. #}
+{# Unified command bar — opened with Ctrl/Cmd+K, "/" outside inputs, or the
+   nav search button. Local results arrive first, then external providers. #}
 <div id="jump-palette" class="hidden">
-  <div id="jump-panel">
+  <div id="jump-panel" role="dialog" aria-modal="true" aria-label="Search music">
     <input id="jump-input" name="q" type="search"
-           placeholder="Jump to artist, album, track…"
+           placeholder="Search music or paste a playlist URL…"
            autocomplete="off" spellcheck="false"
            hx-get="/nav/jump"
            hx-trigger="input changed delay:200ms"
+           hx-sync="this:replace"
            hx-target="#jump-results"
            hx-swap="innerHTML">
     <div id="jump-results"></div>
   </div>
 </div>
+
+<dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+  <form method="dialog" class="confirm-dialog__panel">
+    <h2 id="confirm-dialog-title">Confirm action</h2>
+    <p id="confirm-dialog-message"></p>
+    <p id="confirm-dialog-consequence" class="confirm-dialog__consequence hidden"></p>
+    <p id="confirm-dialog-recovery" class="confirm-dialog__recovery hidden"></p>
+    <div class="confirm-dialog__actions">
+      <button type="submit" class="btn btn-ghost" value="cancel">Cancel</button>
+      <button type="submit" class="btn" id="confirm-dialog-accept" value="confirm">Confirm</button>
+    </div>
+  </form>
+</dialog>
 
 <div id="player-bar" class="hidden">
   <div id="player-art" class="hidden">

@@ -5,8 +5,9 @@
 <div class="page-toolbar">
   <h2 class="page-title">Jobs</h2>
   <div style="display:flex;gap:8px">
+    <a id="jobs-back-to-acquire" class="btn btn-ghost btn-sm hidden" href="/acquire">← Back to Acquire</a>
     <button class="btn btn-ghost btn-sm"
-            hx-get="/jobs/list"
+            hx-get="/jobs/list?view={{ jobs_view }}"
             hx-target="#job-list"
             hx-swap="innerHTML"
             hx-indicator="#refresh-spin">
@@ -17,7 +18,7 @@
 
 <div id="job-list" data-play-scope
      data-ptr-url="/jobs/list" data-ptr-target="#job-list"
-     hx-get="/jobs/list"
+     hx-get="/jobs/list?view={{ jobs_view }}"
      hx-trigger="every 12s"
      hx-swap="innerHTML">
   {% include "partials/job_list.html" %}
@@ -53,7 +54,9 @@
         list.setAttribute('hx-trigger', 'every 12s');
         htmx.process(list);
       }
-      htmx.ajax('GET', '/jobs/list', { target: '#job-list', swap: 'innerHTML' });
+      var queue = list.querySelector('.jobs-queue');
+      var view = queue ? queue.getAttribute('data-jobs-view') : '{{ jobs_view }}';
+      htmx.ajax('GET', '/jobs/list?view=' + encodeURIComponent(view), { target: '#job-list', swap: 'innerHTML' });
     }, 400);
   });
 </script>

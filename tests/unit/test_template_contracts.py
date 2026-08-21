@@ -186,10 +186,125 @@ def test_failed_source_card() -> None:
     assert "/jobs/abc12345/search-source" in html
 
 
+def test_unified_search_shell_fans_out_to_providers() -> None:
+    html = _render("partials/jump_results.html", {
+        "q": "Test Artist",
+        "artists": [],
+        "albums": [],
+        "tracks": [],
+        "review_jobs": [],
+        "cover_ids": {},
+        "playlists": [],
+        "playlist_url": None,
+        "direct_url": None,
+    })
+    assert "/nav/jump/musicbrainz" in html
+    assert "/nav/jump/youtube" in html
+
+
+def test_unified_search_playlist_url_action() -> None:
+    url = "https://open.spotify.com/playlist/abc123"
+    html = _render("partials/jump_results.html", {
+        "q": url,
+        "artists": [],
+        "albums": [],
+        "tracks": [],
+        "review_jobs": [],
+        "cover_ids": {},
+        "playlists": [],
+        "playlist_url": url,
+        "direct_url": None,
+    })
+    assert "Preview and import this playlist" in html
+    assert "/nav/jump/youtube" not in html
+
+
+def test_unified_musicbrainz_results() -> None:
+    artist = _Obj({
+        "artist_id": "mb-artist-id",
+        "name": "Test Artist",
+        "disambiguation": "electronic duo",
+        "score": 0.96,
+    })
+    html = _render("partials/jump_musicbrainz_results.html", {
+        "artists": [artist], "q": "Test Artist", "error": None,
+    })
+    assert "/discography/mb-artist-id" in html
+    assert "96%" in html
+
+
+def test_unified_youtube_results_can_acquire() -> None:
+    candidate = {
+        "provider_ref": "https://youtu.be/test",
+        "candidate_json": '{"provider":"ytdlp"}',
+        "thumbnail_url": None,
+        "title": "Test Track",
+        "artist": "Test Artist",
+        "duration_seconds": 185,
+        "owned_title": None,
+    }
+    html = _render("partials/jump_youtube_results.html", {
+        "candidates": [candidate], "q": "Test Artist", "error": None,
+    })
+    assert 'hx-post="/api/acquire"' in html
+    assert "3:05" in html
+
+
+def test_acquire_jobs_round_trip_state_contract() -> None:
+    project_root = Path(__file__).parents[2]
+    app_js = (project_root / "service" / "static" / "app.js").read_text()
+    jobs = (project_root / "service" / "templates" / "jobs.html").read_text()
+    receipt = (
+        project_root / "service" / "templates" / "partials" / "acquisition_receipt.html"
+    ).read_text()
+
+    assert "ar-acquire-return-state" in app_js
+    assert "discoFilter" in app_js
+    assert "scrollY" in app_js
+    assert "data-acquire-jobs-link" in receipt
+    assert 'id="jobs-back-to-acquire"' in jobs
+
+
 def test_review_card_minimal() -> None:
     html = _render("partials/review_card.html", _review_ctx())
     assert "Test Track" in html
     assert "approve-btn-abc12345" in html
+
+
+def test_jobs_batch_result_names_failures_and_offers_reject_undo() -> None:
+    html = _render("partials/jobs_batch_result.html", {
+        "jobs_view": "review",
+        "batch_result": {
+            "action": "reject",
+            "success_count": 1,
+            "failed_count": 1,
+            "items": [
+                {"id": "ok", "label": "Good Track", "status": "success", "message": "Moved to Trash"},
+                {"id": "bad", "label": "Bad Track", "status": "failed", "message": "File is busy"},
+            ],
+            "undo_ids": ["ok"],
+        },
+    })
+    assert "1 succeeded" in html
+    assert "1 failed" in html
+    assert "Bad Track" in html
+    assert "File is busy" in html
+    assert "/jobs/bulk-restore" in html
+    assert "Undo rejected" in html
+
+
+def test_rejected_job_card_prefers_restore_over_redownload() -> None:
+    job = _job()
+    job.state = "failed"
+    job.error = "Rejected by user"
+    html = _render("partials/job_card.html", {
+        "job": job,
+        "rejected_job_ids": {job.id},
+    })
+    assert f'/jobs/{job.id}/restore' in html
+    assert "Restore" in html
+    assert f'/jobs/retry/{job.id}' not in html
+    assert f'/jobs/{job.id}/fix-source' not in html
 
 
 def test_review_card_acoustid_verified() -> None:

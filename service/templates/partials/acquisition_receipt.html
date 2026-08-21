@@ -1,0 +1,28 @@
+{% set state_labels = {
+  'queued': 'Queued',
+  'waiting': 'Waiting',
+  'downloading': 'Downloading',
+  'processing': 'Processing',
+  'enriching': 'Enriching',
+  'tagging': 'Tagging',
+  'importing': 'Importing',
+  'placing': 'Placing',
+  'staged': 'Ready for review',
+  'needs_review': 'Ready for review'
+} %}
+{% set state_label = state_labels.get(state, state|replace('_', ' ')|title) %}
+<div class="acquisition-receipt" id="receipt-{{ job_id }}" data-job-id="{{ job_id }}">
+  <span class="acquisition-receipt__icon" aria-hidden="true">✓</span>
+  <span class="acquisition-receipt__body">
+    <span class="acquisition-receipt__title">{{ title }}</span>
+    {% if artist %}<span class="acquisition-receipt__artist">{{ artist }}</span>{% endif %}
+    <span class="acquisition-receipt__state">
+      {% if not created %}Already requested · {% endif %}{{ state_label }}
+    </span>
+  </span>
+  <a class="btn btn-sm btn-ghost acquisition-receipt__link"
+     data-acquire-jobs-link
+     href="/jobs#job-{{ job_id }}">
+    {% if state == 'needs_review' %}Review in Jobs{% else %}View in Jobs{% endif %}
+  </a>
+</div>

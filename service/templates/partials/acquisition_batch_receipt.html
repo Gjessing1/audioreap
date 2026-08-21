@@ -1,0 +1,43 @@
+<div class="acquisition-receipt acquisition-batch-receipt{% if failed_count %} acquisition-batch-receipt--warning{% endif %}"
+     id="batch-receipt-{{ batch_id }}"
+     data-batch-id="{{ batch_id }}">
+  <span class="acquisition-receipt__icon" aria-hidden="true">{% if failed_count %}!{% else %}✓{% endif %}</span>
+  <span class="acquisition-receipt__body">
+    <span class="acquisition-receipt__title">{{ title }}</span>
+    <span class="acquisition-receipt__state">
+      {{ queued_count }} queued · {{ owned_count }} already owned · {{ failed_count }} failed
+    </span>
+  </span>
+  {% if failed_count and retry_url %}
+  <form class="acquisition-batch-receipt__retry"
+        hx-post="{{ retry_url }}"
+        hx-target="closest .acquisition-batch-receipt"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button">
+    {% if failed_items %}
+    <div class="acquisition-failed-list" aria-label="Failed {{ unit }}s selected for retry">
+      {% for item in failed_items %}
+      <label class="acquisition-failed-row">
+        <input class="acquisition-failed-check" type="checkbox"
+               name="{{ retry_field }}" value="{{ item.id }}" checked>
+        <span>
+          <span class="acquisition-failed-row__title">{{ item.title }}</span>
+          {% if item.artist %}<span class="acquisition-failed-row__artist">{{ item.artist }}</span>{% endif %}
+        </span>
+        <span class="badge badge-fail">failed</span>
+      </label>
+      {% endfor %}
+    </div>
+    {% else %}
+      {% for retry_id in retry_ids %}<input type="hidden" name="{{ retry_field }}" value="{{ retry_id }}">{% endfor %}
+    {% endif %}
+    <button type="submit" class="btn btn-sm btn-ghost">
+      Retry failed {{ unit }}{{ 's' if failed_count != 1 }}
+      <span class="htmx-indicator"><span class="spinner"></span></span>
+    </button>
+  </form>
+  {% endif %}
+  <a class="btn btn-sm btn-ghost acquisition-receipt__link"
+     data-acquire-jobs-link
+     href="/jobs{% if jobs_anchor %}#{{ jobs_anchor }}{% endif %}">View in Jobs</a>
+</div>

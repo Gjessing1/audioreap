@@ -3,11 +3,16 @@
 
 {% block content %}
 
-{# One tab bar instead of three stacked collapsible sections: Search (library +
-   YouTube), Discover (MB discographies), Playlists (URL import). The last-used
-   tab is remembered per browser; a server hint (active_section) wins on load.
-   Tabs are real links (each section has its own URL, so it's bookmarkable and
-   crawlable); JS intercepts the click for an instant client-side switch. #}
+{# Unified search is the primary acquisition entry point. The focused views
+   remain for deeper jobs such as batch YouTube selection, genre discovery,
+   full discography browsing, and playlist track selection. #}
+<button type="button" class="unified-search-launch" onclick="openJumpPalette()">
+  <span class="unified-search-icon">⌕</span>
+  <span>Search library, YouTube, MusicBrainz, or paste a playlist URL…</span>
+  <kbd>Ctrl K</kbd>
+</button>
+
+<div class="acq-focused-label">Focused views</div>
 <div class="acq-tabs" id="acq-tabs" role="tablist">
   <a href="/acquire"      role="tab" data-tab="search"    class="acq-tab">Search</a>
   <a href="/discography"  role="tab" data-tab="discover"  class="acq-tab">Discover</a>
@@ -111,10 +116,12 @@
         hx-post="/playlists/resolve"
         hx-target="#playlist-preview"
         hx-swap="innerHTML"
-        hx-indicator="#resolve-spinner">
+        hx-indicator="#resolve-spinner"
+        {% if playlist_url %}hx-trigger="load"{% endif %}>
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <input name="url" type="url"
              placeholder="YouTube, YouTube Music, or Spotify playlist URL…"
+             value="{{ playlist_url|default('') }}"
              inputmode="url" autocomplete="off"
              style="flex:1;min-width:0"
              required>

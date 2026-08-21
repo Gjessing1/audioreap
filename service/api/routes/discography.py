@@ -5,19 +5,27 @@ import asyncio
 import logging
 import re
 import uuid
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+
+from service.acquisition.queue import arq_pool, enqueue_acquire_track, enqueue_album_from_mb
+from service.api.shared import (
+    _acquire_ctx,
+    _acquisition_batch_receipt,
+    _acquisition_receipt,
+    _error_badge,
+    templates,
+)
 from service.config import settings
 from service.core.models import TrackCandidate
 from service.db.schema import AcquisitionJobRow, Album, Artist, Track
 from service.db.session import get_session
 from service.providers.ytdlp import yt_search_best as _yt_search_best_shared
-
-from service.acquisition.queue import arq_pool, enqueue_acquire_track, enqueue_album_from_mb
-from service.api.shared import _acquire_ctx, _error_badge, templates
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/discography")
@@ -193,12 +201,12 @@ async def discography_tracklist(
     )).scalars().all()
     if not local_album_tracks and album_title:
         # Fall back: find artist + album by name similarity
-        from service.search.matcher import title_similarity as _tsim
         from service.core.normalize import normalize as _norm
+        from service.search.matcher import title_similarity as _tsim
         local_artists = (await session.execute(
             select(Artist).where(Artist.name.ilike(f"%{artist.split()[0]}%")) if artist else select(Artist).where(False)
         )).scalars().all()
-        best_album: "Album | None" = None
+        best_album: Album | None = None
         best_score = 0.0
         for la in local_artists:
             if _tsim(la.name, artist) < 0.80:
@@ -235,7 +243,7 @@ async def _create_ghost_review_job(
     provider_ref: str,
     yt_score: float,
     query: str,
-) -> None:
+) -> tuple[str, bool]:
     """Park an unmatched discography track in needs_review with no staging file.
 
     The review card will have the source search panel open so the user can
@@ -244,7 +252,17 @@ async def _create_ghost_review_job(
     """
     import json as _json
 
-    from service.acquisition.jobs import _now
+    from service.acquisition.jobs import ACTIVE_ACQUISITION_STATES, _now
+
+    existing = (await session.execute(
+        select(AcquisitionJobRow).where(
+            AcquisitionJobRow.provider == "ytdlp",
+            AcquisitionJobRow.provider_ref == provider_ref,
+            AcquisitionJobRow.state.in_(ACTIVE_ACQUISITION_STATES),
+        ).order_by(AcquisitionJobRow.created_at.desc()).limit(1)
+    )).scalar_one_or_none()
+    if existing is not None:
+        return existing.id, False
 
     ghost_meta = {
         "title": candidate.title,
@@ -258,8 +276,9 @@ async def _create_ghost_review_job(
             f"search for the correct track or paste a YouTube link below"
         ),
     }
+    job_id = str(uuid.uuid4())
     session.add(AcquisitionJobRow(
-        id=str(uuid.uuid4()),
+        id=job_id,
         provider="ytdlp",
         provider_ref=provider_ref,
         state="needs_review",
@@ -271,6 +290,7 @@ async def _create_ghost_review_job(
         updated_at=_now(),
     ))
     await session.commit()
+    return job_id, True
 
 
 def _single_track_candidate(
@@ -358,7 +378,7 @@ async def discography_acquire_single_track(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Queue acquisition of a single track from the discography tracklist."""
-    from service.acquisition.jobs import create_job
+    from service.acquisition.jobs import create_or_get_active_job, mark_enqueue_failed
 
     dur_s = int(duration_seconds) if duration_seconds.isdigit() else None
 
@@ -380,14 +400,19 @@ async def discography_acquire_single_track(
 
     # No candidate scored above the confidence floor — park it for review.
     if yt_score < 0.35:
-        await _create_ghost_review_job(
+        job_id, created = await _create_ghost_review_job(
             session, candidate, provider_ref, yt_score, query=f"{artist} – {title}"
         )
-        return HTMLResponse(
-            f'<span class="badge badge-warn">No match → <a href="/jobs" style="color:inherit">Review</a></span>'
+        return _acquisition_receipt(
+            request,
+            job_id=job_id,
+            title=candidate.title,
+            artist=candidate.artist,
+            state="needs_review",
+            created=created,
         )
 
-    job_id = await create_job(
+    job_id, created = await create_or_get_active_job(
         session,
         provider_name="ytdlp",
         provider_ref=candidate.provider_ref,
@@ -396,22 +421,27 @@ async def discography_acquire_single_track(
     )
     await session.commit()
 
-    try:
-        async with arq_pool() as redis:
-            await enqueue_acquire_track(
-                redis, job_id,
-                provider_name="ytdlp",
-                provider_ref=candidate.provider_ref,
-                candidate_json=candidate.model_dump_json(),
-            )
-    except Exception as exc:
-        raise HTTPException(503, f"Queue unavailable: {exc}") from exc
+    if created:
+        try:
+            async with arq_pool() as redis:
+                await enqueue_acquire_track(
+                    redis, job_id,
+                    provider_name="ytdlp",
+                    provider_ref=candidate.provider_ref,
+                    candidate_json=candidate.model_dump_json(),
+                )
+        except Exception as exc:
+            await mark_enqueue_failed(session, job_id, exc)
+            raise HTTPException(503, f"Queue unavailable: {exc}") from exc
 
-    score_color = "var(--success)" if yt_score >= 0.60 else "var(--warn)"
-    return HTMLResponse(
-        f'<span class="badge badge-busy" title="YouTube source match score (same scorer the review panel shows)">'
-        f'Queued <span style="font-family:var(--font-mono);color:{score_color}">{yt_score:.2f}</span>'
-        f' → <a href="/jobs" style="color:inherit">Jobs</a></span>'
+    row = await session.get(AcquisitionJobRow, job_id)
+    return _acquisition_receipt(
+        request,
+        job_id=job_id,
+        title=candidate.title,
+        artist=candidate.artist,
+        state=row.state if row else "queued",
+        created=created,
     )
 
 
@@ -421,6 +451,7 @@ async def discography_acquire_album(
     artist_mbid: str,
     release_group_id: str,
     artist: str = Form(""),
+    album_title: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Queue a coordinated album acquisition via the acquire_album_from_mb job.
@@ -428,45 +459,64 @@ async def discography_acquire_album(
     All tracks get the album metadata locked into their candidate so they land
     in the correct folder regardless of which MB release shows first in search.
     """
-    from service.acquisition.album_pipeline import create_album_job
+    from service.acquisition.album_pipeline import create_or_get_active_album_job
     from service.core.models import AlbumCandidate
 
-    try:
-        # Create an AlbumAcquisitionJob row for tracking
-        album_candidate = AlbumCandidate(
-            provider="ytdlp",
-            provider_ref=f"mbid:{release_group_id}",
-            album_title="",  # filled by worker from MB
-            album_artist=artist or "Unknown",
-            tracks=[],
-        )
-        album_job_id = await create_album_job(
-            session,
-            provider_name="ytdlp",
-            album_ref=f"mbid:{release_group_id}",
-            album_candidate=album_candidate,
-            query=f"{artist} album",
-        )
-        await session.commit()
+    # Create the coordinator row before Redis sees its ID. The Jobs page can
+    # now acknowledge the album even while the worker is fetching its tracklist.
+    album_candidate = AlbumCandidate(
+        provider="ytdlp",
+        provider_ref=f"mbid:{release_group_id}",
+        album_title=album_title,
+        album_artist=artist or "Unknown",
+        tracks=[],
+    )
+    album_job_id, created = await create_or_get_active_album_job(
+        session,
+        provider_name="ytdlp",
+        album_ref=f"mbid:{release_group_id}",
+        album_candidate=album_candidate,
+        query=f"{artist} — {album_title or 'album'}",
+    )
+    await session.commit()
 
-        async with arq_pool() as redis:
-            await enqueue_album_from_mb(
-                redis, album_job_id,
-                release_group_id=release_group_id,
-                artist_name=artist or "Unknown",
-                job_key_prefix="album_mb",
-            )
-    except Exception as exc:
-        logger.error("Discography acquire failed: %s", exc)
-        return _error_badge(f"Error: {exc}")
+    failed = False
+    if created:
+        try:
+            async with arq_pool() as redis:
+                await enqueue_album_from_mb(
+                    redis, album_job_id,
+                    release_group_id=release_group_id,
+                    artist_name=artist or "Unknown",
+                    job_key_prefix="album_mb",
+                )
+        except Exception as exc:
+            logger.error("Discography acquire failed: %s", exc)
+            from service.db.schema import AlbumAcquisitionJob
+            row = await session.get(AlbumAcquisitionJob, album_job_id)
+            if row is not None:
+                row.state = "failed"
+                row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                await session.commit()
+            failed = True
 
-    return HTMLResponse(
-        f'<span id="disco-status-{album_job_id}"'
-        f' hx-get="/discography/album-status/{album_job_id}"'
-        f' hx-trigger="load, every 5s"'
-        f' hx-swap="outerHTML">'
-        f'Queued…'
-        f'</span>'
+    return _acquisition_batch_receipt(
+        request,
+        batch_id=album_job_id,
+        title=album_title or f"{artist or 'Unknown artist'} album",
+        queued_count=0 if failed else 1,
+        failed_count=1 if failed else 0,
+        jobs_anchor=f"album-{album_job_id}",
+        unit="album",
+        retry_url="/discography/retry-albums" if failed else None,
+        retry_ids=[album_job_id] if failed else None,
+        failed_items=([
+            {
+                "id": album_job_id,
+                "title": album_title or "Album",
+                "artist": artist or "Unknown artist",
+            }
+        ] if failed else None),
     )
 
 
@@ -633,20 +683,155 @@ async def discography_acquire_missing(
     if not unowned:
         return HTMLResponse('<span class="badge badge-done">All shown releases already owned ✓</span>')
 
+    from service.acquisition.album_pipeline import create_or_get_active_album_job
+    from service.core.models import AlbumCandidate
+    from service.db.schema import AlbumAcquisitionJob
+
+    batches: list[tuple[str, dict[str, object], bool]] = []
+    for release in unowned:
+        candidate = AlbumCandidate(
+            provider="ytdlp",
+            provider_ref=f"mbid:{release['release_group_id']}",
+            album_title=str(release["title"]),
+            album_artist=artist_name,
+            tracks=[],
+        )
+        album_job_id, created = await create_or_get_active_album_job(
+            session,
+            provider_name="ytdlp",
+            album_ref=candidate.provider_ref,
+            album_candidate=candidate,
+            query=f"{artist_name} — {candidate.album_title}",
+        )
+        batches.append((album_job_id, release, created))
+    await session.commit()
+
+    queued_ids = {album_job_id for album_job_id, _release, created in batches if not created}
+    failed_ids: list[str] = []
     try:
         async with arq_pool() as redis:
-            for r in unowned:
-                await enqueue_album_from_mb(
-                    redis, str(uuid.uuid4()),
-                    release_group_id=r["release_group_id"],
-                    artist_name=artist_name,
-                )
-    except Exception as exc:
-        return _error_badge(f"Queue error: {exc}")
+            for album_job_id, release, created in batches:
+                if not created:
+                    continue
+                try:
+                    await enqueue_album_from_mb(
+                        redis,
+                        album_job_id,
+                        release_group_id=str(release["release_group_id"]),
+                        artist_name=artist_name,
+                    )
+                    queued_ids.add(album_job_id)
+                except Exception:
+                    failed_ids.append(album_job_id)
+    except Exception:
+        failed_ids.extend(
+            album_job_id for album_job_id, _release, created in batches
+            if created
+            and album_job_id not in queued_ids and album_job_id not in failed_ids
+        )
 
-    return HTMLResponse(
-        f'<span class="badge badge-busy">Queued {len(unowned)} release{"s" if len(unowned) != 1 else ""}'
-        f' → <a href="/jobs" style="color:inherit">Jobs</a></span>'
+    if failed_ids:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        failed_rows = (await session.execute(
+            select(AlbumAcquisitionJob).where(AlbumAcquisitionJob.id.in_(failed_ids))
+        )).scalars().all()
+        for row in failed_rows:
+            row.state = "failed"
+            row.updated_at = now
+        await session.commit()
+
+    first_id = batches[0][0]
+    return _acquisition_batch_receipt(
+        request,
+        batch_id=first_id,
+        title=f"{artist_name} discography",
+        queued_count=len(queued_ids),
+        owned_count=len(release_entries) - len(unowned),
+        failed_count=len(failed_ids),
+        jobs_anchor=f"album-{first_id}",
+        unit="release",
+        retry_url="/discography/retry-albums" if failed_ids else None,
+        retry_ids=failed_ids,
+        failed_items=[
+            {
+                "id": album_job_id,
+                "title": str(release["title"]),
+                "artist": artist_name,
+            }
+            for album_job_id, release, _created in batches
+            if album_job_id in failed_ids
+        ],
+    )
+
+
+@router.post("/retry-albums", response_class=HTMLResponse)
+async def discography_retry_albums(
+    request: Request,
+    batch_ids: list[str] = Form([]),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Retry album coordinators that failed before reaching the worker."""
+    from service.db.schema import AlbumAcquisitionJob
+
+    rows = (await session.execute(
+        select(AlbumAcquisitionJob).where(
+            AlbumAcquisitionJob.id.in_(batch_ids),
+            AlbumAcquisitionJob.state == "failed",
+        )
+    )).scalars().all()
+    if not rows:
+        return _error_badge("No failed album batches to retry")
+
+    queued_ids: set[str] = set()
+    failed_ids: list[str] = []
+    try:
+        async with arq_pool() as redis:
+            for row in rows:
+                release_group_id = row.album_ref.removeprefix("mbid:")
+                try:
+                    await enqueue_album_from_mb(
+                        redis,
+                        row.id,
+                        release_group_id=release_group_id,
+                        artist_name=row.album_artist or "Unknown",
+                        job_key_prefix=f"album_retry_{uuid.uuid4().hex[:8]}",
+                    )
+                    row.state = "queued"
+                    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                    queued_ids.add(row.id)
+                except Exception:
+                    failed_ids.append(row.id)
+    except Exception:
+        failed_ids.extend(
+            row.id for row in rows
+            if row.id not in queued_ids and row.id not in failed_ids
+        )
+    await session.commit()
+
+    first = rows[0]
+    return _acquisition_batch_receipt(
+        request,
+        batch_id=first.id,
+        title=(
+            f"{first.album_artist} album batch"
+            if len(rows) == 1
+            else f"{first.album_artist or 'Artist'} discography"
+        ),
+        queued_count=len(queued_ids),
+        failed_count=len(failed_ids),
+        jobs_anchor=f"album-{first.id}",
+        unit="release",
+        retry_url="/discography/retry-albums" if failed_ids else None,
+        retry_ids=failed_ids,
+        failed_items=[
+            {
+                "id": row.id,
+                "title": row.album_title or "Album",
+                "artist": row.album_artist or "Unknown artist",
+            }
+            for row in rows
+            if row.id in failed_ids
+        ],
     )
 
 

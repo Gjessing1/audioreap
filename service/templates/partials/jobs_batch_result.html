@@ -1,0 +1,32 @@
+{% if batch_result is defined and batch_result %}
+<section class="jobs-batch-result jobs-batch-result--{% if batch_result.failed_count %}warning{% else %}success{% endif %}"
+         {% if batch_result.failed_count %}role="alert"{% else %}role="status"{% endif %}>
+  <div class="jobs-batch-result__summary">
+    <span>
+      {% if batch_result.action == 'approve' %}Batch approval
+      {% elif batch_result.action == 'reject' %}Batch rejection
+      {% elif batch_result.action == 'restore' %}Batch restore
+      {% elif batch_result.action == 'cancel' %}Batch cancellation
+      {% else %}Batch action{% endif %}:
+      {{ batch_result.success_count }} succeeded{% if batch_result.failed_count %} · {{ batch_result.failed_count }} failed{% endif %}
+    </span>
+    {% if batch_result.undo_ids %}
+    <form hx-post="/jobs/bulk-restore?view={{ jobs_view }}"
+          hx-target="#job-list" hx-swap="innerHTML">
+      {% for job_id in batch_result.undo_ids %}<input type="hidden" name="job_id" value="{{ job_id }}">{% endfor %}
+      <button type="submit" class="btn btn-sm btn-ghost">Undo rejected</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if batch_result.failed_count %}
+  <details class="jobs-batch-result__details" open>
+    <summary>Items that failed</summary>
+    <ul>
+      {% for item in batch_result['items'] if item.status == 'failed' %}
+      <li><strong>{{ item.label }}</strong><span>{{ item.message }}</span></li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</section>
+{% endif %}

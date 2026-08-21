@@ -351,7 +351,8 @@ async def acquire(
     query: str = Form(default=""),
 ) -> Response:
     """Accept form data (from HTMX) and enqueue an acquisition job."""
-    from service.acquisition.jobs import create_job
+    from service.acquisition.jobs import create_or_get_active_job, mark_enqueue_failed
+    from service.api.shared import _acquisition_receipt
     from service.core.models import TrackCandidate
     from service.db.schema import Track
 
@@ -370,7 +371,7 @@ async def acquire(
                 {"track": existing, "title": candidate.title, "artist": candidate.artist},
             )
 
-    job_id = await create_job(
+    job_id, created = await create_or_get_active_job(
         session,
         provider_name=provider_name,
         provider_ref=provider_ref,
@@ -379,30 +380,35 @@ async def acquire(
     )
     await session.commit()
 
-    try:
-        from arq import create_pool
-        from arq.connections import RedisSettings
-        redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-        await redis.enqueue_job(
-            "acquire_track",
-            job_id=job_id,
-            provider_name=provider_name,
-            provider_ref=provider_ref,
-            candidate_json=candidate_json,
-            music_dir=str(settings.music_dir),
-            tmp_acquire_dir=str(settings.tmp_acquire_dir),
-            _job_id=f"acquire:{job_id}",
-        )
-        await redis.aclose()
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}") from exc
+    if created:
+        try:
+            from arq import create_pool
+            from arq.connections import RedisSettings
+            redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+            await redis.enqueue_job(
+                "acquire_track",
+                job_id=job_id,
+                provider_name=provider_name,
+                provider_ref=provider_ref,
+                candidate_json=candidate_json,
+                music_dir=str(settings.music_dir),
+                tmp_acquire_dir=str(settings.tmp_acquire_dir),
+                _job_id=f"acquire:{job_id}",
+            )
+            await redis.aclose()
+        except Exception as exc:
+            await mark_enqueue_failed(session, job_id, exc)
+            raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}") from exc
 
-    from fastapi.templating import Jinja2Templates
-    tmpl = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
     row = await session.get(AcquisitionJobRow, job_id)
     if row:
-        return tmpl.TemplateResponse(
-            request, "partials/job_card.html", {"job": _job_row_to_model(row)}
+        return _acquisition_receipt(
+            request,
+            job_id=job_id,
+            title=candidate.title,
+            artist=candidate.artist,
+            state=row.state,
+            created=created,
         )
     return AcquireResponse(job_id=job_id)
 
@@ -496,5 +502,3 @@ async def enrich_all(session: AsyncSession = Depends(get_session)) -> EnrichResp
 
     logger.info("Queued %d enrichment jobs", len(rows))
     return EnrichResponse(queued=len(rows))
-
-

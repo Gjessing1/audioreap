@@ -182,17 +182,98 @@ window.togglePanel = function(showId, ...hideIds) {
 /* ── Batch approve checkboxes ────────────────────────────────────────────── */
 /* Selected job IDs survive the 12s job-list polling swap (innerHTML wipes the
  * DOM checkboxes, so we re-apply from this set after each swap). */
+/* Shared confirmation dialog for HTMX, keyboard, and swipe mutations. */
+(function () {
+  const dialog = document.getElementById('confirm-dialog');
+  if (!dialog) return;
+  const title = document.getElementById('confirm-dialog-title');
+  const message = document.getElementById('confirm-dialog-message');
+  const consequence = document.getElementById('confirm-dialog-consequence');
+  const recovery = document.getElementById('confirm-dialog-recovery');
+  const accept = document.getElementById('confirm-dialog-accept');
+  let resolvePending = null;
+  let returnFocus = null;
+
+  function fill(el, value) {
+    el.textContent = value || '';
+    el.classList.toggle('hidden', !value);
+  }
+
+  function withCount(value, count) {
+    return String(value || '').replaceAll('{count}', String(count));
+  }
+
+  window.requestConfirmation = function (options) {
+    options = options || {};
+    const count = options.count || document.querySelectorAll('.job-check:checked').length;
+    if (dialog.open) dialog.close('cancel');
+    title.textContent = withCount(options.title || 'Confirm action', count);
+    fill(message, withCount(options.message || 'Continue with this action?', count));
+    fill(consequence, withCount(options.consequence || '', count));
+    fill(recovery, withCount(options.recovery || '', count));
+    accept.textContent = withCount(options.actionLabel || 'Confirm', count);
+    accept.classList.toggle('confirm-dialog__accept--danger', options.variant === 'danger');
+    returnFocus = options.opener || document.activeElement;
+    dialog.returnValue = 'cancel';
+    return new Promise(function (resolve) {
+      resolvePending = resolve;
+      dialog.showModal();
+      accept.focus();
+    });
+  };
+
+  dialog.addEventListener('close', function () {
+    if (resolvePending) {
+      const resolve = resolvePending;
+      resolvePending = null;
+      resolve(dialog.returnValue === 'confirm');
+    }
+    if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
+    returnFocus = null;
+  });
+
+  dialog.addEventListener('click', function (event) {
+    if (event.target === dialog) dialog.close('cancel');
+  });
+
+  document.body.addEventListener('htmx:confirm', function (event) {
+    const detail = event.detail || {};
+    if (!detail.question) return;
+    event.preventDefault();
+    const elt = detail.elt || event.target;
+    const data = elt.dataset || {};
+    const count = data.confirmCount === 'selected'
+      ? document.querySelectorAll('.job-check:checked').length
+      : (data.confirmCount || '');
+    window.requestConfirmation({
+      opener: elt,
+      count: count,
+      title: data.confirmTitle,
+      message: data.confirmMessage || detail.question,
+      consequence: data.confirmConsequence,
+      recovery: data.confirmRecovery,
+      actionLabel: data.confirmActionLabel,
+      variant: data.confirmVariant
+    }).then(function (confirmed) {
+      if (confirmed) detail.issueRequest(true);
+    });
+  });
+})();
+
 const _selectedJobs = new Set();
 
 function _updateBatchCount() {
   const toolbar = document.getElementById('batch-toolbar');
   const label   = document.getElementById('batch-count-label');
-  if (!toolbar) return;
-  const checked = document.querySelectorAll('.job-check:checked').length;
-  // Toolbar stays pinned at all times (even with nothing selected); only the
-  // count label changes. The Approve/Reject buttons no-op on an empty selection.
-  toolbar.classList.remove('hidden');
-  label.textContent = checked + ' selected';
+  const queue = document.querySelector('.jobs-queue');
+  if (!queue) return;
+  const checked = queue.querySelectorAll('.job-check:checked').length;
+  const view = queue.dataset.jobsView || 'review';
+  if (toolbar) toolbar.classList.remove('hidden');
+  if (label) label.textContent = checked + ' selected in ' + view.charAt(0).toUpperCase() + view.slice(1);
+  queue.querySelectorAll('[data-requires-job-selection]').forEach(function (button) {
+    button.disabled = checked === 0;
+  });
 }
 
 /* Event delegation — no inline handlers needed, works after HTMX swaps */
@@ -205,8 +286,10 @@ document.body.addEventListener('change', function(e) {
 });
 
 window.clearJobChecks = function() {
-  document.querySelectorAll('.job-check').forEach(cb => { cb.checked = false; });
-  _selectedJobs.clear();
+  document.querySelectorAll('.job-check').forEach(cb => {
+    cb.checked = false;
+    _selectedJobs.delete(cb.value);
+  });
   _updateBatchCount();
 };
 
@@ -229,16 +312,159 @@ window.selectAlbumChecks = function(groupId) {
   _updateBatchCount();
 };
 
+/* ── Acquisition receipt return state ─────────────────────────────────────
+ * A receipt links away to a stable Jobs anchor. Save the focused Acquire view
+ * just before that navigation so Back (or the explicit Jobs return button)
+ * restores the user's query, client-side release filter, and scroll position.
+ */
+(function () {
+  const KEY = 'ar-acquire-return-state';
+
+  function value(selector) {
+    const el = document.querySelector(selector);
+    return el ? el.value : '';
+  }
+
+  function acquireSnapshot() {
+    const active = document.querySelector('#acq-tabs .acq-tab.active');
+    const tab = active ? active.dataset.tab : 'search';
+    const values = {
+      q: value('#q'),
+      discoQ: value('#disco-q'),
+      genreQ: value('#disco-genre-q'),
+      discoFilter: value('#disco-search'),
+      playlistUrl: value('#playlist-form input[name="url"]')
+    };
+    const genreButton = document.querySelector('#disco-modes [data-mode="genre"]');
+    const innerScrolls = {};
+    document.querySelectorAll('[data-acquire-scroll][id]').forEach(function (el) {
+      innerScrolls[el.id] = el.scrollTop;
+    });
+
+    let path = location.pathname + location.search;
+    if (tab === 'search') {
+      path = '/acquire' + (values.q ? '?q=' + encodeURIComponent(values.q) : '');
+    } else if (tab === 'playlists') {
+      path = '/playlists' + (values.playlistUrl ? '?url=' + encodeURIComponent(values.playlistUrl) : '');
+    } else if (!/^\/discography\/[^/]+/.test(location.pathname)) {
+      const discoverQ = genreButton && genreButton.classList.contains('active')
+        ? values.genreQ : values.discoQ;
+      path = '/discography' + (discoverQ ? '?q=' + encodeURIComponent(discoverQ) : '');
+    }
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      path: path,
+      tab: tab,
+      discoMode: genreButton && genreButton.classList.contains('active') ? 'genre' : 'artist',
+      values: values,
+      scrollY: window.scrollY,
+      innerScrolls: innerScrolls
+    };
+  }
+
+  function readSnapshot() {
+    try {
+      const state = JSON.parse(sessionStorage.getItem(KEY) || 'null');
+      if (!state || state.version !== 1 || Date.now() - state.savedAt > 2 * 60 * 60 * 1000) return null;
+      return state;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  document.body.addEventListener('click', function (e) {
+    const link = e.target.closest('[data-acquire-jobs-link]');
+    if (!link || !document.getElementById('acq-tabs')) return;
+    try { sessionStorage.setItem(KEY, JSON.stringify(acquireSnapshot())); } catch (err) {}
+  });
+
+  const state = readSnapshot();
+  const back = document.getElementById('jobs-back-to-acquire');
+  if (back && state) {
+    back.href = state.path || '/acquire';
+    back.classList.remove('hidden');
+  }
+
+  const tabs = document.getElementById('acq-tabs');
+  if (!tabs || !state || location.pathname !== (state.path || '').split('?')[0]) return;
+
+  const setters = {
+    '#q': state.values.q,
+    '#disco-q': state.values.discoQ,
+    '#disco-genre-q': state.values.genreQ,
+    '#playlist-form input[name="url"]': state.values.playlistUrl
+  };
+  Object.keys(setters).forEach(function (selector) {
+    const el = document.querySelector(selector);
+    if (el && setters[selector] != null) el.value = setters[selector];
+  });
+
+  const wantedTab = document.querySelector('#acq-tabs [data-tab="' + state.tab + '"]');
+  if (wantedTab && !wantedTab.classList.contains('active')) wantedTab.click();
+  if (state.discoMode === 'genre') {
+    const genre = document.querySelector('#disco-modes [data-mode="genre"]');
+    if (genre && !genre.classList.contains('active')) genre.click();
+  }
+
+  function restoreDynamicState() {
+    const filter = document.getElementById('disco-search');
+    if (filter && state.values.discoFilter != null) {
+      filter.value = state.values.discoFilter;
+      if (window.filterDiscoReleases) window.filterDiscoReleases(filter.value);
+    }
+    Object.keys(state.innerScrolls || {}).forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el) el.scrollTop = state.innerScrolls[id];
+    });
+    window.scrollTo(0, state.scrollY || 0);
+  }
+
+  if (state.tab === 'search' && state.values.q) {
+    htmx.ajax('GET', '/search/results?q=' + encodeURIComponent(state.values.q), {
+      target: '#local-results', swap: 'innerHTML'
+    });
+    htmx.ajax('GET', '/search/cloud?q=' + encodeURIComponent(state.values.q), {
+      target: '#cloud-results', swap: 'innerHTML'
+    });
+  } else if (state.tab === 'discover' && state.discoMode === 'genre' && state.values.genreQ) {
+    htmx.ajax('GET', '/discography/genre-search?q=' + encodeURIComponent(state.values.genreQ), {
+      target: '#artist-candidates', swap: 'innerHTML'
+    });
+  }
+
+  document.body.addEventListener('htmx:afterSettle', restoreDynamicState);
+  requestAnimationFrame(restoreDynamicState);
+  setTimeout(restoreDynamicState, 300);
+  setTimeout(restoreDynamicState, 1000);
+  setTimeout(function () {
+    document.body.removeEventListener('htmx:afterSettle', restoreDynamicState);
+  }, 2500);
+})();
+
+/* Keep partial-failure retry scoped to the rows the user leaves selected. */
+document.body.addEventListener('change', function (e) {
+  if (!e.target.classList.contains('acquisition-failed-check')) return;
+  const form = e.target.closest('.acquisition-batch-receipt__retry');
+  if (!form) return;
+  const button = form.querySelector('button[type="submit"]');
+  if (button) button.disabled = !form.querySelector('.acquisition-failed-check:checked');
+});
+
 /* Reset after HTMX swaps */
 document.body.addEventListener('htmx:afterSwap', () => {
-  // Restore selection a poll-driven innerHTML swap would otherwise have wiped,
-  // then prune IDs whose checkbox is gone (track left the review queue).
-  const present = new Set();
+  // Restore selection a poll-driven innerHTML swap would otherwise have wiped.
+  // IDs from other queue views remain in the set so tab switches are lossless.
   document.querySelectorAll('.job-check').forEach(cb => {
     cb.checked = _selectedJobs.has(cb.value);
-    present.add(cb.value);
   });
-  _selectedJobs.forEach(v => { if (!present.has(v)) _selectedJobs.delete(v); });
+  const list = document.getElementById('job-list');
+  const queue = list && list.querySelector('.jobs-queue');
+  if (list && queue) {
+    const url = '/jobs/list?view=' + encodeURIComponent(queue.dataset.jobsView);
+    list.setAttribute('hx-get', url);
+    list.dataset.ptrUrl = url;
+  }
   _updateBatchCount();
   updatePlayBtns();
 });
@@ -262,10 +488,10 @@ window.applyMbToLibraryEditor = function(trackId, recordingId, title, artist, al
 };
 
 
-/* ── Jump-to palette (Ctrl/Cmd+K or "/" outside inputs) ──────────────────────
- * The overlay lives in base.html; results come from GET /nav/jump via the
- * input's own hx-get. This block owns open/close and arrow-key/Enter
- * navigation over the rendered .jump-item links.
+/* ── Unified search palette (Ctrl/Cmd+K or "/" outside inputs) ────────────────
+ * The overlay lives in base.html. The initial GET /nav/jump returns local
+ * matches immediately and fans out to provider fragments. This block owns
+ * open/close and arrow-key/Enter activation across links and inline forms.
  */
 window.openJumpPalette = function () {
   var pal = document.getElementById('jump-palette');
@@ -284,7 +510,7 @@ window.closeJumpPalette = function () {
 
 (function () {
   function items() {
-    return Array.from(document.querySelectorAll('#jump-results .jump-item'));
+    return Array.from(document.querySelectorAll('#jump-results .jump-item:not(.jump-item-disabled)'));
   }
   function moveActive(dir) {
     var list = items();
@@ -317,8 +543,15 @@ window.closeJumpPalette = function () {
       moveActive(-1);
     } else if (e.key === 'Enter') {
       var target = document.querySelector('#jump-results .jump-active') ||
-                   document.querySelector('#jump-results .jump-item');
-      if (target) { e.preventDefault(); target.click(); }
+                   document.querySelector('#jump-results .jump-item:not(.jump-item-disabled)');
+      if (target) {
+        e.preventDefault();
+        if (target.tagName === 'FORM') target.requestSubmit();
+        else {
+          var primary = target.querySelector('[data-jump-primary]');
+          (primary || target).click();
+        }
+      }
     }
   });
 
@@ -328,38 +561,100 @@ window.closeJumpPalette = function () {
   });
 })();
 
-/* ── Review card keyboard shortcuts (a=approve, r=reject, s=MB search, p=play) ── */
-let _hoveredCard = null;
+/* ── Review card keyboard shortcuts (a=approve, r=reject, s=MB search, p=play) ──
+ * Actions follow the keyboard-focused card (or a selected card as fallback),
+ * never whichever card happened to be under the mouse pointer. */
+let _focusedReviewCard = null;
 
-document.body.addEventListener("mouseover", function(e) {
-  const card = e.target.closest(".card-review");
-  if (card) _hoveredCard = card;
+function _setFocusedReviewCard(card) {
+  document.querySelectorAll('.job-card--focused').forEach(function (el) {
+    el.classList.remove('job-card--focused');
+  });
+  _focusedReviewCard = card;
+  if (card && card.classList.contains('job-card')) card.classList.add('job-card--focused');
+}
+
+document.body.addEventListener('focusin', function (e) {
+  const card = e.target.closest('.card-review, .job-card[data-state="needs_review"]');
+  if (card) _setFocusedReviewCard(card);
 });
-document.body.addEventListener("mouseleave", function(e) {
-  if (!e.relatedTarget || !e.relatedTarget.closest(".card-review")) _hoveredCard = null;
-}, true);
+document.body.addEventListener('click', function (e) {
+  const card = e.target.closest('.card-review, .job-card[data-state="needs_review"]');
+  if (card) _setFocusedReviewCard(card);
+});
+
+document.body.addEventListener('htmx:afterSwap', function (e) {
+  const target = (e.detail && e.detail.target) || e.target;
+  let card = target && target.matches && target.matches('.card-review') ? target : null;
+  if (!card && target && target.id) {
+    const replacement = document.getElementById(target.id);
+    if (replacement && replacement.matches('.card-review')) card = replacement;
+  }
+  if (!card && target && target.querySelector) card = target.querySelector('.card-review');
+  if (card) {
+    _setFocusedReviewCard(card);
+    card.focus({ preventScroll: true });
+  }
+});
+
+document.body.addEventListener('reviewApproved', function (e) {
+  if (!e.detail || !e.detail.openNext) return;
+  setTimeout(function () {
+    const next = Array.from(document.querySelectorAll('[data-review-open]')).find(function (button) {
+      return button.closest('.job-card')?.dataset.jobId !== e.detail.jobId;
+    });
+    if (next) {
+      next.click();
+      next.closest('.job-card').scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, 80);
+});
 
 document.addEventListener("keydown", function(e) {
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const card = _hoveredCard;
+  const activeCard = document.activeElement && document.activeElement.closest
+    ? document.activeElement.closest('.card-review, .job-card[data-state="needs_review"]')
+    : null;
+  const selectedCard = document.querySelector('.job-check:checked')?.closest('.job-card[data-state="needs_review"]');
+  const card = activeCard || (_focusedReviewCard && _focusedReviewCard.isConnected ? _focusedReviewCard : null) || selectedCard;
   if (!card) return;
 
   if (e.key === "a") {
     e.preventDefault();
     const btn = card.querySelector(".rv-approve");
     if (btn && !btn.disabled) btn.click();
+    else if (card.dataset.jobId) {
+      htmx.ajax('POST', '/jobs/' + card.dataset.jobId + '/approve', {
+        target: '#' + card.id, swap: 'outerHTML'
+      });
+    }
   } else if (e.key === "r") {
     e.preventDefault();
     const btn = card.querySelector(".rv-reject");
     if (btn) btn.click();
+    else if (card.dataset.jobId) {
+      window.requestConfirmation({
+        opener: card,
+        title: 'Reject this track?',
+        message: 'Reject this review item and move its staged file to Trash.',
+        recovery: 'You can undo this action or restore the file later from Failed jobs.',
+        actionLabel: 'Move to Trash',
+        variant: 'danger'
+      }).then(function (confirmed) {
+        if (confirmed) htmx.ajax('POST', '/jobs/' + card.dataset.jobId + '/reject', {
+          target: '#' + card.id, swap: 'outerHTML'
+        });
+      });
+    }
   } else if (e.key === "s") {
     e.preventDefault();
-    const mbBtn = Array.from(card.querySelectorAll(".rv-actions button")).find(b => b.textContent.trim().startsWith("Search MB"));
+    const mbBtn = card.querySelector('[data-review-mb]');
     if (mbBtn) mbBtn.click();
+    else card.querySelector('[data-review-open]')?.click();
   } else if (e.key === "p") {
     e.preventDefault();
-    const playBtn = Array.from(card.querySelectorAll(".rv-actions button")).find(b => b.textContent.trim().startsWith("▶"));
+    const playBtn = card.querySelector('[data-review-play], .play-btn');
     if (playBtn) playBtn.click();
   }
 });
@@ -439,15 +734,29 @@ document.addEventListener("keydown", function(e) {
       setTimeout(function () { if (el.isConnected) resetSwipe(el); }, 220);
       return;
     }
-    if (dx < 0 && !window.confirm('Reject this track and trash the staged file?')) {
+    if (dx < 0) {
       resetSwipe(el);
+      window.requestConfirmation({
+        opener: el,
+        title: 'Reject this track?',
+        message: 'Reject this review item and move its staged file to Trash.',
+        recovery: 'You can undo this action or restore the file later from Failed jobs.',
+        actionLabel: 'Move to Trash',
+        variant: 'danger'
+      }).then(function (confirmed) {
+        if (confirmed) commitSwipe(el, -1);
+      });
       return;
     }
+    commitSwipe(el, 1);
+  }
+
+  function commitSwipe(el, direction) {
     var jobId = el.id.replace(/^job-/, '');
     el.dataset.swipeBusy = '1';
     el.classList.add('swipe-commit');
-    el.style.transform = 'translateX(' + (dx > 0 ? 1 : -1) * el.offsetWidth + 'px)';
-    var p = htmx.ajax('POST', '/jobs/' + jobId + (dx > 0 ? '/approve' : '/reject'),
+    el.style.transform = 'translateX(' + direction * el.offsetWidth + 'px)';
+    var p = htmx.ajax('POST', '/jobs/' + jobId + (direction > 0 ? '/approve' : '/reject'),
       { target: '#' + el.id, swap: 'outerHTML' });
     if (p && typeof p.catch === 'function') {
       p.catch(function () {

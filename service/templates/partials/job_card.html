@@ -6,10 +6,13 @@
   'cancelled':    'badge-fail',
   'needs_review': 'badge-review',
 }.get(job.state, 'badge-busy') %}
+{% set is_rejected = job.id in rejected_job_ids|default([]) %}
 
-<div class="card"
+<div class="card job-card"
      id="job-{{ job.id }}"
+     data-job-id="{{ job.id }}"
      data-state="{{ job.state }}"
+     {% if job.state == 'needs_review' %}tabindex="0"{% endif %}
      {% if job.state == 'needs_review' and confidence is defined and confidence %}data-confidence="{{ confidence }}"{% endif %}
      {% if job.state not in ('done','failed','cancelled','needs_review') %}
      hx-get="/jobs/status/{{ job.id }}"
@@ -18,11 +21,12 @@
      hx-swap="outerHTML"
      {% endif %}>
 
-  {% if job.state == 'needs_review' %}
+  {% if job.state not in ('done', 'failed', 'cancelled') %}
   <input type="checkbox"
          class="job-check"
          name="job_id"
          value="{{ job.id }}"
+         aria-label="Select {{ job.track_ref.title }}"
          style="width:16px;height:16px;accent-color:var(--primary);flex-shrink:0;cursor:pointer">
   {% endif %}
 
@@ -43,6 +47,22 @@
       {% if src.channel %}<span class="card-source-meta">· {{ src.channel }}</span>{% endif %}
       {% if src.duration %}<span class="card-source-meta">· {{ src.duration }}</span>{% endif %}
       {% for h in src.hints %}<span class="src-hint src-hint--{{ h.kind }}">{{ h.label }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if job.state == 'needs_review' %}
+    <div class="card-reason card-reason--{{ confidence|default('probable') }}"
+         {% if review_reason is defined %}title="{{ review_reason }}"{% endif %}>
+      {{ review_reason|default('Confirm the metadata before approving') }}
+    </div>
+    {% elif job.state not in ('failed',) %}
+    <div class="card-reason">
+      {% if job.state == 'queued' %}Waiting for a worker
+      {% elif job.state == 'waiting' %}Paused briefly to respect provider limits
+      {% elif job.state == 'downloading' %}Downloading the selected source
+      {% elif job.state in ('processing', 'tagging', 'importing', 'placing') %}Preparing and saving the audio
+      {% elif job.state == 'done' %}Saved to the library
+      {% elif job.state == 'cancelled' %}Cancelled before completion
+      {% else %}{{ job.state.replace('_', ' ')|capitalize }}{% endif %}
     </div>
     {% endif %}
     {# needs_review flag reasons are surfaced by the flag-detail row in job_list.html,
@@ -88,14 +108,15 @@
     <button class="play-btn"
             data-id="staged:{{ job.id }}"
             onclick="playJobStaged('{{ job.id }}','{{ job.track_ref.title|e }}')"
-            title="Preview staged file">▶</button>
+            title="Preview staged file" aria-label="Preview {{ job.track_ref.title }}">▶</button>
     <button class="btn btn-sm"
             hx-get="/jobs/{{ job.id }}/review-card"
             hx-target="#job-{{ job.id }}"
-            hx-swap="outerHTML">Review →</button>
+            hx-swap="outerHTML"
+            data-review-open>Review →</button>
     {% endif %}
 
-    {% if job.state in ('failed','queued') %}
+    {% if job.state in ('failed','queued') and not is_rejected %}
     <button class="btn btn-sm btn-ghost"
             hx-post="/jobs/retry/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
@@ -103,11 +124,19 @@
     {% endif %}
 
     {% if job.state == 'failed' %}
+    {% if is_rejected %}
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/jobs/{{ job.id }}/restore"
+            hx-target="#job-{{ job.id }}"
+            hx-swap="outerHTML"
+            title="Move the rejected staged file out of Trash and return it to Review">Restore</button>
+    {% else %}
     <button class="btn btn-sm btn-ghost"
             hx-get="/jobs/{{ job.id }}/fix-source"
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML"
             title="Swap to a different YouTube source — the original failed; metadata is kept">Different source</button>
+    {% endif %}
     {% endif %}
 
     {% if job.state in ('queued','waiting','downloading','processing','tagging','importing') %}

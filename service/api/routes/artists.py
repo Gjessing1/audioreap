@@ -2,23 +2,30 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-import uuid
-import httpx
 from datetime import UTC, datetime
 from pathlib import Path
+
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from service.acquisition.queue import arq_pool, enqueue_album_from_mb
+from service.api.shared import (
+    _LIST_PAGE,
+    _acquisition_batch_receipt,
+    _do_scans,
+    _error_badge,
+    _layout_view,
+    _resize_cover,
+    templates,
+)
 from service.config import settings
 from service.db.schema import Album, Artist, Track, TrackFile
 from service.db.session import get_session
-
-from service.acquisition.queue import arq_pool, enqueue_album_from_mb
-from service.api.shared import _LIST_PAGE, _do_scans, _error_badge, _layout_view, _resize_cover, templates
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -117,7 +124,6 @@ async def artist_page(
 
     # MB discography (if MBID known)
     mb_release_groups: list[dict] = []
-    owned_rids: set[str] = {t.musicbrainz_recording_id for t in tracks if t.musicbrainz_recording_id}
     if artist.musicbrainz_artist_id:
         try:
             from service.core.normalize import normalize as _norm
@@ -213,6 +219,7 @@ async def update_artist(
 ) -> HTMLResponse:
     """Update artist name, sort name, and/or MB artist ID.  Writes tags to all track files."""
     from sqlalchemy.orm import joinedload as _jl
+
     from service.library.tagger import write_tags as _write_tags
 
     form = await request.form()
@@ -315,7 +322,6 @@ async def _auto_artist_image(name: str) -> Path | None:
     the user's explicit "Change image" flow is what writes artist.jpg). Misses
     are cached with a TTL so absent artists are retried only weekly.
     """
-    import time
 
     import httpx
 
@@ -458,7 +464,6 @@ async def artist_image_search(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Search Deezer for artist images (no API key required)."""
-    import httpx
     artist = await session.get(Artist, artist_id)
     if artist is None:
         raise HTTPException(404)
@@ -501,7 +506,6 @@ async def save_artist_image(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Download an artist image and save as artist.jpg in the artist's music folder."""
-    import httpx
     if not image_url:
         raise HTTPException(400, "image_url required")
     artist = await session.get(Artist, artist_id)
@@ -604,19 +608,90 @@ async def artist_acquire_missing(
     if not unowned:
         return HTMLResponse('<span class="badge-done">All release groups already owned ✓</span>')
 
+    from service.acquisition.album_pipeline import create_or_get_active_album_job
+    from service.core.models import AlbumCandidate
+    from service.db.schema import AlbumAcquisitionJob
+
+    batches: list[tuple[str, str, bool]] = []
+    for rg in unowned:
+        candidate = AlbumCandidate(
+            provider="ytdlp",
+            provider_ref=f"mbid:{rg.release_group_id}",
+            album_title=rg.title,
+            album_artist=artist.name,
+            tracks=[],
+        )
+        album_job_id, created = await create_or_get_active_album_job(
+            session,
+            provider_name="ytdlp",
+            album_ref=candidate.provider_ref,
+            album_candidate=candidate,
+            query=f"{artist.name} — {rg.title}",
+        )
+        batches.append((album_job_id, rg.release_group_id, created))
+    await session.commit()
+
+    queued_ids = {
+        album_job_id for album_job_id, _release_group_id, created in batches
+        if not created
+    }
+    failed_ids: list[str] = []
     try:
         async with arq_pool() as redis:
-            for rg in unowned:
-                await enqueue_album_from_mb(
-                    redis, str(uuid.uuid4()),
-                    release_group_id=rg.release_group_id,
-                    artist_name=artist.name,
-                )
-    except Exception as exc:
-        return _error_badge(f"Queue error: {exc}")
+            for album_job_id, release_group_id, created in batches:
+                if not created:
+                    continue
+                try:
+                    await enqueue_album_from_mb(
+                        redis,
+                        album_job_id,
+                        release_group_id=release_group_id,
+                        artist_name=artist.name,
+                    )
+                    queued_ids.add(album_job_id)
+                except Exception:
+                    failed_ids.append(album_job_id)
+    except Exception:
+        failed_ids.extend(
+            album_job_id for album_job_id, _release_group_id, created in batches
+            if created
+            and album_job_id not in queued_ids and album_job_id not in failed_ids
+        )
 
-    return HTMLResponse(
-        f'<span class="badge-ok">Queued {len(unowned)} album{"s" if len(unowned) != 1 else ""} → <a href="/jobs">Jobs</a></span>'
+    if failed_ids:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        failed_rows = (await session.execute(
+            select(AlbumAcquisitionJob).where(AlbumAcquisitionJob.id.in_(failed_ids))
+        )).scalars().all()
+        for row in failed_rows:
+            row.state = "failed"
+            row.updated_at = now
+        await session.commit()
+
+    first_id = batches[0][0]
+    return _acquisition_batch_receipt(
+        request,
+        batch_id=first_id,
+        title=f"{artist.name} discography",
+        queued_count=len(queued_ids),
+        owned_count=len(rgs) - len(unowned),
+        failed_count=len(failed_ids),
+        jobs_anchor=f"album-{first_id}",
+        unit="release",
+        retry_url="/discography/retry-albums" if failed_ids else None,
+        retry_ids=failed_ids,
+        failed_items=[
+            {
+                "id": album_job_id,
+                "title": next(
+                    (rg.title for rg in unowned if rg.release_group_id == release_group_id),
+                    "Album",
+                ),
+                "artist": artist.name,
+            }
+            for album_job_id, release_group_id, _created in batches
+            if album_job_id in failed_ids
+        ],
     )
 
 

@@ -1,8 +1,32 @@
-{# Jump-to palette results — rendered into #jump-results by GET /nav/jump.
-   Rows are plain <a> full-page navigations; arrow-key highlight (.jump-active)
-   is managed by the palette JS in app.js. #}
+{# Unified command-bar shell. Local/DB results render immediately; the two
+   provider blocks below fan out independently after this fragment is swapped. #}
+{% if playlist_url %}
+<div class="jump-section">Playlist URL</div>
+<a class="jump-item" href="/playlists?url={{ playlist_url|urlencode }}">
+  <span class="jump-art">☷</span>
+  <span class="jump-main">Preview and import this playlist
+    <span class="jump-sub">{{ playlist_url }}</span>
+  </span>
+  <span class="jump-kind">playlist →</span>
+</a>
+{% elif direct_url %}
+<div class="jump-section">YouTube URL</div>
+<form class="jump-item jump-item-action"
+      hx-post="/search/acquire-url"
+      hx-target="this"
+      hx-swap="outerHTML"
+      hx-disabled-elt="find button">
+  <input type="hidden" name="url" value="{{ direct_url|e }}">
+  <span class="jump-art">▶</span>
+  <span class="jump-main">Acquire from this URL
+    <span class="jump-sub">{{ direct_url }}</span>
+  </span>
+  <button type="submit" class="btn btn-sm" data-jump-primary>Get</button>
+</form>
+{% endif %}
+
 {% if artists %}
-<div class="jump-section">Artists</div>
+<div class="jump-section">Library · Artists</div>
 {% for a in artists %}
 <a class="jump-item" href="/library/artists/{{ a.id }}">
   <span class="jump-art">👤</span>
@@ -13,7 +37,7 @@
 {% endif %}
 
 {% if albums %}
-<div class="jump-section">Albums</div>
+<div class="jump-section">Library · Albums</div>
 {% for al in albums %}
 <a class="jump-item" href="/library/albums?view=list&open={{ al.id|urlencode }}">
   <span class="jump-art">
@@ -31,7 +55,7 @@
 {% endif %}
 
 {% if tracks %}
-<div class="jump-section">Tracks</div>
+<div class="jump-section">Library · Tracks</div>
 {% for t in tracks %}
 <a class="jump-item" href="/library/browse?q={{ t.title|urlencode }}">
   <span class="jump-art">
@@ -42,6 +66,19 @@
     <span class="jump-sub">{{ t.artist.name }}</span>
   </span>
   <span class="jump-kind">track</span>
+</a>
+{% endfor %}
+{% endif %}
+
+{% if playlists %}
+<div class="jump-section">Imported playlists</div>
+{% for p in playlists %}
+<a class="jump-item" href="/playlists?url={{ p.url|urlencode }}">
+  <span class="jump-art">☷</span>
+  <span class="jump-main">{{ p.title or "Untitled playlist" }}
+    <span class="jump-sub">{{ p.source }}{% if p.track_count is not none %} · {{ p.track_count }} tracks{% endif %}</span>
+  </span>
+  <span class="jump-kind">preview →</span>
 </a>
 {% endfor %}
 {% endif %}
@@ -57,6 +94,21 @@
 {% endfor %}
 {% endif %}
 
-{% if not artists and not albums and not tracks and not review_jobs %}
-<div class="jump-hint">No matches for “{{ q }}”.</div>
+{% if not playlist_url and not direct_url %}
+<div class="jump-provider-block jump-provider-loading"
+     hx-get="/nav/jump/musicbrainz?q={{ q|urlencode }}"
+     hx-trigger="load"
+     hx-swap="outerHTML">
+  <div class="jump-section">MusicBrainz discographies</div>
+  <div class="jump-hint"><span class="spinner"></span> Searching…</div>
+</div>
+<div class="jump-provider-block jump-provider-loading"
+     hx-get="/nav/jump/youtube?q={{ q|urlencode }}"
+     hx-trigger="load"
+     hx-swap="outerHTML">
+  <div class="jump-section">YouTube</div>
+  <div class="jump-hint"><span class="spinner"></span> Searching…</div>
+</div>
+{% elif not artists and not albums and not tracks and not playlists and not review_jobs %}
+<div class="jump-hint">Choose the action above to continue.</div>
 {% endif %}

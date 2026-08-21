@@ -1,0 +1,35 @@
+<div class="jump-provider-block">
+  <div class="jump-section">YouTube</div>
+  {% if error %}
+  <div class="jump-hint">{{ error }}</div>
+  {% elif candidates %}
+    {% for c in candidates %}
+    <form class="jump-item jump-item-action{% if c.owned_title %} jump-item-disabled{% endif %}"
+          hx-post="/api/acquire"
+          hx-target="this"
+          hx-swap="outerHTML"
+          hx-disabled-elt="find button">
+      <input type="hidden" name="provider_name" value="ytdlp">
+      <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
+      <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
+      <input type="hidden" name="query" value="{{ q|e }}">
+      <span class="jump-art">
+        {% if c.thumbnail_url %}<img src="{{ c.thumbnail_url }}" loading="lazy" alt="">{% else %}▶{% endif %}
+      </span>
+      <span class="jump-main">{{ c.title }}
+        <span class="jump-sub">
+          {{ c.artist }}{% if c.duration_seconds %} · {{ c.duration_seconds // 60 }}:{{ "%02d"|format(c.duration_seconds % 60) }}{% endif %}
+          {% if c.owned_title %} · in library{% endif %}
+        </span>
+      </span>
+      {% if c.owned_title %}
+      <span class="badge badge-done">Owned</span>
+      {% else %}
+      <button type="submit" class="btn btn-sm" data-jump-primary>Get</button>
+      {% endif %}
+    </form>
+    {% endfor %}
+  {% else %}
+  <div class="jump-hint">No YouTube results for “{{ q }}”.</div>
+  {% endif %}
+</div>

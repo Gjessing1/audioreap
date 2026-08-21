@@ -1,0 +1,16 @@
+<div id="job-{{ job_id }}" class="job-rejected-feedback" role="status">
+  <span>
+    {% if is_enrichment %}✓ Dismissed {{ label }}
+    {% elif restore_available %}✓ Moved {{ label }} to Trash
+    {% else %}✓ Rejected {{ label }} (no staged file was present)
+    {% endif %}
+  </span>
+  {% if restore_available %}
+  <button type="button" class="btn btn-sm btn-ghost"
+          hx-post="/jobs/{{ job_id }}/restore"
+          hx-target="#job-{{ job_id }}"
+          hx-swap="outerHTML">
+    Undo
+  </button>
+  {% endif %}
+</div>

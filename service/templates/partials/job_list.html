@@ -1,7 +1,34 @@
-{% if not review and not active_jobs and not completed and not album_placeholders %}
-<div class="empty-state">
-  <p>No jobs yet — search for music and hit <strong>Get</strong>.</p>
-</div>
+<div class="jobs-queue" data-jobs-view="{{ jobs_view }}">
+  <nav class="jobs-queue-tabs" aria-label="Job queue views">
+    {% for key, label in [('review', 'Review'), ('active', 'Active'), ('failed', 'Failed'), ('completed', 'Completed')] %}
+    <a class="jobs-queue-tab{% if jobs_view == key %} jobs-queue-tab--active{% endif %}"
+       href="/jobs?view={{ key }}"
+       hx-get="/jobs/list?view={{ key }}"
+       hx-target="#job-list"
+       hx-swap="innerHTML"
+       hx-push-url="/jobs?view={{ key }}"
+       {% if jobs_view == key %}aria-current="page"{% endif %}>
+      {{ label }} <span class="jobs-queue-count">{{ queue_counts[key] }}</span>
+    </a>
+    {% endfor %}
+  </nav>
+
+{% include "partials/jobs_batch_result.html" %}
+
+{% if queue_counts[jobs_view] == 0 and not album_placeholders %}
+  <div class="empty-state jobs-empty-state">
+    {% if jobs_view == 'review' %}
+    <p>Nothing needs review.</p>
+    {% if queue_counts.active %}<a class="btn btn-sm" href="/jobs?view=active">View active work</a>{% else %}<a class="btn btn-sm" href="/acquire">Find music</a>{% endif %}
+    {% elif jobs_view == 'active' %}
+    <p>No acquisitions are currently running.</p>
+    <a class="btn btn-sm" href="/acquire">Find music</a>
+    {% elif jobs_view == 'failed' %}
+    <p>No failed jobs. The queue is clear.</p>
+    {% else %}
+    <p>No completed jobs yet.</p>
+    {% endif %}
+  </div>
 
 {% else %}
 
@@ -9,20 +36,34 @@
 <div class="batch-bar batch-bar--sticky" id="batch-toolbar">
   <span id="batch-count-label">0 selected</span>
   <button class="btn btn-sm btn-success"
-          hx-post="/jobs/batch-approve"
+          hx-post="/jobs/batch-approve?view={{ jobs_view }}"
           hx-include=".job-check:checked"
           hx-target="#job-list"
           hx-swap="innerHTML"
-          hx-confirm="Approve all selected tracks with their current metadata?">
+          hx-confirm="Approve all selected tracks with their current metadata?"
+          data-confirm-title="Approve selected tracks?"
+          data-confirm-count="selected"
+          data-confirm-message="Approve {count} selected track(s) using their current metadata."
+          data-confirm-consequence="Approved files will be tagged and moved into the music library."
+          data-confirm-action-label="Approve tracks"
+          data-requires-job-selection disabled>
     Approve
   </button>
   <button class="btn btn-sm btn-ghost"
-          hx-post="/jobs/bulk-action"
+          hx-post="/jobs/bulk-action?view={{ jobs_view }}"
           hx-include=".job-check:checked"
           hx-vals='{"action":"reject"}'
           hx-target="#job-list"
           hx-swap="innerHTML"
-          hx-confirm="Reject and trash all selected staged files?">
+          hx-confirm="Reject and move all selected staged files to Trash?"
+          data-confirm-title="Reject selected tracks?"
+          data-confirm-count="selected"
+          data-confirm-message="Reject {count} selected track(s)."
+          data-confirm-consequence="Their staged files will move to Trash."
+          data-confirm-recovery="You can restore rejected files from the outcome message or Failed view."
+          data-confirm-action-label="Move to Trash"
+          data-confirm-variant="danger"
+          data-requires-job-selection disabled>
     Reject
   </button>
   <button class="btn btn-sm btn-ghost" onclick="selectAllReview()">All</button>
@@ -30,12 +71,47 @@
 </div>
 {% endif %}
 
-{% if status_counts and (status_counts.downloading or status_counts.working or status_counts.waiting or status_counts.queued) %}
+{% if jobs_view == 'active' and status_counts and (status_counts.downloading or status_counts.working or status_counts.waiting or status_counts.queued) %}
 <div class="job-summary">
   {% if status_counts.downloading %}<span class="job-summary-chip job-summary-chip--active">▶ {{ status_counts.downloading }} downloading</span>{% endif %}
   {% if status_counts.working %}<span class="job-summary-chip job-summary-chip--active">⚙ {{ status_counts.working }} processing</span>{% endif %}
   {% if status_counts.waiting %}<span class="job-summary-chip">⏳ {{ status_counts.waiting }} waiting</span>{% endif %}
   {% if status_counts.queued %}<span class="job-summary-chip">• {{ status_counts.queued }} queued</span>{% endif %}
+</div>
+{% endif %}
+
+{% if playlist_batches %}
+<div class="job-section job-batch-summaries">
+  {% for batch in playlist_batches %}
+  <div class="album-batch-group" id="playlist-{{ batch.id }}">
+    <div class="album-batch-header">
+      <span class="album-batch-title">♫ {{ batch.title }}</span>
+      <span class="album-batch-stats muted">
+        {{ batch.active }} active · {{ batch.review }} to review · {{ batch.done }} done
+        {% if batch.owned %} · {{ batch.owned }} already owned{% endif %}
+        {% if batch.failed %} · <span style="color:var(--danger)">{{ batch.failed }} failed</span>{% endif %}
+      </span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if album_batches %}
+<div class="job-section job-batch-summaries">
+  {% for batch in album_batches %}
+  <div class="album-batch-group" id="album-{{ batch.id }}">
+    <div class="album-batch-header">
+      <span class="album-batch-title">♫ {{ batch.label }}</span>
+      <span class="album-batch-stats muted">
+        {% if batch.fetching %}<span class="spinner"></span> fetching tracklist…
+        {% else %}{{ batch.active }} active · {{ batch.review }} to review · {{ batch.done }} done
+        {% if batch.failed or batch.state == 'failed' %} · <span style="color:var(--danger)">{{ batch.failed or 1 }} failed</span>{% endif %}
+        {% endif %}
+      </span>
+    </div>
+  </div>
+  {% endfor %}
 </div>
 {% endif %}
 
@@ -59,7 +135,7 @@
   </div>
   {% if safe_review_count %}
   <form style="display:contents"
-        hx-post="/jobs/batch-approve"
+        hx-post="/jobs/batch-approve?view={{ jobs_view }}"
         hx-target="#job-list"
         hx-swap="innerHTML"
         hx-confirm="Approve {{ safe_review_count }} verified track(s)? These all matched via AcoustID fingerprint with no warnings.">
@@ -75,6 +151,7 @@
     {% set confidence = group.confidence %}
     {% set src = group.src %}
     {% set enrich_changes = group.enrich_changes %}
+    {% set review_reason = group.reason %}
     {% include "partials/job_card.html" %}
   {% elif group.type == "album" %}
   <div class="album-batch-group" id="album-group-{{ group.album_job_id[:8] }}">
@@ -88,7 +165,7 @@
               title="Select all tracks in this album">Select all</button>
       {% if group.clean_count > 0 %}
       <form style="display:contents"
-            hx-post="/jobs/batch-approve"
+            hx-post="/jobs/batch-approve?view={{ jobs_view }}"
             hx-target="#job-list"
             hx-swap="innerHTML"
             hx-confirm="Approve {{ group.clean_count }} clean track(s) from "{{ group.label }}"?">
@@ -102,16 +179,8 @@
     {% set confidence = item.confidence %}
     {% set src = item.src %}
     {% set enrich_changes = none %}
-    {% if item.is_flagged %}
-    <div class="flagged-track-wrapper">
-      {% include "partials/job_card.html" %}
-      {% if item.flag_reason %}
-      <div class="flag-detail" title="{{ item.flag_reason }}">⚠ {{ item.flag_reason }}</div>
-      {% endif %}
-    </div>
-    {% else %}
+    {% set review_reason = item.reason %}
     {% include "partials/job_card.html" %}
-    {% endif %}
     {% endfor %}
   </div>
   {% endif %}
@@ -123,12 +192,13 @@
 <div class="section-title {% if review %}section-title--spaced{% endif %}">
   Active
   <button class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:11px"
-          hx-post="/jobs/bulk-action"
+          hx-post="/jobs/bulk-action?view={{ jobs_view }}"
           hx-vals='{"action":"cancel"}'
           hx-include=".job-check:checked"
           hx-target="#job-list"
           hx-swap="innerHTML"
-          hx-confirm="Cancel selected active jobs?">
+          hx-confirm="Cancel selected active jobs?"
+          data-requires-job-selection disabled>
     Cancel selected
   </button>
 </div>
@@ -139,21 +209,38 @@
 </div>
 {% endif %}
 
-{% if completed %}
-{% set failed_count = completed | selectattr('state', 'eq', 'failed') | list | length %}
-<div class="section-title {% if review or active_jobs %}section-title--spaced{% endif %}">
-  Completed
-  {% if failed_count %}
-  <button class="btn btn-sm btn-ghost" style="margin-left:8px;font-size:11px"
-          hx-post="/jobs/retry-all-failed"
+{% if failed_jobs %}
+<div class="section-title">Failed</div>
+<div class="job-section">
+  {% for job in failed_jobs %}
+  {% include "partials/job_card.html" %}
+  {% endfor %}
+</div>
+<div class="jobs-view-actions">
+  <button class="btn btn-sm btn-ghost"
+          hx-post="/jobs/retry-all-failed?view={{ jobs_view }}"
           hx-target="#job-list"
           hx-swap="innerHTML"
-          hx-confirm="Retry all {{ failed_count }} failed job(s)?">Retry all failed</button>
-  {% endif %}
+          hx-confirm="Retry all {{ queue_counts.failed }} failed job(s)?"
+          data-confirm-title="Retry failed jobs?"
+          data-confirm-message="Queue all {{ queue_counts.failed }} failed job(s) again."
+          data-confirm-action-label="Retry jobs">Retry all failed</button>
+</div>
+{% endif %}
+
+{% if completed %}
+<div class="section-title {% if review or active_jobs %}section-title--spaced{% endif %}">
+  Completed
   <button class="btn btn-sm btn-ghost" style="margin-left:auto;font-size:11px"
-          hx-delete="/jobs/clear"
+          hx-delete="/jobs/clear?view={{ jobs_view }}"
           hx-target="#job-list"
-          hx-swap="innerHTML">Clear all done</button>
+          hx-swap="innerHTML"
+          hx-confirm="Permanently remove completed job history?"
+          data-confirm-title="Clear completed history?"
+          data-confirm-message="Remove completed and cancelled job records from this queue."
+          data-confirm-consequence="This removes history records permanently; music files are not affected."
+          data-confirm-action-label="Clear history"
+          data-confirm-variant="danger">Clear completed</button>
 </div>
 <div class="job-section">
   {% for job in completed %}
@@ -162,7 +249,7 @@
 </div>
 {% if completed_has_more %}
 <div id="jobs-more-btn"
-     hx-get="/jobs/completed/more?after_ts={{ completed_cursor_ts|urlencode }}&after_id={{ completed_cursor_id|urlencode }}"
+     hx-get="/jobs/completed/more?view={{ jobs_view }}&after_ts={{ completed_cursor_ts|urlencode }}&after_id={{ completed_cursor_id|urlencode }}"
      hx-trigger="click"
      hx-target="#jobs-more-btn"
      hx-swap="outerHTML"
@@ -176,3 +263,4 @@
 {% endif %}
 
 {% endif %}
+</div>
