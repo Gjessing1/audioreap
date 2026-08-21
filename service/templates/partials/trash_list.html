@@ -31,6 +31,12 @@
             hx-target="#trash-{{ item.ts }}-{{ item.filename | replace('.', '-') }}"
             hx-swap="outerHTML swap:0.2s"
             hx-confirm="Permanently delete {{ item.filename }}? This cannot be undone."
+            data-confirm-title="Permanently delete {{ item.filename }}?"
+            data-confirm-message="Delete this file from Trash."
+            data-confirm-consequence="This cannot be undone."
+            data-confirm-action-label="Delete permanently"
+            data-confirm-variant="danger"
+            data-confirm-require="DELETE"
             style="color:var(--danger)">
       Delete
     </button>
@@ -56,6 +62,12 @@
             hx-target="#strash-{{ item.ts }}-{{ item.filename | replace('.', '-') }}"
             hx-swap="outerHTML swap:0.2s"
             hx-confirm="Permanently delete {{ item.filename }}?"
+            data-confirm-title="Permanently delete {{ item.filename }}?"
+            data-confirm-message="Delete this staged file from Trash."
+            data-confirm-consequence="This cannot be undone."
+            data-confirm-action-label="Delete permanently"
+            data-confirm-variant="danger"
+            data-confirm-require="DELETE"
             style="color:var(--danger)">
       Delete
     </button>

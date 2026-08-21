@@ -191,8 +191,12 @@ window.togglePanel = function(showId, ...hideIds) {
   const consequence = document.getElementById('confirm-dialog-consequence');
   const recovery = document.getElementById('confirm-dialog-recovery');
   const accept = document.getElementById('confirm-dialog-accept');
+  const requireWrap = document.getElementById('confirm-dialog-require-wrap');
+  const requireValue = document.getElementById('confirm-dialog-require-value');
+  const requireInput = document.getElementById('confirm-dialog-require');
   let resolvePending = null;
   let returnFocus = null;
+  let requiredText = '';
 
   function fill(el, value) {
     el.textContent = value || '';
@@ -213,12 +217,17 @@ window.togglePanel = function(showId, ...hideIds) {
     fill(recovery, withCount(options.recovery || '', count));
     accept.textContent = withCount(options.actionLabel || 'Confirm', count);
     accept.classList.toggle('confirm-dialog__accept--danger', options.variant === 'danger');
+    requiredText = String(options.requireText || '');
+    requireValue.textContent = requiredText;
+    requireInput.value = '';
+    requireWrap.classList.toggle('hidden', !requiredText);
+    accept.disabled = Boolean(requiredText);
     returnFocus = options.opener || document.activeElement;
     dialog.returnValue = 'cancel';
     return new Promise(function (resolve) {
       resolvePending = resolve;
       dialog.showModal();
-      accept.focus();
+      (requiredText ? requireInput : accept).focus();
     });
   };
 
@@ -230,6 +239,13 @@ window.togglePanel = function(showId, ...hideIds) {
     }
     if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
     returnFocus = null;
+    requiredText = '';
+    requireInput.value = '';
+    accept.disabled = false;
+  });
+
+  requireInput.addEventListener('input', function () {
+    accept.disabled = Boolean(requiredText) && requireInput.value !== requiredText;
   });
 
   dialog.addEventListener('click', function (event) {
@@ -253,7 +269,8 @@ window.togglePanel = function(showId, ...hideIds) {
       consequence: data.confirmConsequence,
       recovery: data.confirmRecovery,
       actionLabel: data.confirmActionLabel,
-      variant: data.confirmVariant
+      variant: data.confirmVariant,
+      requireText: data.confirmRequire
     }).then(function (confirmed) {
       if (confirmed) detail.issueRequest(true);
     });
@@ -791,17 +808,250 @@ document.body.addEventListener('htmx:beforeRequest', function(e) {
 });
 
 /* ── HTMX global error handler ───────────────────────────────────────────── */
-document.addEventListener("htmx:responseError", function(e) {
-  const status = e.detail.xhr.status;
-  console.error("HTMX request failed:", status);
-  if (status >= 400) {
-    const toast = document.createElement("div");
-    toast.style.cssText = "position:fixed;bottom:20px;right:16px;z-index:9999;max-width:340px;background:var(--s1);border:1px solid var(--danger,#f87171);color:var(--danger,#f87171);padding:10px 14px;font-size:13px;border-radius:8px;display:flex;align-items:flex-start;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)";
-    toast.innerHTML = `<span style="flex:1">Error ${status}${status >= 500 ? ' — check <a href="/health" style="color:inherit;text-decoration:underline">health</a>' : ''}</span><button onclick="this.parentElement.remove()" style="background:none;border:none;color:inherit;cursor:pointer;font-size:16px;line-height:1;flex-shrink:0">✕</button>`;
-    document.body.appendChild(toast);
-    setTimeout(function() { if (toast.parentElement) toast.remove(); }, 6000);
+/* Shared async feedback and recovery. Every HTMX mutation gets a stable-width,
+ * action-specific busy button, then a success/warning or persistent retryable
+ * error. GET searches and polling remain quiet. */
+(function () {
+  const statusRegion = document.getElementById('feedback-status');
+  const errorRegion = document.getElementById('feedback-errors');
+  if (!statusRegion || !errorRegion) return;
+
+  const requests = new WeakMap();
+  let toastSequence = 0;
+
+  function make(tag, className, textValue) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (textValue !== undefined) el.textContent = textValue;
+    return el;
   }
-});
+
+  function dismiss(toast) {
+    if (toast && toast.parentElement) toast.remove();
+  }
+
+  function renderStatus(options, existing) {
+    options = options || {};
+    const state = options.state || 'info';
+    const toast = existing || make('article');
+    toast.id = toast.id || 'feedback-' + (++toastSequence);
+    toast.className = 'status-toast status-toast--' + state;
+    toast.dataset.feedbackState = state;
+    toast.setAttribute('role', state === 'error' ? 'alert' : 'status');
+    toast.replaceChildren();
+
+    const icon = make('span', 'status-toast__icon');
+    icon.setAttribute('aria-hidden', 'true');
+    toast.appendChild(icon);
+    const body = make('div', 'status-toast__body');
+    body.appendChild(make('p', 'status-toast__message', options.message || 'Done.'));
+    if (options.actionUrl && options.actionLabel) {
+      const action = make('a', 'status-toast__action', options.actionLabel);
+      action.href = options.actionUrl;
+      body.appendChild(action);
+    }
+    if (typeof options.retry === 'function') {
+      const retry = make('button', 'status-toast__retry', 'Retry');
+      retry.type = 'button';
+      retry.addEventListener('click', function () {
+        dismiss(toast);
+        options.retry();
+      });
+      body.appendChild(retry);
+    }
+    if (options.requestId) {
+      const details = make('details', 'status-toast__details');
+      details.appendChild(make('summary', '', 'Details'));
+      details.appendChild(make('code', '', 'Request ID: ' + options.requestId));
+      body.appendChild(details);
+    }
+    toast.appendChild(body);
+    const close = make('button', 'status-toast__close', '×');
+    close.type = 'button';
+    close.dataset.feedbackDismiss = '';
+    close.setAttribute('aria-label', 'Dismiss message');
+    toast.appendChild(close);
+
+    (state === 'error' ? errorRegion : statusRegion).appendChild(toast);
+    if (state === 'success' || state === 'info') {
+      window.setTimeout(function () { dismiss(toast); }, options.duration || 5500);
+    }
+    return toast;
+  }
+
+  window.showStatus = function (options) { return renderStatus(options); };
+
+  document.addEventListener('click', function (event) {
+    const close = event.target.closest && event.target.closest('[data-feedback-dismiss]');
+    if (close) dismiss(close.closest('.status-toast'));
+  });
+  document.body.addEventListener('showStatus', function (event) {
+    renderStatus(event.detail || {});
+  });
+
+  function valueFrom(elements, name) {
+    for (const el of elements) {
+      if (el && el.dataset && el.dataset[name]) return el.dataset[name];
+    }
+    return '';
+  }
+
+  function buttonFor(detail) {
+    const source = detail.elt;
+    const submitter = detail.requestConfig && detail.requestConfig.triggeringEvent
+      ? detail.requestConfig.triggeringEvent.submitter : null;
+    if (submitter) return submitter;
+    if (source && source.matches && source.matches('button, input[type="submit"]')) return source;
+    if (source && source.matches && source.matches('form')) {
+      return source.querySelector('button[type="submit"]:focus, input[type="submit"]:focus') ||
+        source.querySelector('button[type="submit"], input[type="submit"]');
+    }
+    return null;
+  }
+
+  function busyVerb(label) {
+    const textValue = String(label || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (/scan/.test(textValue)) return 'Scanning…';
+    if (/queue|get|acquire|enrich|retry|requeue|download|import/.test(textValue)) return 'Queuing…';
+    if (/approve/.test(textValue)) return 'Approving…';
+    if (/save|apply|update|rename|edit|upload|link|fix/.test(textValue)) return 'Saving…';
+    if (/fetch/.test(textValue)) return 'Fetching…';
+    if (/restore/.test(textValue)) return 'Restoring…';
+    if (/cancel/.test(textValue)) return 'Cancelling…';
+    if (/delete|dismiss|clear|remove|reject/.test(textValue)) return 'Removing…';
+    return 'Working…';
+  }
+
+  function successCopy(record, xhr) {
+    const header = xhr && xhr.getResponseHeader('X-Feedback-Message');
+    if (header) return header;
+    const authored = valueFrom(record.elements, 'feedbackSuccess');
+    if (authored) return authored;
+    if (record.working === 'Queuing…') return 'Request queued. Track progress in Jobs.';
+    const copies = {
+      'Scanning…': 'Scan finished.',
+      'Approving…': 'Approved.',
+      'Saving…': 'Saved.',
+      'Fetching…': 'Fetch finished.',
+      'Restoring…': 'Restored.',
+      'Cancelling…': 'Cancelled.',
+      'Removing…': 'Removed.'
+    };
+    return copies[record.working] || 'Action completed.';
+  }
+
+  function responseError(xhr) {
+    const status = xhr && xhr.status;
+    let message = '';
+    const raw = xhr && xhr.responseText ? xhr.responseText : '';
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        message = typeof parsed.detail === 'string' ? parsed.detail : '';
+      } catch (ignore) {
+        const holder = document.createElement('div');
+        holder.innerHTML = raw;
+        message = (holder.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+    }
+    if (message.length > 240) message = message.slice(0, 237) + '…';
+    if (!message) message = status ? 'Request failed (error ' + status + ').' : 'Could not reach the server.';
+    return message;
+  }
+
+  function restore(record) {
+    if (record.source && record.source.isConnected) record.source.removeAttribute('aria-busy');
+    if (!record.button || !record.button.isConnected) return;
+    record.button.innerHTML = record.originalHtml;
+    if (record.button.matches('input')) record.button.value = record.originalValue;
+    record.button.disabled = record.wasDisabled;
+    record.button.removeAttribute('aria-busy');
+    record.button.style.minWidth = record.originalMinWidth;
+  }
+
+  function retryFor(record) {
+    if (!record.source || !record.source.isConnected) return null;
+    return function () {
+      if (record.source.matches && record.source.matches('form')) {
+        record.source.requestSubmit(record.button && record.button.isConnected ? record.button : undefined);
+      } else if (record.source.click) {
+        record.source.click();
+      }
+    };
+  }
+
+  function finish(detail, forcedFailure) {
+    const xhr = detail.xhr;
+    const record = xhr && requests.get(xhr);
+    if (!record || record.finished) return;
+    record.finished = true;
+    requests.delete(xhr);
+    restore(record);
+    const levelHeader = xhr.getResponseHeader('X-Feedback-Level');
+    const failed = forcedFailure || detail.failed || detail.successful === false || xhr.status >= 400;
+    const level = failed ? 'error' : (levelHeader || 'success');
+    if (level === 'error') {
+      console.error('HTMX mutation failed:', xhr.status, record.path);
+      renderStatus({
+        state: 'error',
+        message: xhr.getResponseHeader('X-Feedback-Message') || responseError(xhr),
+        requestId: xhr.getResponseHeader('X-Request-ID'),
+        retry: retryFor(record)
+      }, record.toast);
+      return;
+    }
+    const responseMessage = level === 'warning' ? responseError(xhr) : successCopy(record, xhr);
+    const nextUrl = valueFrom(record.elements, 'feedbackNextUrl') ||
+      (record.working === 'Queuing…' ? '/jobs' : '');
+    renderStatus({
+      state: level === 'warning' ? 'warning' : 'success',
+      message: responseMessage,
+      actionUrl: nextUrl,
+      actionLabel: valueFrom(record.elements, 'feedbackNextLabel') || (nextUrl ? 'View Jobs' : '')
+    }, record.toast);
+  }
+
+  document.body.addEventListener('htmx:beforeRequest', function (event) {
+    const detail = event.detail || {};
+    const config = detail.requestConfig || {};
+    const method = String(config.verb || '').toUpperCase();
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) || !detail.xhr) return;
+    const source = detail.elt;
+    const button = buttonFor(detail);
+    const elements = [button, source, source && source.closest ? source.closest('form') : null];
+    const originalLabel = button ? (button.textContent || button.value || '') : '';
+    const working = valueFrom(elements, 'feedbackWorking') || busyVerb(originalLabel);
+    const record = {
+      source: source,
+      button: button,
+      elements: elements,
+      working: working,
+      path: config.path || '',
+      wasDisabled: button ? button.disabled : false,
+      originalHtml: button ? button.innerHTML : '',
+      originalValue: button ? button.value : '',
+      originalMinWidth: button ? button.style.minWidth : '',
+      finished: false
+    };
+    if (source) source.setAttribute('aria-busy', 'true');
+    if (button) {
+      const width = button.getBoundingClientRect().width;
+      if (width) button.style.minWidth = Math.ceil(width) + 'px';
+      button.setAttribute('aria-busy', 'true');
+      button.disabled = true;
+      if (button.matches('input')) button.value = working;
+      else button.innerHTML = '<span class="feedback-busy-label"><span class="spinner" aria-hidden="true"></span>' + working + '</span>';
+    }
+    record.toast = renderStatus({ state: 'working', message: working });
+    requests.set(detail.xhr, record);
+  });
+  document.body.addEventListener('htmx:afterRequest', function (event) {
+    finish(event.detail || {}, false);
+  });
+  ['htmx:responseError', 'htmx:sendError', 'htmx:timeout', 'htmx:abort'].forEach(function (name) {
+    document.body.addEventListener(name, function (event) { finish(event.detail || {}, true); });
+  });
+})();
 
 /* ── Discography type filter (called from inline onclick in swapped content) */
 window.toggleDiscoType = function(artistMbid, type, currentTypes) {

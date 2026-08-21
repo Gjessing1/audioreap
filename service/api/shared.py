@@ -69,7 +69,11 @@ def _error_badge(message: str, *, level: str = "warn") -> HTMLResponse:
     Escapes the message — exception text can embed file/MB-derived strings.
     """
     cls = "badge badge-fail" if level == "fail" else "badge badge-warn"
-    return HTMLResponse(f'<span class="{cls}">{html.escape(str(message))}</span>')
+    feedback_level = "error" if level == "fail" else "warning"
+    return HTMLResponse(
+        f'<span class="{cls}">{html.escape(str(message))}</span>',
+        headers={"X-Feedback-Level": feedback_level},
+    )
 
 
 def _acquisition_receipt(

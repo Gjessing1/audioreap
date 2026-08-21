@@ -1,4 +1,4 @@
-const CACHE = "audioreap-shell-v3";
+const CACHE = "audioreap-shell-v4";
 const SHELL = [
   "/",
   "/static/app.css",

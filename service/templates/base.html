@@ -51,6 +51,17 @@
   </div>
 </nav>
 
+{# One application-wide feedback surface. Informational updates are polite;
+   failures use a separate assertive live region so they are announced once
+   without making routine progress disruptive. Toast markup can also be
+   rendered by partials/status_message.html for server-originated updates. #}
+<div id="feedback-stack" class="feedback-stack" aria-label="Application status">
+  <div id="feedback-status" class="feedback-region"
+       role="status" aria-live="polite" aria-relevant="additions text"></div>
+  <div id="feedback-errors" class="feedback-region"
+       role="region" aria-label="Errors" aria-live="assertive" aria-relevant="additions text"></div>
+</div>
+
 <main>{% block content %}{% endblock %}</main>
 
 {# Bottom tab bar — the primary nav on small screens (PWA one-handed use);
@@ -108,6 +119,10 @@
     <p id="confirm-dialog-message"></p>
     <p id="confirm-dialog-consequence" class="confirm-dialog__consequence hidden"></p>
     <p id="confirm-dialog-recovery" class="confirm-dialog__recovery hidden"></p>
+    <label id="confirm-dialog-require-wrap" class="confirm-dialog__require hidden">
+      <span>Type <strong id="confirm-dialog-require-value"></strong> to continue</span>
+      <input id="confirm-dialog-require" class="rv-input" type="text" autocomplete="off">
+    </label>
     <div class="confirm-dialog__actions">
       <button type="submit" class="btn btn-ghost" value="cancel">Cancel</button>
       <button type="submit" class="btn" id="confirm-dialog-accept" value="confirm">Confirm</button>

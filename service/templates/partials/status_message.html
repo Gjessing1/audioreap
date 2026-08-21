@@ -1,0 +1,20 @@
+{% set feedback_state = state|default('info') %}
+<article class="status-toast status-toast--{{ feedback_state }}"
+         data-feedback-state="{{ feedback_state }}"
+         {% if feedback_state == 'error' %}role="alert"{% else %}role="status"{% endif %}>
+  <span class="status-toast__icon" aria-hidden="true"></span>
+  <div class="status-toast__body">
+    <p class="status-toast__message">{{ message }}</p>
+    {% if action_url|default(none) and action_label|default(none) %}
+    <a class="status-toast__action" href="{{ action_url }}">{{ action_label }}</a>
+    {% endif %}
+    {% if request_id|default(none) %}
+    <details class="status-toast__details">
+      <summary>Details</summary>
+      <code>Request ID: {{ request_id }}</code>
+    </details>
+    {% endif %}
+  </div>
+  <button type="button" class="status-toast__close" data-feedback-dismiss
+          aria-label="Dismiss message">×</button>
+</article>

@@ -76,6 +76,8 @@
           hx-target="#ytdlp-result"
           hx-swap="innerHTML"
           hx-indicator="#ytdlp-spinner"
+          data-feedback-working="Updating…"
+          data-feedback-success="yt-dlp update finished."
           hx-confirm="Run pip install -U yt-dlp inside the container?">
     Update now
     <span id="ytdlp-spinner" class="htmx-indicator"><span class="spinner"></span></span>
@@ -91,7 +93,9 @@
           hx-post="/library/health/fetch-missing-covers"
           hx-target="#covers-result"
           hx-swap="innerHTML"
+          data-feedback-success="Cover art fetch queued."
           hx-indicator="#covers-spinner">
+    {# The request only queues the background task; don't imply it finished. #}
     Fetch all
     <span id="covers-spinner" class="htmx-indicator"><span class="spinner"></span></span>
   </button>
@@ -107,6 +111,7 @@
           hx-post="/library/health/backfill-replaygain"
           hx-target="#replaygain-result"
           hx-swap="innerHTML"
+          data-feedback-success="ReplayGain backfill queued."
           hx-indicator="#replaygain-spinner">
     Backfill all
     <span id="replaygain-spinner" class="htmx-indicator"><span class="spinner"></span></span>
@@ -115,6 +120,7 @@
           hx-post="/library/health/backfill-replaygain?full=true"
           hx-target="#replaygain-result"
           hx-swap="innerHTML"
+          data-feedback-success="Full ReplayGain retag queued."
           hx-indicator="#replaygain-spinner-full"
           hx-confirm="Re-analyze and retag every track in the library, including ones already tagged? This takes much longer than Backfill all.">
     Full retag
@@ -133,6 +139,7 @@
           hx-post="/library/health/fetch-missing-lyrics"
           hx-target="#lyrics-result"
           hx-swap="innerHTML"
+          data-feedback-success="Lyrics fetch queued."
           hx-indicator="#lyrics-spinner">
     Fetch all
     <span id="lyrics-spinner" class="htmx-indicator"><span class="spinner"></span></span>
@@ -141,6 +148,7 @@
           hx-post="/library/health/upgrade-plain-lyrics"
           hx-target="#lyrics-result"
           hx-swap="innerHTML"
+          data-feedback-success="Synced-lyrics upgrade queued."
           hx-indicator="#lyrics-upgrade-spinner"
           hx-confirm="Re-check tracks that only have plain lyrics and upgrade them to synced where LRCLIB now has a timestamped version?">
     Upgrade to synced
@@ -150,6 +158,7 @@
           hx-post="/library/health/reset-lyrics-misses"
           hx-target="#lyrics-result"
           hx-swap="innerHTML"
+          data-feedback-success="Cached lyrics misses cleared."
           hx-indicator="#lyrics-reset-spinner"
           hx-confirm="Clear cached LRCLIB miss markers so missed tracks are retried on the next Fetch all?">
     Reset misses

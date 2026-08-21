@@ -1393,8 +1393,117 @@ input::placeholder { color: var(--t4); }
 .confirm-dialog p { color: var(--t2); font-size: 13px; line-height: 1.5; }
 .confirm-dialog__consequence { padding: 9px 10px; background: var(--danger-bg); border-radius: var(--radius-s); }
 .confirm-dialog__recovery { color: var(--success) !important; }
+.confirm-dialog__require { display: flex; flex-direction: column; gap: 5px; color: var(--t2); font-size: 12px; }
+.confirm-dialog__require strong { color: var(--t1); font-family: var(--font-mono); }
 .confirm-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .confirm-dialog__accept--danger { color: #fff; background: var(--danger); border-color: var(--danger); }
+
+/* ── Application feedback ──────────────────────────────────────────────────
+ * Both live regions share a visual stack but keep separate politeness levels.
+ * Errors and warnings remain until explicitly dismissed; routine successes
+ * are removed by app.js after enough time to read them. */
+.feedback-stack {
+  position: fixed;
+  z-index: 1000;
+  top: 64px;
+  right: 16px;
+  width: min(380px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.feedback-region { display: flex; flex-direction: column; gap: 8px; }
+.status-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  color: var(--t1);
+  background: var(--s1);
+  border: 1px solid var(--b2);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(5, 8, 15, .18);
+  pointer-events: auto;
+  animation: status-toast-in .16s ease-out;
+}
+.status-toast--working,
+.status-toast--info { border-left-color: var(--primary); }
+.status-toast--success { border-left-color: var(--success); }
+.status-toast--warning { border-left-color: var(--warn); }
+.status-toast--error { border-left-color: var(--danger); }
+.status-toast__icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--primary);
+  line-height: 16px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+.status-toast--working .status-toast__icon {
+  border: 2px solid var(--b3);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+.status-toast--info .status-toast__icon::before { content: 'i'; }
+.status-toast--success .status-toast__icon { color: var(--success); }
+.status-toast--success .status-toast__icon::before { content: '✓'; }
+.status-toast--warning .status-toast__icon { color: var(--warn); }
+.status-toast--warning .status-toast__icon::before { content: '!'; }
+.status-toast--error .status-toast__icon { color: var(--danger); }
+.status-toast--error .status-toast__icon::before { content: '×'; }
+.status-toast__body { flex: 1; min-width: 0; }
+.status-toast__message { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.status-toast__action,
+.status-toast__retry {
+  display: inline-block;
+  margin: 5px 10px 0 0;
+  padding: 0;
+  color: var(--primary-fg);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.status-toast__details { margin-top: 5px; color: var(--t3); font-size: 11px; }
+.status-toast__details summary { cursor: pointer; }
+.status-toast__details code { display: block; margin-top: 3px; overflow-wrap: anywhere; }
+.status-toast__close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin: -6px -7px 0 0;
+  color: var(--t3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.status-toast__close:hover { color: var(--t1); background: var(--s2); box-shadow: none; }
+.feedback-busy-label { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.feedback-busy-label .spinner { width: 12px; height: 12px; margin: 0; }
+@keyframes status-toast-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 639px) {
+  .feedback-stack { top: 60px; right: 10px; width: calc(100vw - 20px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-toast { animation: none; }
+}
 
 /* ── Jobs queue summary chips ─────────────────────────────────────────────── */
 .job-summary {

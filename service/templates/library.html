@@ -13,8 +13,8 @@
     <button class="btn btn-ghost btn-sm" id="rescan-btn"
             hx-post="/library/rescan"
             hx-target="#rescan-result"
-            hx-on::before-request="this.disabled=true;this.textContent='Scanning…'"
-            hx-on::after-request="this.disabled=false;this.textContent='Rescan'"
+            data-feedback-working="Scanning…"
+            data-feedback-success="Library rescan finished."
             title="Normally not needed — audioreap auto-scans after every change. Use this if you've added or moved files manually outside audioreap.">
       Rescan
     </button>
