@@ -180,11 +180,12 @@ async def discography_tracklist(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Return an HTML partial with the MB tracklist for a release group."""
-    from service.metadata.musicbrainz import get_release_group_tracks
+    from service.metadata.musicbrainz import VARIOUS_ARTISTS_NAME, get_release_group_tracks
 
-    album_title, release_id, _year, tracks = await asyncio.to_thread(
+    rel = await asyncio.to_thread(
         get_release_group_tracks, release_group_id, settings.cache_dir
     )
+    album_title, release_id, tracks = rel.album_title, rel.release_id, rel.tracks
 
     # Check which tracks are already in local library by MB recording ID
     from service.library.cohesion import get_owned_recording_ids
@@ -229,6 +230,10 @@ async def discography_tracklist(
             "artist_mbid": artist_mbid,
             "release_group_id": release_group_id,
             "album_title": album_title,
+            # What ALBUMARTIST must be for every track on this release. On a
+            # various-artists compilation that is the shared name, not whichever
+            # artist's discography the user browsed in through.
+            "album_artist": VARIOUS_ARTISTS_NAME if rel.is_compilation else artist,
             "release_id": release_id,
             "tracks": tracks,
             "owned_recording_ids": owned_recording_ids,
@@ -304,13 +309,19 @@ def _single_track_candidate(
     disc_number: str,
     duration_seconds: int | None,
     recording_id: str,
+    albumartist: str = "",
 ) -> TrackCandidate:
     """Build the locked TrackCandidate for a single discography-tracklist row."""
+    effective_albumartist = albumartist.strip() or artist or "Unknown"
     return TrackCandidate(
         provider="ytdlp",
         provider_ref=provider_ref,
         title=title or "Unknown",
         artist=artist or "Unknown",
+        # The performer and the album artist part ways on a compilation, so the
+        # album artist travels separately rather than being read off `artist`.
+        albumartist=effective_albumartist,
+        is_compilation=effective_albumartist.strip().lower() in ("various artists", "various"),
         album=album or None,
         track_number=int(track_number) if track_number.isdigit() else None,
         disc_number=int(disc_number) if disc_number.isdigit() else None,
@@ -371,6 +382,7 @@ async def discography_acquire_single_track(
     recording_id: str = Form(""),
     title: str = Form(""),
     artist: str = Form(""),
+    albumartist: str = Form(""),
     album: str = Form(""),
     track_number: str = Form(""),
     disc_number: str = Form(""),
@@ -393,7 +405,7 @@ async def discography_acquire_single_track(
 
     candidate = _single_track_candidate(
         release_group_id, provider_ref,
-        title=title, artist=artist, album=album,
+        title=title, artist=artist, albumartist=albumartist, album=album,
         track_number=track_number, disc_number=disc_number,
         duration_seconds=dur_s, recording_id=recording_id,
     )

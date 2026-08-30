@@ -38,6 +38,28 @@ def primary_artist(artist: str) -> str:
     return _FEAT_RE.split(artist, maxsplit=1)[0].strip() or artist
 
 
+def title_with_guests(title: str, guests: str | None) -> str:
+    """Move a collapsed guest credit into the title: "Eg ser (feat. Lisa Nilsson)".
+
+    ARTIST carries only the main artist, because a guest in that tag becomes its
+    own artist entry in Navidrome and fragments the album. The credit is not
+    dropped — it moves where it reads as information rather than as identity.
+
+    MusicBrainz' own join phrase is free text and language-specific ("med", "&",
+    "feat."), so the suffix is normalised to "feat." for consistency across the
+    library; the verbatim credit still goes to ORIGINALARTIST.
+
+    Idempotent: a title that already names the guest is returned unchanged, so
+    re-acquiring or re-tagging never stacks suffixes.
+    """
+    guests = (guests or "").strip()
+    if not title or not guests:
+        return title
+    if guests.lower() in title.lower():
+        return title
+    return f"{title} (feat. {guests})"
+
+
 def parse_artists(artist: str) -> list[str]:
     """Split a combined artist string into individual artists.
 
@@ -166,6 +188,13 @@ _FIELD_KEYS: dict[str, tuple[str | None, str | None, str | None]] = {
     "genre": ("©gen", "TCON", "genre"),
     "artist_sort": ("soar", "TSOP", "artistsort"),
     "compilation": ("cpil", "TCMP", "compilation"),
+    # The credit ARTIST was collapsed out of ("A med B" → "A"). Keeps the
+    # substitution visible and reversible from the file alone.
+    "original_artist": (
+        "----:com.apple.iTunes:ORIGINALARTIST",
+        "TOPE",
+        "originalartist",
+    ),
     "isrc": ("----:com.apple.iTunes:ISRC", "TSRC", "isrc"),
     "mb_recording_id": (
         "----:com.apple.iTunes:MusicBrainz Track Id",
@@ -181,6 +210,11 @@ _FIELD_KEYS: dict[str, tuple[str | None, str | None, str | None]] = {
         "----:com.apple.iTunes:MusicBrainz Artist Id",
         "TXXX:MusicBrainz Artist Id",
         "musicbrainz_artistid",
+    ),
+    "mb_albumartist_id": (
+        "----:com.apple.iTunes:MusicBrainz Album Artist Id",
+        "TXXX:MusicBrainz Album Artist Id",
+        "musicbrainz_albumartistid",
     ),
 }
 
@@ -399,9 +433,11 @@ def write_tags(
     artist_sort: str | None = None,
     genre: str | None = None,
     compilation: bool = False,
+    original_artist: str | None = None,
     mb_recording_id: str | None = None,
     mb_release_id: str | None = None,
     mb_artist_id: str | None = None,
+    mb_albumartist_id: str | None = None,
     isrc: str | None = None,
     artwork_bytes: bytes | None = None,
 ) -> None:
@@ -436,9 +472,11 @@ def write_tags(
         "disc_number": disc_number,
         "artist_sort": artist_sort,
         "genre": genre,
+        "original_artist": original_artist,
         "mb_recording_id": mb_recording_id,
         "mb_release_id": mb_release_id,
         "mb_artist_id": mb_artist_id,
+        "mb_albumartist_id": mb_albumartist_id,
         "isrc": isrc,
     }
     for field, value in fields.items():

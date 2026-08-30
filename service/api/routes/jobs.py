@@ -404,6 +404,7 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
     """Build resolved_metadata for staged items that pre-date Phase 13."""
     from service.core.models import TrackCandidate
     from service.library.tagger import primary_artist, read_tags
+    from service.metadata.musicbrainz import VARIOUS_ARTISTS_NAME
 
     staging_path = Path(row.staging_path) if row.staging_path else None
     tagged = None
@@ -432,10 +433,22 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
 
     genre = (tagged.genre if tagged else None) or None
 
+    albumartist = (
+        (tagged.albumartist if tagged else None)
+        or (candidate.albumartist if candidate else None)
+        or primary_artist(artist)
+    )
+    is_compilation = bool(album) and (
+        (candidate.is_compilation if candidate else False)
+        or albumartist.strip().lower() in ("various artists", "various")
+    )
+    if is_compilation:
+        albumartist = VARIOUS_ARTISTS_NAME
+
     return {
         "title": title,
         "artist": artist,
-        "albumartist": (tagged.albumartist if tagged else None) or primary_artist(artist),
+        "albumartist": albumartist,
         "album": album,
         "year": year,
         "original_year": None,
@@ -449,7 +462,7 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
         "mb_artist_sort": None,
         "acoustid_confidence": None,
         "mb_match_source": None,
-        "is_compilation": False,
+        "is_compilation": is_compilation,
         "force_staging_reason": row.error,
         "quality_score": 0.0,
         "thumbnail_url": candidate.thumbnail_url if candidate else None,

@@ -500,6 +500,12 @@ async def _fix_artist_credit(session: AsyncSession, track: Track) -> str | None:
 
     Writes ONLY the ARTIST tag (never ALBUMARTIST — album grouping is already
     correct for these tracks) and mirrors the change into Track.artist_credit.
+
+    Two tags travel with it. MUSICBRAINZ_ARTISTID still names the performer we
+    just wrote out, and Navidrome keys artist identity on the MBID as much as on
+    the name — leaving it would re-split the artist this repair just merged. And
+    the credit being replaced is preserved in ORIGINALARTIST, so the substitution
+    is visible in the file and can be undone.
     """
     from service.library.tagger import write_tags as _write_tags
 
@@ -511,8 +517,16 @@ async def _fix_artist_credit(session: AsyncSession, track: Track) -> str | None:
     fp = Path(track.file.path)
     if not fp.exists():
         return "file missing on disk"
+    replaced_credit = (track.artist_credit or "").strip()
     try:
-        await asyncio.to_thread(_write_tags, fp, artist=albumartist)
+        await asyncio.to_thread(
+            _write_tags, fp,
+            artist=albumartist,
+            mb_artist_id=(track.artist.musicbrainz_artist_id if track.artist else None),
+            original_artist=(
+                replaced_credit if replaced_credit and replaced_credit != albumartist else None
+            ),
+        )
     except Exception as exc:  # mutagen failures are per-file, keep going
         return str(exc)
     track.artist_credit = albumartist

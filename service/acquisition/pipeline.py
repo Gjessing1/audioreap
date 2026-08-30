@@ -30,6 +30,7 @@ from service.index.scanner import index_file
 from service.library.layout import track_path
 from service.library.tagger import has_cover_art, read_tags, write_cover_jpg, write_tags
 from service.library.writer import atomic_place
+from service.metadata.musicbrainz import VARIOUS_ARTISTS_NAME
 from service.metadata.quality import compute_quality_score
 from service.providers.base import Provider
 
@@ -314,6 +315,11 @@ class _IdentifyState:
     preferred_rg: str | None = None
     mb_artist_id: str | None = None
     mb_artist_sort: str | None = None
+    # Full credit ("A & B") when `artist` holds only the collapsed primary.
+    # Preserved into ORIGINALARTIST so the collapse stays reversible.
+    artist_credit: str | None = None
+    # The guests alone ("B"), which move into the title rather than into ARTIST.
+    artist_guests: str | None = None
     mb_original_year: int | None = None
     isrc: str | None = None
     acoustid_confidence: float | None = None
@@ -361,6 +367,12 @@ def _merge_source_metadata(
         mb_release_id=candidate.mb_release_id,
         mb_release_group_id=candidate.mb_release_group_id,
         preferred_rg=candidate.mb_release_group_id,
+        mb_artist_id=candidate.mb_artist_id,
+        # The album coordinator resolved these off the release tracklist. MB
+        # identification overwrites them when it succeeds; keeping them here
+        # means a track whose per-recording lookup fails still gets its guest
+        # credit handled instead of silently losing it.
+        artist_credit=candidate.artist_credit,
     )
 
     # Wrong-track detection: duration delta versus the locked candidate
@@ -691,6 +703,8 @@ def _apply_mb_result(
         state.prov_title = f"mb:{state.mb_match_source}"
     if mb.artist and not recording_id_overridden:
         state.artist = mb.artist
+        state.artist_credit = mb.artist_credit
+        state.artist_guests = mb.artist_guests
         state.prov_artist = f"mb:{state.mb_match_source}"
     if not state.album_locked:
         if mb.album:
@@ -798,6 +812,12 @@ async def _identify_recording(
 
         _check_title_mismatch(state, candidate, job_id)
 
+        # Last, so the "(feat. …)" suffix can't drag the mismatch gate's title
+        # similarity down and flag a track that matched perfectly well.
+        if state.title and state.artist_guests:
+            from service.library.tagger import title_with_guests
+            state.title = title_with_guests(state.title, state.artist_guests)
+
     except Exception as mb_exc:
         # Identification failing is NOT business as usual — without it the track
         # reaches review untagged and unverified. Log loudly and tell the review
@@ -828,21 +848,30 @@ async def _fetch_mb_genres(release_group_id: str | None) -> list[str]:
 def _resolve_albumartist(
     state: _IdentifyState, candidate: TrackCandidate
 ) -> tuple[str, bool]:
-    """Pick the ALBUMARTIST and detect compilations.
+    """Pick the ALBUMARTIST and decide whether this is a compilation track.
 
     ALBUMARTIST never carries featuring credits: an "A feat. B" track must
     group under A, not fragment the library into a separate "A feat. B"
-    artist. Guests stay in the per-track ARTIST(S) tags.
+    artist. Guests stay in the per-track ARTIST tag.
+
+    On an album-locked job the coordinator has already resolved the album artist
+    against the whole release (including the various-artists check that no single
+    track can make on its own), so its verdict is authoritative. `candidate.artist`
+    is the per-track performer there and must not be mistaken for the album artist.
     """
     if state.album_locked:
-        albumartist = candidate.artist
+        albumartist = candidate.albumartist or candidate.artist
     else:
         from service.library.tagger import primary_artist
         albumartist = primary_artist(state.artist)
-    is_compilation = (
-        state.album is not None
-        and albumartist.lower() in ("various artists", "various")
+    is_compilation = state.album is not None and (
+        candidate.is_compilation
+        or albumartist.lower() in ("various artists", "various")
     )
+    if is_compilation:
+        # One name for every compilation, whatever the release was credited to,
+        # so they all land in /music/Compilations/ and group as one album artist.
+        albumartist = VARIOUS_ARTISTS_NAME
     return albumartist, is_compilation
 
 
@@ -888,10 +917,26 @@ async def _stage_for_review(
         logger.error("Staging placement failed %s: %s", job_id, exc)
         return None
 
+    # Navidrome keys artist identity on the MBID as well as the name, so the
+    # album artist's MBID may only be written when the album artist really IS
+    # that MB artist. On a compilation ("Various Artists") or wherever the name
+    # was reshaped, the performer's MBID would merge two different artists.
+    mb_albumartist_id = candidate.mb_albumartist_id if state.album_locked else None
+    if mb_albumartist_id is None and albumartist == state.artist:
+        mb_albumartist_id = state.mb_artist_id
+
+    # Only meaningful when a guest was actually collapsed out of ARTIST.
+    original_artist = (
+        state.artist_credit
+        if state.artist_credit and state.artist_credit != state.artist
+        else None
+    )
+
     resolved_metadata = ResolvedTrackMetadata(
         title=state.title,
         artist=state.artist,
         albumartist=albumartist,
+        original_artist=original_artist,
         album=state.album,
         year=state.year,
         original_year=state.mb_original_year,
@@ -909,6 +954,7 @@ async def _stage_for_review(
         mb_release_id=state.mb_release_id,
         mb_release_group_id=state.mb_release_group_id,
         mb_artist_id=state.mb_artist_id,
+        mb_albumartist_id=mb_albumartist_id,
         mb_artist_sort=state.mb_artist_sort,
         isrc=state.isrc,
         acoustid_confidence=state.acoustid_confidence,
@@ -1096,6 +1142,7 @@ def _apply_review_overrides(meta: ResolvedTrackMetadata, overrides: dict[str, st
     override without an albumartist override re-derives albumartist sans
     featuring credit, so a "feat." edit can't split the album grouping.
     """
+    previous_artist = meta.artist
     for k in ("title", "artist", "album", "mb_recording_id", "mb_release_id", "genre"):
         if k in overrides:
             val = (overrides[k] or "").strip()
@@ -1111,9 +1158,18 @@ def _apply_review_overrides(meta: ResolvedTrackMetadata, overrides: dict[str, st
             else:
                 setattr(meta, k, None)
 
-    if "artist" in overrides and "albumartist" not in overrides:
-        from service.library.tagger import primary_artist
-        meta.albumartist = primary_artist(meta.artist)
+    if "artist" in overrides and meta.artist != previous_artist:
+        # The MBID names an artist; the name the user just typed is a different
+        # one. Navidrome keys artist identity on both, so keeping the old ID
+        # would silently merge the two.
+        meta.mb_artist_id = None
+        # A compilation's album artist is the shared "Various Artists", not
+        # something derived from any one performer's credit — re-deriving it
+        # from an edited track artist would split the compilation apart.
+        if "albumartist" not in overrides and not meta.is_compilation:
+            from service.library.tagger import primary_artist
+            meta.albumartist = primary_artist(meta.artist)
+            meta.mb_albumartist_id = None
 
 
 async def _apply_album_cohesion(
@@ -1455,6 +1511,9 @@ async def place_approved_track(
     title: str = meta.title or "Unknown"
     artist: str = meta.artist or "Unknown"
     albumartist: str = meta.albumartist or _primary_artist(artist)
+    # Album cohesion may rename the album artist below; the MBID only describes
+    # the name it was resolved for, so remember which one that was.
+    staged_albumartist: str = albumartist
     album: str | None = meta.album or None
     year: int | None = meta.year
     mb_recording_id: str | None = meta.mb_recording_id or None
@@ -1483,6 +1542,19 @@ async def place_approved_track(
             # causes Navidrome to split the album into two entries.
             mb_release_id = canonical_release_id
 
+    # ── Artist-identity MBIDs ──────────────────────────────────────────────────
+    # Navidrome keys artist identity on the MBID as much as on the name, so an ID
+    # that no longer describes the name next to it merges two different artists
+    # (or re-splits one we just merged). Resolve them together, last:
+    mb_albumartist_id = meta.mb_albumartist_id
+    if albumartist == artist:
+        # Same artist in both tags — one identity, so one ID.
+        mb_albumartist_id = mb_artist_id
+    elif albumartist != staged_albumartist:
+        # Cohesion picked the locally-established spelling; the staged ID was
+        # resolved for a different name and can no longer be vouched for.
+        mb_albumartist_id = None
+
     # ── Write final tags ───────────────────────────────────────────────────────
     # Raise on failure so the approval is aborted and the job stays in
     # needs_review rather than placing an untagged file in /music.
@@ -1499,10 +1571,12 @@ async def place_approved_track(
         disc_number=meta.disc_number,
         artist_sort=meta.mb_artist_sort,
         compilation=meta.is_compilation,
+        original_artist=meta.original_artist or None,
         genre=genre,
         mb_recording_id=mb_recording_id,
         mb_release_id=mb_release_id,
         mb_artist_id=mb_artist_id,
+        mb_albumartist_id=mb_albumartist_id,
         isrc=meta.isrc or None,
     )
 

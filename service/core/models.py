@@ -78,6 +78,17 @@ class TrackCandidate(BaseModel):
     quality_hint: TrackQuality | None = None
     thumbnail_url: str | None = None
     raw_metadata: dict[str, object] = {}
+    # Full artist credit ("Bjørn Eidsvåg med Lisa Nilsson") when `artist` holds
+    # only the collapsed primary. Preserved into the ORIGINALARTIST tag so the
+    # substitution is visible and reversible from the file itself.
+    artist_credit: str | None = None
+    # Set by the album coordinator. `artist` is the per-track PERFORMER, which on
+    # a compilation is nothing like the album artist, so the album artist can no
+    # longer be inferred from it and must be carried explicitly.
+    albumartist: str | None = None
+    mb_albumartist_id: str | None = None
+    mb_artist_id: str | None = None
+    is_compilation: bool = False
     # Set by album-coordinator jobs — prevents MB text search from overriding
     # placement metadata (album/year/track_number) with a different release.
     mb_release_id: str | None = None
@@ -179,6 +190,10 @@ class ResolvedTrackMetadata(BaseModel):
     title: str = "Unknown"
     artist: str = "Unknown"
     albumartist: str = ""
+    # The credit `artist` was collapsed out of, when a guest was dropped so the
+    # library wouldn't gain an artist that doesn't exist. Written to
+    # ORIGINALARTIST; None when nothing was replaced.
+    original_artist: str | None = None
     album: str | None = None
     year: int | None = None
     original_year: int | None = None
@@ -208,6 +223,9 @@ class ResolvedTrackMetadata(BaseModel):
     mb_release_id: str | None = None
     mb_release_group_id: str | None = None
     mb_artist_id: str | None = None
+    # The album artist's own MBID, which Navidrome keys albumartist identity on.
+    # Never the performer's on a compilation — see `place_approved_track`.
+    mb_albumartist_id: str | None = None
     mb_artist_sort: str | None = None
     isrc: str | None = None
     acoustid_confidence: float | None = None

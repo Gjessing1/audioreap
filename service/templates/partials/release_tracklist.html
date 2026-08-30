@@ -41,7 +41,8 @@
               hx-disabled-elt="find button">
           <input type="hidden" name="recording_id" value="{{ t.recording_id }}">
           <input type="hidden" name="title" value="{{ t.title|e }}">
-          <input type="hidden" name="artist" value="{{ artist|e }}">
+          <input type="hidden" name="artist" value="{{ (t.artist or artist)|e }}">
+          <input type="hidden" name="albumartist" value="{{ (album_artist or artist)|e }}">
           <input type="hidden" name="album" value="{{ album_title|e }}">
           <input type="hidden" name="track_number" value="{{ t.number }}">
           {% if t.disc %}<input type="hidden" name="disc_number" value="{{ t.disc }}">{% endif %}

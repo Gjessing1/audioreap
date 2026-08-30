@@ -53,6 +53,98 @@ def _mb_call(label, fn):
     return call_with_backoff(fn, is_transient=_mb_transient, label=label)
 
 
+# MusicBrainz' special-purpose artist that every various-artists compilation is
+# credited to. Recognising it is the strongest compilation signal there is.
+VARIOUS_ARTISTS_MBID = "89ad4ac3-39f7-470e-963a-56509c546377"
+# The one album-artist name every compilation is filed under, whatever MB
+# happens to credit the release to. Must stay in sync with the names
+# `library.layout` routes into /music/Compilations/.
+VARIOUS_ARTISTS_NAME = "Various Artists"
+
+_VARIOUS_ARTISTS_NAMES = frozenset({"various artists", "various"})
+
+
+@dataclass
+class MBArtistCredit:
+    """One MusicBrainz artist credit, resolved out of its raw array form.
+
+    MB hands a credit back as an ARRAY of parts glued together by free-text join
+    phrases: ``[Bjørn Eidsvåg]" med "[Lisa Nilsson]``. Flattening that straight
+    into an ARTIST tag invents an artist that does not exist, and Navidrome then
+    lists it separately from the real Bjørn Eidsvåg — one album, five artists.
+
+    Keeping both halves lets each tag get the right one: ``full`` is the honest
+    per-track credit, ``primary``/``primary_id`` are what ALBUMARTIST and the
+    artist-identity tags must use so a guest never fragments the library.
+    """
+
+    full: str = ""             # "Bjørn Eidsvåg med Lisa Nilsson"
+    primary: str = ""          # "Bjørn Eidsvåg"
+    primary_id: str | None = None
+    primary_sort: str | None = None
+    guests: str = ""           # "Lisa Nilsson" — the names alone, no join phrase
+
+    @property
+    def has_guest(self) -> bool:
+        return bool(self.guests)
+
+    @property
+    def is_various_artists(self) -> bool:
+        return (
+            self.primary_id == VARIOUS_ARTISTS_MBID
+            or self.primary.strip().lower() in _VARIOUS_ARTISTS_NAMES
+        )
+
+
+def parse_artist_credit(credits: object) -> MBArtistCredit:
+    """Resolve a raw musicbrainzngs ``artist-credit`` list.
+
+    The list interleaves ``{"artist": {...}}`` dicts with bare join-phrase
+    strings — ``[{artist: Calvin Harris}, " & ", {artist: Dua Lipa}]`` — though
+    some responses carry the phrase as a ``joinphrase`` key instead; both are
+    handled. Anything unparseable degrades to an empty credit rather than raising.
+    """
+    out = MBArtistCredit()
+    if not isinstance(credits, list) or not credits:
+        return out
+
+    parts: list[str] = []
+    name_at: list[int] = []  # indices in `parts` that are names, not join phrases
+    for entry in credits:
+        if isinstance(entry, str):
+            parts.append(entry)
+            continue
+        if not isinstance(entry, dict):
+            continue
+        artist = entry.get("artist")
+        artist = artist if isinstance(artist, dict) else {}
+        # A credit may override the artist's display name ("credited as"), which
+        # is the whole point of MB's credit field — prefer it over the canonical
+        # name for the flattened phrase.
+        name = str(entry.get("name") or artist.get("name") or "").strip()
+        if not name:
+            continue
+        if not name_at:
+            out.primary = name
+            out.primary_id = str(artist.get("id") or "") or None
+            sort_name = str(artist.get("sort-name") or "").strip()
+            if sort_name and sort_name != name:
+                out.primary_sort = sort_name
+        name_at.append(len(parts))
+        parts.append(name)
+        join = entry.get("joinphrase")
+        if isinstance(join, str) and join:
+            parts.append(join)
+
+    out.full = "".join(parts).strip()
+    if len(name_at) > 1:
+        # From the second name onward — the guests alone, without the leading
+        # join phrase. MB's phrases are free text and language-specific ("med",
+        # "&", "feat."), so callers render their own instead of echoing it.
+        out.guests = "".join(parts[name_at[1]:]).strip(" ,&")
+    return out
+
+
 @dataclass
 class MBArtist:
     artist_id: str
@@ -98,6 +190,12 @@ class MBRecording:
     release_group_id: str | None = None     # MB release group MBID (for genre lookup)
     isrc: str | None = None                 # International Standard Recording Code
     duration_seconds: int | None = None     # recording length from MB (for duration weighting)
+    # Full credit as MB flattens it ("Calvin Harris & Dua Lipa"). `artist` stays
+    # the PRIMARY credit alone so matching and ALBUMARTIST never see a guest;
+    # this keeps the guest recoverable for the ORIGINALARTIST tag.
+    artist_credit: str | None = None
+    # The guests alone ("Dua Lipa"), for the "(feat. …)" title suffix.
+    artist_guests: str | None = None
 
 
 def _cache_key(title: str, artist: str) -> str:
@@ -142,20 +240,13 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
     title = str(rec.get("title", ""))
     score = int(rec.get("ext:score", 0)) / 100.0
 
-    artist_credits = rec.get("artist-credit") or []
-    artist = ""
-    artist_id: str | None = None
-    artist_sort: str | None = None
-    if isinstance(artist_credits, list) and artist_credits:
-        first = artist_credits[0]
-        if isinstance(first, dict):
-            a = first.get("artist") or {}
-            if isinstance(a, dict):
-                artist = str(a.get("name", ""))
-                artist_id = str(a.get("id") or "") or None
-                sort_name = str(a.get("sort-name") or "").strip()
-                if sort_name and sort_name != artist:
-                    artist_sort = sort_name
+    credit = parse_artist_credit(rec.get("artist-credit"))
+    artist = credit.primary
+    artist_id = credit.primary_id
+    artist_sort = credit.primary_sort
+    # Only worth carrying when it actually says more than the primary name.
+    artist_credit = credit.full if credit.has_guest else None
+    artist_guests = credit.guests or None
 
     album: str | None = None
     year: int | None = None
@@ -223,6 +314,8 @@ def _parse_recording(rec: dict[str, object]) -> MBRecording:
         release_group_id=release_group_id,
         isrc=isrc,
         duration_seconds=duration_seconds,
+        artist_credit=artist_credit,
+        artist_guests=artist_guests,
     )
 
 
@@ -952,18 +1045,99 @@ class MBTrack:
     # Disc (audio medium) this track sits on. None for single-disc releases so
     # everything downstream keeps today's behaviour; 1..N on multi-disc releases.
     disc: int | None = None
+    # Per-track PERFORMER, which on a various-artists compilation is nothing like
+    # the release artist. `artist` is the primary credit alone (what ARTIST and
+    # any artist-identity tag must use); `artist_credit` keeps the full flattened
+    # phrase when a guest was collapsed out of it, else None.
+    artist: str = ""
+    artist_id: str | None = None
+    artist_credit: str | None = None
+    artist_guests: str | None = None
+
+
+@dataclass
+class MBReleaseTracks:
+    """A release's track list plus the release-level facts callers need.
+
+    Returned instead of a bare tuple because compilation detection needs the
+    release's own credited artist, which the tuple had no room for. Iterating or
+    unpacking is deliberately not supported — read the fields by name.
+    """
+
+    album_title: str
+    release_id: str | None
+    year: int | None
+    tracks: list[MBTrack]
+    # The release's credited artist. "Various Artists" (with the special MBID) on
+    # a compilation; the real artist on a normal album.
+    artist: str = ""
+    artist_id: str | None = None
+    # True when this release should be filed under one shared album artist rather
+    # than a real main artist — see `is_various_artists_release`.
+    is_compilation: bool = False
+
+
+def is_various_artists_release(
+    *,
+    release_credit: MBArtistCredit,
+    tracks: list[MBTrack],
+    threshold: float = 0.5,
+    min_tracks: int = 3,
+) -> bool:
+    """Decide whether a release is a various-artists compilation.
+
+    Two signals, strongest first:
+
+    1. The release is credited to MusicBrainz' "Various Artists" artist (by MBID,
+       or by name when the MBID is absent).
+    2. Heuristic: at least `threshold` of the tracks have a different primary
+       artist than the release itself. Compared by MBID when both sides have one,
+       by name otherwise.
+
+    The release group's secondary type "Compilation" is deliberately NOT a signal:
+    MB applies it to every greatest-hits record, including single-artist ones
+    (Bjørn Eidsvåg — "De beste"), which belong under their artist, not under
+    Various Artists. What matters is whether the tracks are actually by different
+    artists.
+    """
+    if release_credit.is_various_artists:
+        return True
+
+    # Too few tracks to say anything: a 2-track single with a guest spot would
+    # otherwise trip the ratio.
+    if len(tracks) < min_tracks:
+        return False
+    if not (release_credit.primary or release_credit.primary_id):
+        return False
+
+    differing = 0
+    for t in tracks:
+        if release_credit.primary_id and t.artist_id:
+            same = t.artist_id == release_credit.primary_id
+        elif t.artist:
+            # Prefix match so "X" still counts as itself when a track is credited
+            # "X & Y" and MB gave us no IDs to compare.
+            name = t.artist.strip().lower()
+            head = release_credit.primary.strip().lower()
+            same = bool(head) and (name == head or name.startswith(head))
+        else:
+            # No evidence either way — don't let a blank credit vote.
+            continue
+        if not same:
+            differing += 1
+
+    return (differing / len(tracks)) >= threshold
 
 
 def get_release_group_tracks(
     release_group_id: str,
     cache_dir: Path | None = None,
-) -> tuple[str, str | None, int | None, list[MBTrack]]:
+) -> MBReleaseTracks:
     """Fetch the track list for the primary release of a release group.
 
-    Returns (album_title, release_id, year, tracks). Makes 2 MB API calls:
-    one to find the first official release, one to fetch its tracks.
-    Both responses are cached. year is the original release year from the
-    release group's first-release-date.
+    Makes 2 MB API calls: one to find the first official release, one to fetch
+    its tracks. Both responses are cached. `year` is the original release year
+    from the release group's first-release-date.
     """
     key_rg = f"rg_tracks:{release_group_id}"
     raw_rg: dict[str, object] | None = None
@@ -981,11 +1155,11 @@ def get_release_group_tracks(
                 _save_cache(cache_dir, key_rg, raw_rg)
         except Exception as exc:
             logger.warning("MB release group fetch failed for %s: %s", release_group_id, exc)
-            return "Unknown Album", None, None, []
+            return MBReleaseTracks("Unknown Album", None, None, [])
 
     rg_data = raw_rg.get("release-group") or {}
     if not isinstance(rg_data, dict):
-        return "Unknown Album", None, None, []
+        return MBReleaseTracks("Unknown Album", None, None, [])
 
     album_title = str(rg_data.get("title") or "Unknown Album")
 
@@ -999,7 +1173,7 @@ def get_release_group_tracks(
 
     releases = rg_data.get("release-list") or []
     if not isinstance(releases, list) or not releases:
-        return album_title, None, rg_year, []
+        return MBReleaseTracks(album_title, None, rg_year, [])
 
     # Prefer an official release; fall back to first
     release_id: str | None = None
@@ -1010,7 +1184,7 @@ def get_release_group_tracks(
                 break
 
     if not release_id:
-        return album_title, None, rg_year, []
+        return MBReleaseTracks(album_title, None, rg_year, [])
 
     return _fetch_release_tracks(release_id, album_title, rg_year, cache_dir)
 
@@ -1020,9 +1194,11 @@ def _fetch_release_tracks(
     album_title: str = "Unknown Album",
     rg_year: int | None = None,
     cache_dir: Path | None = None,
-) -> tuple[str, str, int | None, list[MBTrack]]:
-    """Fetch track list for a known MB release ID. Returns (album_title, release_id, year, tracks)."""
-    key_rel = f"release_tracks:{release_id}"
+) -> MBReleaseTracks:
+    """Fetch the track list, per-track credits and compilation verdict for a release."""
+    # v2: entries cached before per-track artist credits were fetched hold no
+    # credit data, and a stale hit would silently produce artist-less tracks.
+    key_rel = f"release_tracks_v2:{release_id}"
     raw_rel: dict[str, object] | None = None
     if cache_dir is not None:
         raw_rel = _load_cache(cache_dir, key_rel)
@@ -1031,21 +1207,24 @@ def _fetch_release_tracks(
         try:
             result = _mb_call("MB release fetch", lambda: musicbrainzngs.get_release_by_id(
                 release_id,
-                includes=["recordings", "media"],
+                # artist-credits carries the per-track performer, which on a
+                # various-artists compilation is the only place it exists.
+                includes=["recordings", "media", "artist-credits"],
             ))
             raw_rel = dict(result)
             if cache_dir is not None:
                 _save_cache(cache_dir, key_rel, raw_rel)
         except Exception as exc:
             logger.warning("MB release fetch failed for %s: %s", release_id, exc)
-            return album_title, release_id, rg_year, []
+            return MBReleaseTracks(album_title, release_id, rg_year, [])
 
     tracks: list[MBTrack] = []
     rel_data = raw_rel.get("release") or {}
     if not isinstance(rel_data, dict):
-        return album_title, release_id, rg_year, []
+        return MBReleaseTracks(album_title, release_id, rg_year, [])
 
     album_title = str(rel_data.get("title") or album_title)
+    release_credit = parse_artist_credit(rel_data.get("artist-credit"))
 
     if rg_year is None:
         rel_date = str(rel_data.get("date") or "")
@@ -1087,7 +1266,24 @@ def _fetch_release_tracks(
                 if rid in seen_rids:
                     continue
                 seen_rids.add(rid)
-            tracks.append(MBTrack(number=number, title=title, duration_seconds=duration_s, recording_id=rid, disc=disc_idx))
+            # The track's own credit wins; MB omits it when it matches the
+            # recording's, so fall back there before the release artist.
+            credit = parse_artist_credit(t.get("artist-credit"))
+            if not credit.primary and isinstance(rec, dict):
+                credit = parse_artist_credit(rec.get("artist-credit"))
+            if not credit.primary:
+                credit = release_credit
+            # ARTIST always gets the primary credit alone — a guest in that tag
+            # becomes its own artist entry in Navidrome, which is exactly the
+            # fragmentation we are avoiding. The full credit is never lost: it
+            # rides along and lands in ORIGINALARTIST.
+            tracks.append(MBTrack(
+                number=number, title=title, duration_seconds=duration_s,
+                recording_id=rid, disc=disc_idx,
+                artist=credit.primary, artist_id=credit.primary_id,
+                artist_credit=credit.full if credit.has_guest else None,
+                artist_guests=credit.guests or None,
+            ))
 
     # Positions restart at 1 on every medium, so a flat sort by number interleaves
     # discs (two "track 1"s, two "track 2"s…). Sort disc-major, and only keep disc
@@ -1097,13 +1293,23 @@ def _fetch_release_tracks(
         for t in tracks:
             t.disc = None
     tracks.sort(key=lambda t: (t.disc or 1, t.number))
-    return album_title, release_id, rg_year, tracks
+    return MBReleaseTracks(
+        album_title=album_title,
+        release_id=release_id,
+        year=rg_year,
+        tracks=tracks,
+        artist=release_credit.primary,
+        artist_id=release_credit.primary_id,
+        is_compilation=is_various_artists_release(
+            release_credit=release_credit, tracks=tracks
+        ),
+    )
 
 
 def get_release_tracks_by_id(
     release_id: str,
     cache_dir: Path | None = None,
-) -> tuple[str, str, int | None, list[MBTrack]]:
+) -> MBReleaseTracks:
     """Fetch tracks for a known MB release ID (skips the release-group lookup).
 
     Use when you have musicbrainz_release_id (a specific pressing) rather than

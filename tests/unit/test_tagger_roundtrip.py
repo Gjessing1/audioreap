@@ -7,8 +7,8 @@ to one shared contract — the branches have already diverged once
 (MP4 write_tags silently dropped disc_number until 2026-07).
 
 Audio fixtures are generated from tests/fixtures/audio/tone_1s.wav with
-ffmpeg at test time; the whole module is skipped when ffmpeg is missing
-(host runs — the suite normally runs inside the container, which has it).
+ffmpeg at test time. Only the tests that generate fixtures require ffmpeg;
+the format-independent read tests still run on hosts without it.
 """
 from __future__ import annotations
 
@@ -18,11 +18,20 @@ from pathlib import Path
 
 import pytest
 
-from service.library.tagger import read_tags, write_tags
+from service.library.tagger import _get_field, _tag_format, read_tags, write_tags
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("ffmpeg") is None, reason="ffmpeg not available"
-)
+
+def _read_adapter_field(path: Path, field: str) -> str | None:
+    """Read one normalized field straight through the container adapter.
+
+    Fields that TaggedFile does not expose still have to survive the per-format
+    write branch, which is where MP4/ID3/Vorbis have diverged before.
+    """
+    from mutagen import File as MutagenFile
+
+    audio = MutagenFile(path)
+    assert audio is not None
+    return _get_field(_tag_format(audio, audio.tags), audio.tags, field)
 
 FIXTURE_WAV = Path(__file__).parent.parent / "fixtures" / "audio" / "tone_1s.wav"
 
@@ -54,6 +63,15 @@ TAGS = {
     "mb_artist_id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
 }
 
+# Written by every format but not surfaced on TaggedFile — read back through the
+# container adapter instead. `original_artist` records the credit that ARTIST was
+# collapsed out of; `mb_albumartist_id` is the album artist's own identity, which
+# Navidrome keys album grouping on.
+ADAPTER_ONLY_TAGS = {
+    "original_artist": "Tagger Test med Guest Performer",
+    "mb_albumartist_id": "cccccccc-dddd-eeee-ffff-000000000000",
+}
+
 
 @pytest.fixture(scope="module")
 def format_files(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
@@ -73,6 +91,7 @@ def format_files(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
 
 
 @pytest.mark.parametrize("ext", list(FORMATS))
+@pytest.mark.requires_ffmpeg
 def test_write_then_read_round_trips_every_field(
     ext: str, format_files: dict[str, Path], tmp_path: Path
 ) -> None:
@@ -81,7 +100,7 @@ def test_write_then_read_round_trips_every_field(
     path = tmp_path / f"track.{ext}"
     shutil.copy(format_files[ext], path)
 
-    write_tags(path, **TAGS, compilation=True, artwork_bytes=TINY_JPEG)
+    write_tags(path, **TAGS, **ADAPTER_ONLY_TAGS, compilation=True, artwork_bytes=TINY_JPEG)
     tagged = read_tags(path)
 
     assert tagged is not None, f"read_tags returned None for {ext}"
@@ -100,8 +119,12 @@ def test_write_then_read_round_trips_every_field(
     assert tagged.has_cover_art is True
     assert tagged.duration_seconds is not None
 
+    for field, expected in ADAPTER_ONLY_TAGS.items():
+        assert _read_adapter_field(path, field) == expected, f"{field} lost on {ext}"
+
 
 @pytest.mark.parametrize("ext", list(FORMATS))
+@pytest.mark.requires_ffmpeg
 def test_partial_write_leaves_other_fields_untouched(
     ext: str, format_files: dict[str, Path], tmp_path: Path
 ) -> None:

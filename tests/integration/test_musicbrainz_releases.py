@@ -42,7 +42,8 @@ def test_single_disc_tracks_have_no_disc_number() -> None:
         "medium-list": [_medium("CD", [_track(2, "WDPK", "r2"), _track(1, "Daftendirekt", "r1")])],
     }}
     with patch("musicbrainzngs.get_release_by_id", return_value=resp):
-        title, rel_id, year, tracks = _fetch_release_tracks("rel-1")
+        rel = _fetch_release_tracks("rel-1")
+    title, rel_id, year, tracks = rel.album_title, rel.release_id, rel.year, rel.tracks
 
     assert title == "Homework"
     assert rel_id == "rel-1"
@@ -62,7 +63,7 @@ def test_multi_disc_sorts_disc_major_and_numbers_discs() -> None:
         ],
     }}
     with patch("musicbrainzngs.get_release_by_id", return_value=resp):
-        _, _, _, tracks = _fetch_release_tracks("rel-2", rg_year=1996)
+        tracks = _fetch_release_tracks("rel-2", rg_year=1996).tracks
 
     assert [(t.disc, t.number) for t in tracks] == [(1, 1), (1, 2), (2, 1)]
 
@@ -78,7 +79,7 @@ def test_video_medium_is_skipped_and_does_not_count_as_disc() -> None:
         ],
     }}
     with patch("musicbrainzngs.get_release_by_id", return_value=resp):
-        _, _, _, tracks = _fetch_release_tracks("rel-3")
+        tracks = _fetch_release_tracks("rel-3").tracks
 
     assert len(tracks) == 1
     assert tracks[0].recording_id == "r1"
@@ -94,14 +95,15 @@ def test_same_recording_on_two_media_deduped() -> None:
         ],
     }}
     with patch("musicbrainzngs.get_release_by_id", return_value=resp):
-        _, _, _, tracks = _fetch_release_tracks("rel-4")
+        tracks = _fetch_release_tracks("rel-4").tracks
 
     assert [t.recording_id for t in tracks] == ["dup", "r9"]
 
 
 def test_fetch_release_tracks_api_failure_returns_empty() -> None:
     with patch("musicbrainzngs.get_release_by_id", side_effect=Exception("boom")):
-        title, rel_id, year, tracks = _fetch_release_tracks("rel-5", "Fallback", 2001)
+        rel = _fetch_release_tracks("rel-5", "Fallback", 2001)
+    title, rel_id, year, tracks = rel.album_title, rel.release_id, rel.year, rel.tracks
     assert (title, rel_id, year, tracks) == ("Fallback", "rel-5", 2001, [])
 
 
@@ -124,7 +126,8 @@ def test_release_group_tracks_prefers_official_release() -> None:
     }}
     with patch("musicbrainzngs.get_release_group_by_id", return_value=rg_resp), \
          patch("musicbrainzngs.get_release_by_id", return_value=rel_resp) as mock_rel:
-        title, rel_id, year, tracks = get_release_group_tracks("rg-1")
+        rel = get_release_group_tracks("rg-1")
+    title, rel_id, year, tracks = rel.album_title, rel.release_id, rel.year, rel.tracks
 
     assert title == "OK Computer"
     assert year == 1997  # from the release group's first-release-date
@@ -137,12 +140,14 @@ def test_release_group_tracks_prefers_official_release() -> None:
 def test_release_group_tracks_no_releases() -> None:
     rg_resp = {"release-group": {"title": "Unreleased", "release-list": []}}
     with patch("musicbrainzngs.get_release_group_by_id", return_value=rg_resp):
-        assert get_release_group_tracks("rg-2") == ("Unreleased", None, None, [])
+        rel = get_release_group_tracks("rg-2")
+    assert (rel.album_title, rel.release_id, rel.year, rel.tracks) == ("Unreleased", None, None, [])
 
 
 def test_release_group_tracks_api_failure() -> None:
     with patch("musicbrainzngs.get_release_group_by_id", side_effect=Exception("boom")):
-        assert get_release_group_tracks("rg-3") == ("Unknown Album", None, None, [])
+        rel = get_release_group_tracks("rg-3")
+    assert (rel.album_title, rel.release_id, rel.year, rel.tracks) == ("Unknown Album", None, None, [])
 
 
 # ── get_recording_by_id ────────────────────────────────────────────────────

@@ -366,15 +366,11 @@ async def _fetch_mb_tracklist(album: Album) -> list:
     """
     if album.mb_release_group_id:
         from service.metadata.musicbrainz import get_release_group_tracks as _get
-        _, _, _, mb_tracks = await asyncio.to_thread(
-            _get, album.mb_release_group_id, settings.cache_dir
-        )
+        rel = await asyncio.to_thread(_get, album.mb_release_group_id, settings.cache_dir)
     else:
         from service.metadata.musicbrainz import get_release_tracks_by_id as _get
-        _, _, _, mb_tracks = await asyncio.to_thread(
-            _get, album.musicbrainz_release_id, settings.cache_dir
-        )
-    return mb_tracks
+        rel = await asyncio.to_thread(_get, album.musicbrainz_release_id, settings.cache_dir)
+    return rel.tracks
 
 
 async def _reconcile_mb_tracklist(
@@ -893,9 +889,9 @@ async def fetch_album_cover(
     if not release_id and album.mb_release_group_id:
         try:
             from service.metadata.musicbrainz import get_release_group_tracks
-            _, release_id, _, _ = await asyncio.to_thread(
+            release_id = (await asyncio.to_thread(
                 get_release_group_tracks, album.mb_release_group_id, settings.cache_dir
-            )
+            )).release_id
         except Exception as exc:
             logger.debug("release-group tracklist lookup for release id failed: %s", exc)
 

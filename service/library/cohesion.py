@@ -440,11 +440,19 @@ async def merge_artists(
         if new_fp != fp:
             planned_moves.append((fp, new_fp, track.file))
 
-    # Rewrite albumartist (and artist) tags so Navidrome groups under canonical name
+    # Rewrite albumartist (and artist) tags so Navidrome groups under canonical name.
+    # The MB artist IDs go with them: Navidrome keys artist identity on the MBID
+    # as much as on the name, so files left holding the source artist's ID would
+    # re-split into the artist this merge just dissolved.
     retagged = 0
+    canonical_mbid = canonical.musicbrainz_artist_id
     for fp in files_to_retag:
         try:
-            await asyncio.to_thread(write_tags, fp, artist=canonical_name, albumartist=canonical_name)
+            await asyncio.to_thread(
+                write_tags, fp,
+                artist=canonical_name, albumartist=canonical_name,
+                mb_artist_id=canonical_mbid, mb_albumartist_id=canonical_mbid,
+            )
             retagged += 1
         except Exception as exc:
             logger.warning("merge_artists: tag write failed for %s: %s", fp, exc)

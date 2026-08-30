@@ -177,6 +177,7 @@ async def enrich_track(
 
     from service.config import settings as _settings
     from service.db.schema import AcquisitionJobRow as _JobRow, Track as _Track
+    from service.library.tagger import title_with_guests as _title_with_guests
     from service.metadata.musicbrainz import lookup_recording as _lookup
     from service.metadata.quality import compute_quality_score as _quality
 
@@ -232,6 +233,9 @@ async def enrich_track(
 
         clean_title = match.title or lookup_title
         clean_artist = match.artist or lookup_artist
+        # Same rule as the acquisition pipeline: ARTIST keeps the main artist
+        # alone, the guest moves into the title, the verbatim credit is kept.
+        clean_title = _title_with_guests(clean_title, match.artist_guests)
         hca = bool(track.file.has_cover_art)
         quality = _quality(
             title=clean_title,
@@ -247,6 +251,7 @@ async def enrich_track(
             "title": clean_title,
             "artist": clean_artist,
             "albumartist": clean_artist,
+            "original_artist": match.artist_credit,
             "album": match.album,
             "year": match.year,
             "original_year": match.original_year,
@@ -257,6 +262,7 @@ async def enrich_track(
             "mb_recording_id": match.recording_id,
             "mb_release_id": match.release_id,
             "mb_artist_id": match.artist_id,
+            "mb_albumartist_id": match.artist_id,  # albumartist IS this artist here
             "mb_artist_sort": match.artist_sort,
             "mb_match_source": "text_search",
             "is_enrichment": True,
@@ -318,16 +324,24 @@ async def acquire_album_from_mb(
         AcquisitionJobRow as _JobRow, AlbumAcquisitionJob as _AlbumJob,
         ImportSession as _ImportSession, Track as _Track,
     )
-    from service.metadata.musicbrainz import get_release_group_tracks
+    from service.metadata.musicbrainz import (
+        VARIOUS_ARTISTS_MBID,
+        VARIOUS_ARTISTS_NAME,
+        get_release_group_tracks,
+    )
     from sqlalchemy import select as _select
 
     session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]  # type: ignore[assignment]
 
     # ── 1. Fetch track list from MB (blocking, cached) ─────────────────────
     try:
-        album_title, release_id, mb_year, mb_tracks = await _asyncio.to_thread(
+        mb_release = await _asyncio.to_thread(
             get_release_group_tracks, release_group_id, _settings.cache_dir
         )
+        album_title = mb_release.album_title
+        release_id = mb_release.release_id
+        mb_year = mb_release.year
+        mb_tracks = mb_release.tracks
     except Exception as exc:
         logger.error("Album job %s: MB track fetch failed: %s", album_job_id, exc)
         async with session_factory() as session, session.begin():
@@ -357,6 +371,26 @@ async def acquire_album_from_mb(
                 except Exception:
                     pass
 
+    # A various-artists compilation must be filed under one shared album artist.
+    # `artist_name` is whichever artist's discography the request came in
+    # through, which on a compilation is at best one of many performers.
+    if mb_release.is_compilation:
+        album_artist = VARIOUS_ARTISTS_NAME
+        # Only MusicBrainz' own Various Artists entity may be written as the
+        # album artist's MBID. A compilation caught by the differing-performers
+        # heuristic still carries some real artist's ID, and writing that under
+        # the name "Various Artists" would tell Navidrome they are the same artist.
+        album_artist_id = (
+            mb_release.artist_id if mb_release.artist_id == VARIOUS_ARTISTS_MBID else None
+        )
+        logger.info(
+            "Album job %s: release group %s is a compilation — filing under %r",
+            album_job_id, release_group_id, album_artist,
+        )
+    else:
+        album_artist = mb_release.artist or artist_name
+        album_artist_id = mb_release.artist_id
+
     # ── 2. Check which tracks are already owned by MB recording ID ─────────
     owned_recording_ids: set[str] = set()
     rids = [t.recording_id for t in mb_tracks if t.recording_id]
@@ -378,10 +412,13 @@ async def acquire_album_from_mb(
     for t in mb_tracks:
         if t.recording_id and t.recording_id in owned_recording_ids:
             continue
+        # Search for the track's own PERFORMER. On a compilation the album artist
+        # is "Various Artists", which as a search term matches nothing.
+        track_artist = t.artist or album_artist
         # Score top YouTube Music candidates instead of taking yt-dlp's #1 blindly
         yt_url, yt_score = await _asyncio.to_thread(
             _yt_search_best,
-            artist_name,
+            track_artist,
             t.title,
             t.duration_seconds,
             10,
@@ -390,7 +427,7 @@ async def acquire_album_from_mb(
         )
         # Fall back to unscored search when no result scored high enough
         if yt_score < 0.35:
-            search_ref = f"ytsearch1:{artist_name} {t.title}"
+            search_ref = f"ytsearch1:{track_artist} {t.title}"
         else:
             search_ref = yt_url
         planned.append((t, search_ref))
@@ -413,7 +450,7 @@ async def acquire_album_from_mb(
             target_release=release_id,
             album_job_id=album_job_id,
             title=album_title,
-            artist=artist_name,
+            artist=album_artist,
             created_at=_now(),
         )
         session.add(import_session)
@@ -421,11 +458,16 @@ async def acquire_album_from_mb(
         import_session_id = import_session.id
 
         for t, search_ref in planned:
+            track_artist = t.artist or album_artist
             candidate = TrackCandidate(
                 provider="ytdlp",
                 provider_ref=search_ref,
                 title=t.title,
-                artist=artist_name,
+                artist=track_artist,
+                artist_credit=t.artist_credit,
+                albumartist=album_artist,
+                mb_albumartist_id=album_artist_id,
+                is_compilation=mb_release.is_compilation,
                 album=album_title,
                 year=year_val,
                 track_number=t.number,
@@ -433,6 +475,7 @@ async def acquire_album_from_mb(
                 duration_seconds=t.duration_seconds,
                 mb_release_id=release_id,
                 mb_recording_id=t.recording_id,
+                mb_artist_id=t.artist_id,
                 mb_release_group_id=release_group_id,
                 album_locked=True,
             )
@@ -441,7 +484,7 @@ async def acquire_album_from_mb(
                 provider_name="ytdlp",
                 provider_ref=search_ref,
                 candidate=candidate,
-                query=f"{artist_name} - {t.title}",
+                query=f"{track_artist} - {t.title}",
             )
             # Stamp album relationship + import session provenance
             child_row = await session.get(_JobRow, job_id)
@@ -906,9 +949,9 @@ async def fetch_missing_covers(ctx: dict[str, object]) -> None:
         if not release_mbid and album.mb_release_group_id:
             try:
                 from service.metadata.musicbrainz import get_release_group_tracks as _get_rg
-                _, release_mbid, _, _ = await asyncio.to_thread(
+                release_mbid = (await asyncio.to_thread(
                     _get_rg, album.mb_release_group_id, _s.cache_dir
-                )
+                )).release_id
             except Exception:
                 pass
         try:
