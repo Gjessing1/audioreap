@@ -10,7 +10,6 @@ here rely on).
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -393,7 +392,7 @@ async def test_merge_artists_missing_artist_returns_none(
 # ---------------------------------------------------------------- apply_album_tags
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not available")
+@pytest.mark.requires_ffmpeg
 async def test_apply_album_tags_rewrites_grouping_tags(
     db: async_sessionmaker[AsyncSession], tmp_path: Path
 ) -> None:

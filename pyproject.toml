@@ -80,7 +80,9 @@ disable_error_code = ["no-untyped-call", "return-value", "unused-ignore", "arg-t
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
 markers = [
     "e2e: end-to-end tests requiring real external services",
+    "requires_ffmpeg: tests requiring the ffmpeg executable (skipped automatically when unavailable)",
 ]
 testpaths = ["tests"]

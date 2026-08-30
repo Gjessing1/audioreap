@@ -19,3 +19,8 @@ uv run pytest -m "not e2e"
 uv run ruff check .
 uv run mypy service/
 ```
+
+Pytest always reports skip reasons. Tests marked `requires_ffmpeg` are expected
+to skip on hosts without FFmpeg and run normally in the app container, whose
+image includes it. The suite's mocked cache and API tests do not require
+network access.
