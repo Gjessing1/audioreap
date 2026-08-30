@@ -1215,8 +1215,14 @@ def _apply_review_overrides(meta: ResolvedTrackMetadata, overrides: dict[str, st
         meta.mb_artist_id = None
         # A compilation's album artist is the shared "Various Artists", not
         # something derived from any one performer's credit — re-deriving it
-        # from an edited track artist would split the compilation apart.
-        if "albumartist" not in overrides and not meta.is_compilation:
+        # from an edited track artist would split the compilation apart. Same
+        # for an album artist anchored to an album that already exists on disk
+        # (`albumartist_locked`): the file it belongs to cannot move.
+        if (
+            "albumartist" not in overrides
+            and not meta.is_compilation
+            and not meta.albumartist_locked
+        ):
             from service.library.tagger import primary_artist
             meta.albumartist = primary_artist(meta.artist)
             meta.mb_albumartist_id = None

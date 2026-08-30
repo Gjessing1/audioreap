@@ -1686,8 +1686,13 @@ async def job_mb_apply(
     meta["title"] = mb.title or meta.get("title")
     meta["artist"] = mb.artist or meta.get("artist")
     # Sans featuring credit — "A feat. B" as ALBUMARTIST would split the album
-    # into a separate featuring artist.
-    meta["albumartist"] = _primary_artist(mb.artist) if mb.artist else meta.get("albumartist")
+    # into a separate featuring artist. An album artist anchored to an album that
+    # already exists on disk (enrichment) is left alone: this recording's
+    # performer is not that album's artist, and the file cannot move.
+    if not meta.get("albumartist_locked"):
+        meta["albumartist"] = (
+            _primary_artist(mb.artist) if mb.artist else meta.get("albumartist")
+        )
     if mb.album:
         meta["album"] = mb.album
     if mb.year:

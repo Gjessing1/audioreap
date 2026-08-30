@@ -190,6 +190,10 @@ class ResolvedTrackMetadata(BaseModel):
     title: str = "Unknown"
     artist: str = "Unknown"
     albumartist: str = ""
+    # The album artist was settled from an album that already exists on disk
+    # (enrichment: the file cannot move, so its grouping is a fact). Nothing may
+    # re-derive it from the track artist — see `_apply_review_overrides`.
+    albumartist_locked: bool = False
     # The credit `artist` was collapsed out of, when a guest was dropped so the
     # library wouldn't gain an artist that doesn't exist. Written to
     # ORIGINALARTIST; None when nothing was replaced.

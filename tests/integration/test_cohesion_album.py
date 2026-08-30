@@ -33,6 +33,7 @@ from service.library.cohesion import (
 MB_ARTIST = "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"
 RG = "b1392450-e666-3926-a536-22c65f834433"
 REL = "9162580e-5df4-32de-80cc-f45a8d8ca9c2"
+VA_MBID = "89ad4ac3-39f7-470e-963a-56509c546377"
 
 
 @pytest.fixture
@@ -442,3 +443,148 @@ async def test_apply_album_tags_rewrites_grouping_tags(
         assert tagged.albumartist == "Radiohead"
         assert tagged.year == 2001
         assert tagged.mb_release_id == REL
+
+
+# ------------------------------------------------- albumartist_for_existing_file
+
+
+def _ogg(path: Path) -> Path:
+    """Encode the 1s tone fixture to a real OGG so read_tags has something to read."""
+    wav = Path(__file__).parent.parent / "fixtures" / "audio" / "tone_1s.wav"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(wav), "-c:a", "libvorbis", str(path)],
+        capture_output=True, timeout=60, check=True,
+    )
+    return path
+
+
+@pytest.mark.requires_ffmpeg
+async def test_albumartist_keeps_tagged_compilation(
+    db: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    """The performer of one track never replaces a compilation's album artist."""
+    from service.library.cohesion import albumartist_for_existing_file
+    from service.library.tagger import write_tags
+
+    f = _ogg(tmp_path / "music" / "Compilations" / "Christmas (1994)" / "05 - Silent Night.ogg")
+    write_tags(f, album="Christmas", albumartist="Various Artists", artist="Mahalia Jackson")
+
+    async with db() as session, session.begin():
+        await _seed_artist(session, "Various Artists", VA_MBID)
+    async with db() as session:
+        decision = await albumartist_for_existing_file(
+            session, f, performer="Mahalia Jackson", performer_mb_id=MB_ARTIST,
+        )
+    assert decision.name == "Various Artists"
+    assert decision.is_compilation is True
+    assert decision.locked is True
+    # The MBID describes the album artist, never the track's performer.
+    assert decision.mb_artist_id == VA_MBID
+
+
+@pytest.mark.requires_ffmpeg
+async def test_albumartist_untagged_compilation_folder(
+    db: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    """No ALBUMARTIST tag: differing performers in the folder mean Various Artists."""
+    from service.library.cohesion import albumartist_for_existing_file
+    from service.library.tagger import write_tags
+    from service.metadata.musicbrainz import VARIOUS_ARTISTS_NAME
+
+    album_dir = tmp_path / "music" / "Christmas (1994)"
+    target = _ogg(album_dir / "05 - Silent Night.ogg")
+    write_tags(target, album="Christmas", artist="Mahalia Jackson")
+
+    async with db() as session, session.begin():
+        for i, performer in enumerate(("Elvis Presley", "Bing Crosby", "Nat King Cole")):
+            artist = await _seed_artist(session, performer)
+            album = await _seed_album(session, artist, "Christmas", album_id=f"album:{i}")
+            await _seed_track(
+                session, artist, album, f"Carol {i}", file_path=_ogg(album_dir / f"0{i} - Carol.ogg")
+            )
+    async with db() as session:
+        decision = await albumartist_for_existing_file(
+            session, target, performer="Mahalia Jackson", performer_mb_id=MB_ARTIST,
+        )
+    assert decision.name == VARIOUS_ARTISTS_NAME
+    assert decision.is_compilation is True
+    assert decision.locked is True
+    assert decision.mb_artist_id is None
+
+
+@pytest.mark.requires_ffmpeg
+async def test_albumartist_keeps_folder_spelling_over_musicbrainz(
+    db: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    """A single-artist album keeps the spelling its other files group under.
+
+    One guest credit among them is not a compilation, and MusicBrainz' spelling of
+    the artist would split this file away from the siblings that still carry the
+    local one.
+    """
+    from service.library.cohesion import albumartist_for_existing_file
+    from service.library.tagger import write_tags
+
+    album_dir = tmp_path / "music" / "Bjorn Eidsvag" / "Landet (1994)"
+    target = _ogg(album_dir / "05 - Eg ser.ogg")
+    write_tags(target, album="Landet", artist="Bjorn Eidsvag")
+
+    async with db() as session, session.begin():
+        local = await _seed_artist(session, "Bjorn Eidsvag")
+        album = await _seed_album(session, local, "Landet", album_id="album:landet")
+        for i in range(2):
+            await _seed_track(
+                session, local, album, f"Song {i}", file_path=_ogg(album_dir / f"0{i} - Song.ogg")
+            )
+        guest = await _seed_artist(session, "Bjorn Eidsvag med Lisa Nilsson")
+        await _seed_track(
+            session, guest, album, "Duet", file_path=_ogg(album_dir / "04 - Duet.ogg")
+        )
+    async with db() as session:
+        decision = await albumartist_for_existing_file(
+            session, target, performer="Bjørn Eidsvåg", performer_mb_id=MB_ARTIST,
+        )
+    assert decision.name == "Bjorn Eidsvag"
+    assert decision.is_compilation is False
+    assert decision.locked is True
+    # The local row has no MBID of its own, and the performer's describes a
+    # differently-spelled name — better none than a wrong one.
+    assert decision.mb_artist_id is None
+
+
+@pytest.mark.requires_ffmpeg
+async def test_albumartist_single_uses_performer(
+    db: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    """No ALBUM tag: nothing to group, so the performer wins and stays editable."""
+    from service.library.cohesion import albumartist_for_existing_file
+    from service.library.tagger import write_tags
+
+    f = _ogg(tmp_path / "music" / "Singles" / "Bjorn Eidsvag" / "Eg ser.ogg")
+    write_tags(f, artist="Bjorn Eidsvag")
+
+    async with db() as session:
+        decision = await albumartist_for_existing_file(
+            session, f, performer="Bjørn Eidsvåg", performer_mb_id=MB_ARTIST,
+        )
+    assert decision == ("Bjørn Eidsvåg", MB_ARTIST, False, False)
+
+
+@pytest.mark.requires_ffmpeg
+async def test_albumartist_lone_album_file_uses_performer(
+    db: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    """An album folder with no other indexed track has no grouping to preserve."""
+    from service.library.cohesion import albumartist_for_existing_file
+    from service.library.tagger import write_tags
+
+    f = _ogg(tmp_path / "music" / "Bjorn Eidsvag" / "Landet (1994)" / "05 - Eg ser.ogg")
+    write_tags(f, album="Landet", artist="Bjorn Eidsvag")
+
+    async with db() as session:
+        decision = await albumartist_for_existing_file(
+            session, f, performer="Bjørn Eidsvåg", performer_mb_id=MB_ARTIST,
+        )
+    assert decision.name == "Bjørn Eidsvåg"
+    assert decision.locked is False

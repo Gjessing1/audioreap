@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -595,3 +595,147 @@ async def stable_albumartist(
         )
         return existing.name
     return albumartist
+
+
+class AlbumArtistDecision(NamedTuple):
+    """What ALBUMARTIST a file already in the library should carry.
+
+    ``locked`` says the name came from an existing album grouping rather than
+    from the recording's performer, so nothing downstream (a review-form artist
+    edit, a manual MB recording pick) may re-derive it — see
+    ``albumartist_for_existing_file``.
+    """
+
+    name: str
+    mb_artist_id: str | None
+    is_compilation: bool
+    locked: bool
+
+
+async def albumartist_for_existing_file(
+    session: AsyncSession,
+    file_path: Path,
+    *,
+    performer: str,
+    performer_mb_id: str | None = None,
+) -> AlbumArtistDecision:
+    """Pick ALBUMARTIST for a file that is ALREADY in /music (enrichment).
+
+    Acquisition chooses the album artist for a file it is about to place, and
+    moves the file to match. Enrichment can do neither: the file stays in the
+    folder it is in, so which album it belongs to is a fact, not a choice — and
+    ALBUMARTIST is what Navidrome groups that album by. Writing the recording's
+    performer there, which is all a per-track MB match knows, splits a
+    compilation into one album per track.
+
+    Rules, in order:
+
+    1. No ALBUM tag — a single, nothing to group. The performer wins and stays
+       re-derivable (``locked=False``), because for a single ALBUMARTIST is just
+       the artist under which the file is filed.
+    2. The file already carries an ALBUMARTIST — keep it verbatim, spelling and
+       all. It is what the album's other files say, and Navidrome compares the
+       literal string.
+    3. ALBUMARTIST is implicit (Navidrome falls back to ARTIST) — read it off the
+       other indexed tracks in the same folder: Various Artists when at least
+       half of those name a different performer (``is_various_artists_release``'s
+       threshold, over at least three of them — too few and a guest spot decides
+       it), the dominant name otherwise.
+
+    The returned MBID always describes the returned name — never the performer's
+    when the album artist is someone else.
+    """
+    import asyncio
+    from collections import Counter
+
+    from sqlalchemy import select
+
+    from service.db.schema import Artist, Track, TrackFile
+    from service.library.tagger import read_tags
+    from service.metadata.musicbrainz import VARIOUS_ARTISTS_NAME
+
+    free = AlbumArtistDecision(performer, performer_mb_id, False, False)
+
+    if not file_path.exists():
+        return free
+    tags = await asyncio.to_thread(read_tags, file_path)
+    if tags is None or not tags.album:
+        return free
+
+    existing = (tags.albumartist or "").strip()
+    if existing:
+        return await _anchored_albumartist(session, existing, performer, performer_mb_id)
+
+    rows = (await session.execute(
+        select(Track.artist_credit, Artist.name, TrackFile.path)
+        .join(TrackFile, TrackFile.track_id == Track.id)
+        .join(Artist, Artist.id == Track.artist_id)
+        .where(TrackFile.path.startswith(f"{file_path.parent}/", autoescape=True))
+    )).all()
+    siblings = [
+        (credit or name or "").strip()
+        for credit, name, path in rows
+        if Path(path) != file_path and (credit or name)
+    ]
+    if not siblings:
+        return free
+
+    # The verdict is about the folder, so it is read off the OTHER files: this
+    # file's own performer is the very thing being second-guessed, and MB may
+    # well spell it differently than the album it sits in does.
+    counts = Counter(normalize(p) for p in siblings)
+    dominant_key = max(
+        counts, key=lambda k: (sum(n for k2, n in counts.items() if _credit_covers(k, k2)), -len(k))
+    )
+    shared = sum(n for k, n in counts.items() if _credit_covers(dominant_key, k))
+    if len(siblings) >= 3 and (len(siblings) - shared) / len(siblings) >= 0.5:
+        return await _anchored_albumartist(
+            session, VARIOUS_ARTISTS_NAME, performer, performer_mb_id
+        )
+
+    # The folder's own spelling, not MusicBrainz' — the unenriched siblings still
+    # group under theirs, and one file renaming the album artist is a split.
+    dominant = Counter(
+        p for p in siblings if _credit_covers(dominant_key, normalize(p))
+    ).most_common(1)[0][0]
+    return await _anchored_albumartist(session, dominant, performer, performer_mb_id)
+
+
+def _credit_covers(head: str, credit: str) -> bool:
+    """Is `credit` the act `head`, possibly with a guest? (both normalized)
+
+    "bjørn eidsvåg med lisa nilsson" is still Bjørn Eidsvåg's track, the same
+    reading `is_various_artists_release` takes when MB gives it no IDs to compare.
+    The character after the prefix must be non-alphanumeric so "the be" doesn't
+    swallow "the beatles".
+    """
+    if not head or not credit.startswith(head):
+        return False
+    return len(credit) == len(head) or not credit[len(head)].isalnum()
+
+
+async def _anchored_albumartist(
+    session: AsyncSession,
+    name: str,
+    performer: str,
+    performer_mb_id: str | None,
+) -> AlbumArtistDecision:
+    """Wrap an album-artist name settled from existing grouping in a decision.
+
+    The MBID has to describe `name`: the performer's own only when they are the
+    same artist, otherwise whatever the local Artist row for that name carries
+    (often nothing — an absent ID is always safer than a wrong one).
+    """
+    from service.db.schema import Artist
+
+    if normalize(name) == normalize(performer):
+        mb_id = performer_mb_id
+    else:
+        row = await session.get(Artist, _artist_id(name))
+        mb_id = row.musicbrainz_artist_id if row is not None else None
+    return AlbumArtistDecision(
+        name=name,
+        mb_artist_id=mb_id,
+        is_compilation=normalize(name) in ("various artists", "various"),
+        locked=True,
+    )

@@ -177,6 +177,7 @@ async def enrich_track(
 
     from service.config import settings as _settings
     from service.db.schema import AcquisitionJobRow as _JobRow, Track as _Track
+    from service.library.cohesion import albumartist_for_existing_file as _albumartist_for_file
     from service.library.tagger import title_with_guests as _title_with_guests
     from service.metadata.musicbrainz import lookup_recording as _lookup
     from service.metadata.quality import compute_quality_score as _quality
@@ -236,6 +237,14 @@ async def enrich_track(
         # Same rule as the acquisition pipeline: ARTIST keeps the main artist
         # alone, the guest moves into the title, the verbatim credit is kept.
         clean_title = _title_with_guests(clean_title, match.artist_guests)
+        # ALBUMARTIST comes from the album this file already sits in, never from
+        # the recording's performer: enrichment rewrites tags in place without
+        # moving the file, so the performer would split a compilation into one
+        # album per track (and rename a single-artist album out from under its
+        # unenriched siblings).
+        album_artist = await _albumartist_for_file(
+            session, file_path, performer=clean_artist, performer_mb_id=match.artist_id,
+        )
         hca = bool(track.file.has_cover_art)
         quality = _quality(
             title=clean_title,
@@ -250,7 +259,7 @@ async def enrich_track(
         resolved_metadata = {
             "title": clean_title,
             "artist": clean_artist,
-            "albumartist": clean_artist,
+            "albumartist": album_artist.name,
             "original_artist": match.artist_credit,
             "album": match.album,
             "year": match.year,
@@ -262,7 +271,11 @@ async def enrich_track(
             "mb_recording_id": match.recording_id,
             "mb_release_id": match.release_id,
             "mb_artist_id": match.artist_id,
-            "mb_albumartist_id": match.artist_id,  # albumartist IS this artist here
+            "mb_albumartist_id": album_artist.mb_artist_id,
+            "is_compilation": album_artist.is_compilation,
+            # The album artist is anchored to an existing grouping — a review-form
+            # artist edit or a manual MB pick must not re-derive it.
+            "albumartist_locked": album_artist.locked,
             "mb_artist_sort": match.artist_sort,
             "mb_match_source": "text_search",
             "is_enrichment": True,
