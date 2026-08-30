@@ -78,6 +78,7 @@ def _meta() -> dict:
         "title": "Test Track",
         "artist": "Test Artist",
         "albumartist": "Test Artist",
+        "original_artist": None,
         "album": "Test Album",
         "year": 2024,
         "original_year": 2024,
@@ -305,6 +306,17 @@ def test_rejected_job_card_prefers_restore_over_redownload() -> None:
     assert "Restore" in html
     assert f'/jobs/retry/{job.id}' not in html
     assert f'/jobs/{job.id}/fix-source' not in html
+
+
+def test_review_card_shows_the_credit_artist_gave_up() -> None:
+    """A collapsed compilation performer must stay visible before approving."""
+    meta = _meta()
+    meta["artist"] = "Various Artists"
+    meta["is_compilation"] = True
+    meta["original_artist"] = "Mahalia Jackson"
+    html = _render("partials/review_card.html", _review_ctx(meta=meta))
+    assert "Mahalia Jackson" in html
+    assert "ORIGINALARTIST" in html
 
 
 def test_review_card_acoustid_verified() -> None:

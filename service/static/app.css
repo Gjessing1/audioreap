@@ -2094,6 +2094,14 @@ label.set-row__label { cursor: pointer; }
   color: var(--t3); font-size: 12px;
 }
 
+/* Choice control. Sized to its own longest option instead of the field width,
+ * so it ends on the same right edge as the switches and number fields. */
+.set-row .set-select {
+  width: auto; max-width: min(300px, 46vw);
+  height: 36px; font-size: 13px;
+  cursor: pointer;
+}
+
 .set-quick { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .set-chip {
   height: 24px; min-width: 0; padding: 0 9px;

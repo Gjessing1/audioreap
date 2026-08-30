@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     # Acquisition preferences
     prefer_explicit: bool = True  # Rank explicit versions above clean when searching
 
+    # What the per-track ARTIST tag says on a various-artists compilation.
+    # ALBUMARTIST is always "Various Artists"; this decides whether every
+    # PERFORMER also becomes its own artist entry in Navidrome — a 20-track
+    # "Now That's What I Call Music" otherwise adds 20 one-track artists.
+    #   "append_to_title" — ARTIST = "Various Artists" and the performer moves
+    #                       into the title: "Silent Night (Mahalia Jackson)".
+    #                       One artist entry, performer still visible.
+    #   "album_artist"    — ARTIST = "Various Artists", title untouched. Cleanest
+    #                       artist list, but no client can show who performs.
+    #   "keep"            — every performer stays in ARTIST, and becomes its own
+    #                       artist entry.
+    # The replaced credit always survives in ORIGINALARTIST, so any mode is
+    # reversible from the file alone.
+    compilation_artist_mode: str = "append_to_title"
+
     # Lyrics — fetch synced/plain lyrics from LRCLIB (free, no key) and write a
     # .lrc sidecar next to each track on approval. Navidrome reads these natively.
     lyrics_enabled: bool = True
@@ -107,7 +122,26 @@ CONFIG_EDITABLE_KEYS = (
     "worker_concurrency",
     "rescan_interval_minutes",
     "auto_fix_tags_enabled",
+    "compilation_artist_mode",
 )
+
+# Accepted values for `compilation_artist_mode`, best-first. Anything else is a
+# typo in an env var or a hand-edited overrides file, and must not silently
+# choose a different tagging policy — see `compilation_artist_mode()`.
+COMPILATION_ARTIST_MODES = ("append_to_title", "album_artist", "keep")
+
+
+def compilation_artist_mode() -> str:
+    """The validated compilation ARTIST policy (see the Settings field above).
+
+    `load_config_overrides` writes straight onto the settings object without
+    pydantic validation, and the env var is free text, so an unrecognised value
+    falls back to the shipped default rather than quietly reverting to "keep".
+    """
+    mode = str(getattr(settings, "compilation_artist_mode", "") or "").strip().lower()
+    if mode in COMPILATION_ARTIST_MODES:
+        return mode
+    return str(Settings.model_fields["compilation_artist_mode"].default)
 
 
 def config_defaults() -> dict:

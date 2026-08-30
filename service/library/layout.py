@@ -4,6 +4,8 @@ Target layout (layout_version=2):
   Albums:       /music/<AlbumArtist>/<Album> (<Year>)/<NN> - <Title>.<ext>
   Singles:      /music/Singles/<Artist>/<Title>.<ext>
   Compilations: /music/Compilations/<Album> (<Year>)/<NN> - <Artist> - <Title>.<ext>
+                (the <Artist> - part is dropped when ARTIST is "Various Artists",
+                 i.e. the performer already moved into <Title>)
 
 All path components are sanitised to be filesystem-safe.
 """
@@ -40,6 +42,12 @@ def track_path(
 
     effective_albumartist = albumartist or artist
     is_compilation = effective_albumartist.lower() in _VARIOUS_ARTISTS
+    # The per-track artist only earns a place in a compilation filename when it
+    # says something the folder doesn't. Under the "Various Artists" ARTIST tag
+    # policy it repeats the album artist, and the performer (if any) is already
+    # in the title — "01 - Various Artists - Silent Night (Mahalia Jackson)" is
+    # noise. See `compilation_artist_mode` in config.py.
+    name_performer = is_compilation and artist.lower() not in _VARIOUS_ARTISTS
 
     if album:
         safe_album = _safe(album)
@@ -50,12 +58,12 @@ def track_path(
                 tn = f"{disc_number:01d}{track_number:02d}"
             else:
                 tn = f"{track_number:02d}"
-            if is_compilation:
+            if name_performer:
                 filename = f"{tn} - {safe_artist} - {safe_title}.{clean_ext}"
             else:
                 filename = f"{tn} - {safe_title}.{clean_ext}"
         else:
-            if is_compilation:
+            if name_performer:
                 filename = f"{safe_artist} - {safe_title}.{clean_ext}"
             else:
                 filename = f"{safe_title}.{clean_ext}"

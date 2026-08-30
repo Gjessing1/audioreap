@@ -449,6 +449,8 @@ async def _synthesize_review_meta(row: AcquisitionJobRow) -> dict:
         "title": title,
         "artist": artist,
         "albumartist": albumartist,
+        # Pre-dates credit collapsing, so there is nothing it gave up.
+        "original_artist": None,
         "album": album,
         "year": year,
         "original_year": None,

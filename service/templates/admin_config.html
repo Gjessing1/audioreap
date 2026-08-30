@@ -41,6 +41,32 @@
 </div>
 {% endmacro %}
 
+{% macro row_choice(key, label, choices, note='') %}
+{# `choices` is a list of (value, label) pairs; the first is the recommended one. #}
+<div class="set-row{% if modified[key] %} set-row--custom{% endif %}" data-set-row>
+  <div class="set-row__text">
+    <label class="set-row__label" for="{{ key }}">
+      {{ label }}{% if note %}<span class="set-tag">{{ note }}</span>{% endif %}
+    </label>
+    <p class="set-row__desc" id="{{ key }}-desc">{{ caller() }}</p>
+    <p class="set-row__meta">
+      <button type="button" class="set-restore" data-set-restore="{{ key }}">
+        Restore default ({{ dict(choices)[defaults[key]] }})
+      </button>
+    </p>
+  </div>
+  <div class="set-row__control">
+    <select class="rv-input set-select" id="{{ key }}" name="{{ key }}"
+            aria-describedby="{{ key }}-desc"
+            data-setting="{{ key }}" data-default="{{ defaults[key] }}">
+      {% for value, choice_label in choices %}
+      <option value="{{ value }}"{% if current[key] == value %} selected{% endif %}>{{ choice_label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+{% endmacro %}
+
 {% macro row_number(key, label, unit, min, max, step, presets, note='') %}
 <div class="set-row{% if modified[key] %} set-row--custom{% endif %}" data-set-row>
   <div class="set-row__text">
@@ -113,6 +139,20 @@
       <p class="set-group__hint">What happens to files after you approve them.</p>
     </div>
     <div class="set-rows">
+      {% call row_choice('compilation_artist_mode', 'On compilations, the track artist is',
+                         [('append_to_title', 'Various Artists, performer in the title'),
+                          ('album_artist', 'Various Artists'),
+                          ('keep', 'the performer')]) %}
+        A 20-track <em>Now That’s What I Call Music</em> credits 20 different
+        performers, and each one Navidrome sees in an ARTIST tag becomes its own
+        one-track artist. The first two options put <code>Various Artists</code>
+        there instead, and the first keeps the performer visible by moving it into
+        the title — <em>Silent Night (Mahalia Jackson)</em>. Whatever is replaced
+        is kept in <code>ORIGINALARTIST</code>, so nothing is lost. Applies to
+        tracks acquired from now on; files already in <code>/music</code> keep the
+        tags they have.
+      {% endcall %}
+
       {% call row_switch('lyrics_enabled', 'Fetch lyrics') %}
         On approval, look the track up on LRCLIB and write a <code>.lrc</code> file
         next to it. Navidrome serves that to any Subsonic client, and audio tags stay

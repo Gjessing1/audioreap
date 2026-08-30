@@ -73,6 +73,22 @@ def test_compilation_filename_includes_artist():
     assert "Guest" in p.name
 
 
+def test_collapsed_compilation_filename_drops_the_repeated_album_artist():
+    """With ARTIST = "Various Artists" the performer is already in the title —
+    "01 - Various Artists - Silent Night (Mahalia Jackson)" only repeats the
+    folder. See compilation_artist_mode in config.py."""
+    p = _p(albumartist="Various Artists", album="Now 100", year=2018, track_number=1,
+           artist="Various Artists", title="Silent Night (Mahalia Jackson)")
+    assert p == (ROOT / "Compilations" / "Now 100 (2018)"
+                 / "01 - Silent Night (Mahalia Jackson).flac")
+
+
+def test_collapsed_compilation_without_track_number():
+    p = _p(albumartist="Various Artists", album="Mix", year=2000,
+           artist="various", title="Song")
+    assert p.name == "Song.flac"
+
+
 def test_various_lowercase_also_compilation():
     p = _p(albumartist="various", album="Mix", year=2000, track_number=1)
     assert "Compilations" in str(p)

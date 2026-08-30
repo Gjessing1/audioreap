@@ -320,6 +320,11 @@ class _IdentifyState:
     artist_credit: str | None = None
     # The guests alone ("B"), which move into the title rather than into ARTIST.
     artist_guests: str | None = None
+    # What `_apply_credit_placement` settled: the credit ARTIST no longer holds
+    # (→ ORIGINALARTIST), and whether ARTIST was replaced by the album artist —
+    # which decides whether the artist MBID may still travel with it.
+    original_artist: str | None = None
+    artist_collapsed: bool = False
     mb_original_year: int | None = None
     isrc: str | None = None
     acoustid_confidence: float | None = None
@@ -812,12 +817,6 @@ async def _identify_recording(
 
         _check_title_mismatch(state, candidate, job_id)
 
-        # Last, so the "(feat. …)" suffix can't drag the mismatch gate's title
-        # similarity down and flag a track that matched perfectly well.
-        if state.title and state.artist_guests:
-            from service.library.tagger import title_with_guests
-            state.title = title_with_guests(state.title, state.artist_guests)
-
     except Exception as mb_exc:
         # Identification failing is NOT business as usual — without it the track
         # reaches review untagged and unverified. Log loudly and tell the review
@@ -875,6 +874,53 @@ def _resolve_albumartist(
     return albumartist, is_compilation
 
 
+def _apply_credit_placement(
+    state: _IdentifyState, albumartist: str, is_compilation: bool
+) -> None:
+    """Decide what ARTIST and TITLE actually say — the single place that does.
+
+    Two kinds of credit fragment a Navidrome artist list, and both are resolved
+    the same way: ARTIST keeps the name that identifies the album, the credit
+    that would have split it moves into the title, and the verbatim credit is
+    preserved in ORIGINALARTIST so the substitution is reversible from the file.
+
+      * a guest on a track ("A med B")  → "Eg ser (feat. B)", ARTIST = A
+      * a performer on a compilation    → "Silent Night (B)", ARTIST = Various
+        Artists — otherwise a 20-track "Now …" adds 20 one-track artists
+
+    A compilation performer is not a guest, so the whole credit is appended
+    verbatim without a "feat."; because that credit already names any guest, the
+    guest step below then finds it in the title and adds nothing.
+
+    Runs after the wrong-track gates, so a "(…)" suffix can never drag the title
+    similarity down and flag a track that matched perfectly well.
+    """
+    from service.config import compilation_artist_mode
+    from service.library.tagger import title_with_guests, title_with_performer
+
+    performer = (state.artist or "").strip()
+    mode = compilation_artist_mode()
+    if is_compilation and mode != "keep" and performer and performer != albumartist:
+        # The full credit, so the title and ORIGINALARTIST carry the guests too.
+        credit = (state.artist_credit or performer).strip()
+        if mode == "append_to_title":
+            state.title = title_with_performer(state.title, credit)
+        state.artist = albumartist
+        state.original_artist = credit
+        # ARTIST no longer names the artist this MBID identifies, and Navidrome
+        # keys identity on the MBID as much as on the name — keeping it would say
+        # the performer and "Various Artists" are the same artist. What it
+        # becomes is the album artist's ID, settled in `_stage_for_review`.
+        state.mb_artist_id = None
+        state.artist_collapsed = True
+
+    if state.title and state.artist_guests:
+        state.title = title_with_guests(state.title, state.artist_guests)
+
+    if state.original_artist is None and state.artist_credit != state.artist:
+        state.original_artist = state.artist_credit or None
+
+
 async def _stage_for_review(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -923,14 +969,16 @@ async def _stage_for_review(
     # was reshaped, the performer's MBID would merge two different artists.
     mb_albumartist_id = candidate.mb_albumartist_id if state.album_locked else None
     if mb_albumartist_id is None and albumartist == state.artist:
+        # None once a compilation performer was collapsed out of ARTIST — the
+        # performer's ID was cleared there precisely so it can't arrive here.
         mb_albumartist_id = state.mb_artist_id
+    if state.artist_collapsed:
+        # ARTIST now holds the album artist, so the artist MBID must be the album
+        # artist's as well: MusicBrainz' own Various Artists entity, or nothing.
+        state.mb_artist_id = mb_albumartist_id
 
-    # Only meaningful when a guest was actually collapsed out of ARTIST.
-    original_artist = (
-        state.artist_credit
-        if state.artist_credit and state.artist_credit != state.artist
-        else None
-    )
+    # The credit ARTIST gave up — a collapsed guest, or a compilation performer.
+    original_artist = state.original_artist
 
     resolved_metadata = ResolvedTrackMetadata(
         title=state.title,
@@ -1089,6 +1137,8 @@ async def run_acquisition(
 
         mb_genres = await _fetch_mb_genres(state.mb_release_group_id)
         albumartist, is_compilation = _resolve_albumartist(state, candidate)
+        # Needs the album artist, so it can only run once that is resolved.
+        _apply_credit_placement(state, albumartist, is_compilation)
         quality_score = compute_quality_score(
             title=state.title,
             artist=state.artist,
@@ -1170,6 +1220,10 @@ def _apply_review_overrides(meta: ResolvedTrackMetadata, overrides: dict[str, st
             from service.library.tagger import primary_artist
             meta.albumartist = primary_artist(meta.artist)
             meta.mb_albumartist_id = None
+        # Typing the collapsed performer back into ARTIST undoes the collapse,
+        # so there is no longer a replaced credit for ORIGINALARTIST to preserve.
+        if meta.original_artist and meta.original_artist == meta.artist:
+            meta.original_artist = None
 
 
 async def _apply_album_cohesion(

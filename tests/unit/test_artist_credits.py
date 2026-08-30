@@ -9,7 +9,11 @@ into the title, and the verbatim credit survives in ORIGINALARTIST.
 """
 from __future__ import annotations
 
-from service.library.tagger import title_with_guests
+import pytest
+
+from service.acquisition.pipeline import _IdentifyState, _apply_credit_placement
+from service.config import settings
+from service.library.tagger import title_with_guests, title_with_performer
 from service.metadata.musicbrainz import (
     VARIOUS_ARTISTS_MBID,
     MBTrack,
@@ -175,3 +179,135 @@ def test_title_untouched_when_it_already_names_the_guest() -> None:
 def test_no_guest_leaves_the_title_alone() -> None:
     assert title_with_guests("Shotgun", None) == "Shotgun"
     assert title_with_guests("Shotgun", "  ") == "Shotgun"
+
+
+# ── title_with_performer ───────────────────────────────────────────────────
+
+
+def test_performer_moves_into_the_title_without_a_feat() -> None:
+    """A compilation performer is the act, not a guest on someone else's track."""
+    assert title_with_performer("Silent Night", "Mahalia Jackson") == (
+        "Silent Night (Mahalia Jackson)"
+    )
+
+
+def test_performer_suffix_is_idempotent() -> None:
+    once = title_with_performer("Umbrella", "Rihanna")
+    assert title_with_performer(once, "Rihanna") == once
+
+
+def test_no_performer_leaves_the_title_alone() -> None:
+    assert title_with_performer("Shotgun", None) == "Shotgun"
+    assert title_with_performer("Shotgun", "  ") == "Shotgun"
+
+
+# ── compilation credit placement ───────────────────────────────────────────
+#
+# The other half of the fragmentation problem: on a various-artists compilation
+# every track has a different performer, so leaving each one in ARTIST turns one
+# 20-track album into 20 one-track artists in Navidrome.
+
+
+def _state(**kw: object) -> _IdentifyState:
+    """An identification state as it reaches the credit-placement step."""
+    base: dict[str, object] = dict(
+        title="Silent Night", artist="Mahalia Jackson", album="Now 100",
+        year=2018, track_number=1, disc_number=None, duration=180,
+        prov_title="mb", prov_artist="mb", prov_album="mb", prov_year="mb",
+        prov_recording="mb", album_locked=True, mb_artist_id="performer-mbid",
+    )
+    base.update(kw)
+    return _IdentifyState(**base)  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def comp_mode(monkeypatch: pytest.MonkeyPatch):
+    """Set the compilation ARTIST policy for one test."""
+    def _set(mode: str) -> None:
+        monkeypatch.setattr(settings, "compilation_artist_mode", mode)
+    return _set
+
+
+def test_compilation_performer_collapses_into_the_title(comp_mode) -> None:
+    comp_mode("append_to_title")
+    state = _state()
+    _apply_credit_placement(state, "Various Artists", is_compilation=True)
+    assert state.title == "Silent Night (Mahalia Jackson)"
+    assert state.artist == "Various Artists"
+    assert state.original_artist == "Mahalia Jackson"
+    assert state.artist_collapsed
+
+
+def test_collapsed_artist_never_keeps_the_performers_mbid(comp_mode) -> None:
+    """Navidrome keys identity on the MBID, so it must not outlive the name."""
+    comp_mode("append_to_title")
+    state = _state()
+    _apply_credit_placement(state, "Various Artists", is_compilation=True)
+    assert state.mb_artist_id is None
+
+
+def test_album_artist_mode_leaves_the_title_alone(comp_mode) -> None:
+    comp_mode("album_artist")
+    state = _state()
+    _apply_credit_placement(state, "Various Artists", is_compilation=True)
+    assert state.title == "Silent Night"
+    assert state.artist == "Various Artists"
+    assert state.original_artist == "Mahalia Jackson"  # still reversible
+
+
+def test_keep_mode_is_the_old_behaviour(comp_mode) -> None:
+    comp_mode("keep")
+    state = _state()
+    _apply_credit_placement(state, "Various Artists", is_compilation=True)
+    assert (state.title, state.artist) == ("Silent Night", "Mahalia Jackson")
+    assert state.mb_artist_id == "performer-mbid"
+    assert not state.artist_collapsed
+
+
+def test_unknown_mode_falls_back_to_the_shipped_default(comp_mode) -> None:
+    """A typo in the env var must not silently pick a different policy."""
+    comp_mode("appendToTitle!")
+    state = _state()
+    _apply_credit_placement(state, "Various Artists", is_compilation=True)
+    assert state.title == "Silent Night (Mahalia Jackson)"
+
+
+def test_regular_album_track_is_untouched(comp_mode) -> None:
+    comp_mode("append_to_title")
+    state = _state(title="Eg ser", artist="Bjørn Eidsvåg")
+    _apply_credit_placement(state, "Bjørn Eidsvåg", is_compilation=False)
+    assert (state.title, state.artist) == ("Eg ser", "Bjørn Eidsvåg")
+    assert state.mb_artist_id == "performer-mbid"
+
+
+def test_performer_already_the_album_artist_is_untouched(comp_mode) -> None:
+    """A track credited to Various Artists itself has nothing to collapse."""
+    comp_mode("append_to_title")
+    state = _state(artist="Various Artists")
+    _apply_credit_placement(state, "Various Artists", is_compilation=True)
+    assert state.title == "Silent Night"
+    assert not state.artist_collapsed
+
+
+def test_compilation_title_carries_the_whole_credit_including_guests(comp_mode) -> None:
+    """The full credit goes in, so the guest step then finds it and adds nothing."""
+    comp_mode("append_to_title")
+    state = _state(
+        title="Eg ser", artist="Bjørn Eidsvåg",
+        artist_credit="Bjørn Eidsvåg med Lisa Nilsson", artist_guests="Lisa Nilsson",
+    )
+    _apply_credit_placement(state, "Various Artists", is_compilation=True)
+    assert state.title == "Eg ser (Bjørn Eidsvåg med Lisa Nilsson)"
+    assert state.original_artist == "Bjørn Eidsvåg med Lisa Nilsson"
+
+
+def test_guest_placement_still_applies_off_a_compilation(comp_mode) -> None:
+    comp_mode("append_to_title")
+    state = _state(
+        title="Eg ser", artist="Bjørn Eidsvåg",
+        artist_credit="Bjørn Eidsvåg med Lisa Nilsson", artist_guests="Lisa Nilsson",
+    )
+    _apply_credit_placement(state, "Bjørn Eidsvåg", is_compilation=False)
+    assert state.title == "Eg ser (feat. Lisa Nilsson)"
+    assert state.artist == "Bjørn Eidsvåg"
+    assert state.original_artist == "Bjørn Eidsvåg med Lisa Nilsson"

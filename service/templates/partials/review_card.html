@@ -153,6 +153,14 @@
         {% if is_enrichment and meta.current_artist and meta.current_artist != meta.artist %}
         <div style="font-size:11px;color:var(--warn);margin-top:2px">← was: <strong>{{ meta.current_artist }}</strong></div>
         {% endif %}
+        {% if meta.original_artist and meta.original_artist != meta.artist %}
+        {# The credit ARTIST gave up so the album groups under one artist. It is
+           written to ORIGINALARTIST either way, so this is reversible. #}
+        <div style="font-size:11px;color:var(--t4);margin-top:2px">
+          {% if meta.is_compilation %}performed by{% else %}credited as{% endif %}
+          <strong>{{ meta.original_artist }}</strong> · kept in ORIGINALARTIST
+        </div>
+        {% endif %}
         {% if show_multi_artists %}
         <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
           <span style="font-size:11px;color:var(--t4)">→ ARTISTS:</span>

@@ -60,6 +60,31 @@ def title_with_guests(title: str, guests: str | None) -> str:
     return f"{title} (feat. {guests})"
 
 
+def title_with_performer(title: str, performer: str | None) -> str:
+    """Move a compilation performer into the title: "Silent Night (Mahalia Jackson)".
+
+    Same trade as `title_with_guests`, for the other case that fragments an
+    artist list: on a various-artists compilation every track has a different
+    performer, and leaving each one in ARTIST gives Navidrome twenty one-track
+    artists for one album. ARTIST becomes the shared album artist and the
+    performer moves where it reads as information rather than as identity.
+
+    No "feat." here — the performer IS the act, not a guest on someone else's
+    track — so the credit is appended verbatim in bare parentheses, matching the
+    CD ripper this convention comes from. The full credit still goes to
+    ORIGINALARTIST, so the substitution is reversible from the file alone.
+
+    Idempotent: a title that already names the performer is returned unchanged,
+    so re-acquiring or re-tagging never stacks suffixes.
+    """
+    performer = (performer or "").strip()
+    if not title or not performer:
+        return title
+    if performer.lower() in title.lower():
+        return title
+    return f"{title} ({performer})"
+
+
 def parse_artists(artist: str) -> list[str]:
     """Split a combined artist string into individual artists.
 
