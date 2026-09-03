@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # Opt-in; runs once a day (see worker cron). Off by default.
     auto_fix_tags_enabled: bool = False
 
+    # Android app — where `scripts/publish-android.sh` drops the signed APK and
+    # its version.json. Served by /api/app/{version,download} so an installed APK
+    # can find its own update, and so the first install has somewhere to download
+    # from. Under /data, which is a persistent bind mount the release script can
+    # write to from the host; nothing is served when the directory is empty.
+    android_app_dir: Path = Path("/data/app")
+
     # Algorithm versions — increment to trigger migrations
     id_algorithm_version: int = 1
     normalize_version: int = 1

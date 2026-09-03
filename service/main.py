@@ -118,7 +118,15 @@ async def basic_auth_middleware(request: Request, call_next: object) -> Response
     if (path == "/health"
             or path.startswith("/static/")
             or path.endswith(".webmanifest")
-            or path.endswith("sw.js")):
+            or path.endswith("sw.js")
+            # The Android release pair is deliberately unauthenticated: an APK
+            # download is handed to Android's download manager, which carries
+            # none of the browser's credentials, and a first install has no
+            # credentials to carry anyway. The APK holds no secrets — the server
+            # address is typed in on first launch — so the only thing exposed is
+            # the shell itself.
+            or path == "/api/app/version"
+            or path == "/api/app/download"):
         return await call_next_fn(request)
 
     auth = request.headers.get("authorization", "")

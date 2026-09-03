@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  System-bar defaults for the launch window, which stays the activity's theme for the
+  whole session. They cover the stretch before the web app has booted and reported its
+  own theme (applyNativeSystemBars -> SystemBars.setStyle plus
+  AudioreapNativePlugin.setSystemBarsColor): the system splash screen, the SSO login and
+  the connection-error dialog. Those all follow the device night mode, so these do too
+  (night values in values-night/). The colour additionally applies below Android 15,
+  where the bars are opaque; from 15 the system ignores it.
+
+  The two colours are audioreap's own page background tokens from static/app.css (the
+  `bg` custom property, light and dark). Keep them in step.
+-->
+<resources>
+    <color name="systemBarBackground">#ffffff</color>
+    <!-- "Light bar" = light background, so the system paints dark icons onto it. -->
+    <bool name="lightSystemBars">true</bool>
+</resources>

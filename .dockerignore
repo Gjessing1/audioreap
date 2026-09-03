@@ -1,0 +1,25 @@
+# The Android app is built on a developer machine, never inside the service image.
+android/
+mobile/
+node_modules/
+package.json
+package-lock.json
+capacitor.config.json
+
+.git/
+.github/
+.forgejo/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+.env
+*.db
+*.db-shm
+*.db-wal
+*.log
+tests/
+docs/

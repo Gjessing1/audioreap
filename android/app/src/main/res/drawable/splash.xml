@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launch window's background, and therefore what is on screen from the moment the
+  icon is tapped until the WebView has the server's first page. It follows the device
+  night mode through @color/systemBarBackground (values/ and values-night/bars.xml), so
+  a phone in dark mode never gets a white flash.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/systemBarBackground" />
+    <item
+        android:width="120dp"
+        android:height="120dp"
+        android:gravity="center"
+        android:drawable="@drawable/ic_splash_logo" />
+</layer-list>

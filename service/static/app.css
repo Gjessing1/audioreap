@@ -43,6 +43,18 @@
   --t3:   #79829A;
   --t4:   #A7AEBE;
 
+  /* Safe areas — the strips the OS paints over: Android's status and gesture
+   * bars, a notch, an iOS home indicator. Two sources, in preference order:
+   * Capacitor's SystemBars plugin injects --safe-area-inset-* onto the document
+   * inside the Android APK (where env() is only correct on Android 15 + a very
+   * recent WebView), and env() is the standards-based answer everywhere else —
+   * an installed PWA, iOS Safari, a desktop browser (0px). Every fixed or
+   * sticky edge in this sheet reads these, never env() directly. */
+  --app-safe-top:    var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --app-safe-right:  var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+  --app-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --app-safe-left:   var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+
   /* misc */
   --radius:   10px;
   --radius-s: 6px;
@@ -127,13 +139,13 @@ body {
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-  padding-bottom: calc(var(--player-h) + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--player-h) + var(--app-safe-bottom));
 }
 
 main {
   max-width: 820px;
   margin: 0 auto;
-  padding: 20px 16px;
+  padding: 20px calc(16px + var(--app-safe-right)) 20px calc(16px + var(--app-safe-left));
 }
 
 a { color: var(--primary); text-decoration: none; }
@@ -146,13 +158,21 @@ a:hover { text-decoration: underline; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  padding: 0 16px;
-  min-height: 52px;
+  /* The bar itself stays 52px tall; the safe-area padding sits above it so the
+     nav's own background continues up behind the status bar instead of leaving
+     a strip of the launch theme. Same idea for a landscape notch on the sides. */
+  padding: var(--app-safe-top) calc(16px + var(--app-safe-right)) 0 calc(16px + var(--app-safe-left));
+  min-height: calc(52px + var(--app-safe-top));
   position: sticky;
   top: 0;
   z-index: 100;
   gap: 4px;
 }
+
+/* One flex line inside the padded bar. Without it the 52px min-height is spent
+   on the padding rather than on the controls. */
+#main-nav > .brand,
+#main-nav > button { min-height: 52px; }
 
 .brand {
   font-family: var(--font-head);
@@ -523,10 +543,10 @@ input::placeholder { color: var(--t4); }
   -webkit-backdrop-filter: blur(16px);
   border-top: 1px solid var(--b1);
   display: flex; align-items: center;
-  padding: 0 16px;
+  padding: 0 calc(16px + var(--app-safe-right)) 0 calc(16px + var(--app-safe-left));
   gap: 14px;
   z-index: 200;
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--app-safe-bottom);
 }
 #player-bar.hidden { display: none; }
 #player-art {
@@ -570,7 +590,11 @@ input::placeholder { color: var(--t4); }
 .player-skip.hidden { display: none; }
 #player-progress { width: 100px; accent-color: var(--primary); opacity: 0.7; }
 @media (max-width: 480px) {
-  #player-bar { gap: 10px; padding: 0 10px; padding-bottom: env(safe-area-inset-bottom); }
+  #player-bar {
+    gap: 10px;
+    padding: 0 calc(10px + var(--app-safe-right)) 0 calc(10px + var(--app-safe-left));
+    padding-bottom: var(--app-safe-bottom);
+  }
   #player-progress { width: 64px; }
 }
 
@@ -1000,11 +1024,14 @@ input::placeholder { color: var(--t4); }
   #player-progress { width: 180px; }
   .search-columns { flex-direction: row; gap: 28px; align-items: flex-start; }
   .search-col .section-title { margin-top: 0; }
-  main { padding: 28px 24px; }
+  main { padding: 28px calc(24px + var(--app-safe-right)) 28px calc(24px + var(--app-safe-left)); }
   /* Dynamic padding keeps nav content edge-aligned with the centered main block
      at every viewport width. max() prevents the value going below 24px on
      screens narrower than 820px. */
-  #main-nav { padding: 0 max(24px, calc((100vw - 820px) / 2 + 24px)); }
+  #main-nav {
+    padding-right: max(24px, calc((100vw - 820px) / 2 + 24px + var(--app-safe-right)));
+    padding-left: max(24px, calc((100vw - 820px) / 2 + 24px + var(--app-safe-left)));
+  }
   .rv-grid { grid-template-columns: 1fr 1fr; }
 }
 
@@ -1728,8 +1755,8 @@ button.htmx-request:disabled { cursor: wait; }
   #tab-bar {
     display: flex;
     position: fixed; bottom: 0; left: 0; right: 0;
-    height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
-    padding-bottom: env(safe-area-inset-bottom);
+    height: calc(var(--tabbar-h) + var(--app-safe-bottom));
+    padding: 0 var(--app-safe-right) var(--app-safe-bottom) var(--app-safe-left);
     background: var(--s1);
     border-top: 1px solid var(--b1);
     z-index: 210;
@@ -1759,16 +1786,16 @@ button.htmx-request:disabled { cursor: wait; }
   /* Stack: content → player bar → tab bar. The player docks on top of the
      tab bar, and the body reserves room for both. */
   #player-bar {
-    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+    bottom: calc(var(--tabbar-h) + var(--app-safe-bottom));
     padding-bottom: 0;
   }
-  body { padding-bottom: calc(var(--player-h) + var(--tabbar-h) + env(safe-area-inset-bottom)); }
+  body { padding-bottom: calc(var(--player-h) + var(--tabbar-h) + var(--app-safe-bottom)); }
 }
 
 /* ── Pull-to-refresh chip ────────────────────────────────────────────────── */
 #ptr-chip {
   position: fixed;
-  top: calc(58px + env(safe-area-inset-top));
+  top: calc(58px + var(--app-safe-top));
   left: 50%;
   transform: translateX(-50%) translateY(-10px);
   display: flex; align-items: center; gap: 7px;
@@ -2149,7 +2176,7 @@ label.set-row__label { cursor: pointer; }
  * player and the mobile tab bar. */
 .set-savebar {
   position: sticky;
-  bottom: max(10px, env(safe-area-inset-bottom));
+  bottom: max(10px, var(--app-safe-bottom));
   z-index: 80;
   display: flex; align-items: center; gap: 10px;
   padding: 9px 10px 9px 14px;
@@ -2248,9 +2275,9 @@ body:has(#player-bar:not(.hidden)) .set-savebar { bottom: calc(var(--player-h) +
 }
 
 @media (max-width: 639px) {
-  .set-savebar { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px); }
+  .set-savebar { bottom: calc(var(--tabbar-h) + var(--app-safe-bottom) + 8px); }
   body:has(#player-bar:not(.hidden)) .set-savebar {
-    bottom: calc(var(--player-h) + var(--tabbar-h) + env(safe-area-inset-bottom) + 8px);
+    bottom: calc(var(--player-h) + var(--tabbar-h) + var(--app-safe-bottom) + 8px);
   }
 }
 

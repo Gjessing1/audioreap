@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0A0C12" media="(prefers-color-scheme: dark)" />
+    <title>audioreap</title>
+    <style>
+      /*
+       * The bundled document is only what the WebView shows before the configured
+       * audioreap server takes over (MainActivity sets `server.url`). It follows the
+       * device night mode, because at this point no in-app theme preference has been
+       * read yet — that lives in the web app's localStorage on the server origin.
+       */
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #ffffff;
+        color: #18202f;
+        font: 16px system-ui, sans-serif;
+      }
+      body {
+        display: grid;
+        place-items: center;
+      }
+      @media (prefers-color-scheme: dark) {
+        html,
+        body {
+          background: #0a0c12;
+          color: #eaf0fb;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <p>Starting audioreap…</p>
+  </body>
+</html>

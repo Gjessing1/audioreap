@@ -1,0 +1,16 @@
+{
+  "appId": "io.gjessing.audioreap",
+  "appName": "audioreap",
+  "webDir": "mobile",
+  "loggingBehavior": "debug",
+  "android": {
+    "appendUserAgent": "AudioreapAndroid/1",
+    "allowMixedContent": false,
+    "resolveServiceWorkerRequests": false
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css"
+    }
+  }
+}

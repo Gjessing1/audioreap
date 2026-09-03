@@ -148,6 +148,9 @@
 
 <script src="/static/htmx.min.js"></script>
 <script src="/static/app.js"></script>
+{# The Android shell's web half — inert in a browser. Loaded before the theme
+   controller below, which announces its resolved theme to it. #}
+<script src="/static/native.js"></script>
 <script>
   const toggle = document.getElementById('nav-toggle');
   const nav    = document.getElementById('main-nav');
@@ -166,13 +169,44 @@
     const CYCLE = { auto: 'dark', dark: 'light', light: 'auto' };
     const ICONS = { auto: '◐', dark: '☾', light: '☀' };
     const btn   = document.getElementById('theme-btn');
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
     const get   = () => localStorage.getItem(KEY) || 'auto';
-    function apply(theme) {
-      if (theme === 'auto') delete document.documentElement.dataset.theme;
-      else document.documentElement.dataset.theme = theme;
-      try { localStorage.setItem(KEY, theme); } catch (e) {}
-      if (btn) { btn.textContent = ICONS[theme]; btn.title = 'Theme: ' + theme; }
+
+    // What "auto" resolves to. The media query is the answer in a browser; inside the
+    // Android app the shell reports the device mode instead, because the WebView's
+    // answer there can be the one it launched with (see static/native.js). Null until
+    // the shell says otherwise, which is also what "we are in a browser" looks like.
+    let systemTheme = window.audioreapSystemThemeValue || null;
+    const resolve = (pref) =>
+      pref !== 'auto' ? pref : (systemTheme || (media.matches ? 'dark' : 'light'));
+
+    function apply(pref) {
+      const resolved = resolve(pref);
+      // On "auto" leave data-theme off so CSS follows prefers-color-scheme — unless the
+      // shell has told us the real mode, in which case pin it, because the query is
+      // exactly what cannot be trusted there.
+      if (pref === 'auto' && !systemTheme) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = resolved;
+      try { localStorage.setItem(KEY, pref); } catch (e) {}
+      if (btn) { btn.textContent = ICONS[pref]; btn.title = 'Theme: ' + pref; }
+      // The Android shell colours the system bars from this; nothing listens in a browser.
+      document.dispatchEvent(new CustomEvent('audioreap:theme', {
+        detail: { pref: pref, resolved: resolved },
+      }));
     }
+
+    // Called by the Android shell when the device flips light/dark, and once at load.
+    window.audioreapSystemTheme = function (theme) {
+      if (theme !== 'dark' && theme !== 'light') return;
+      window.audioreapSystemThemeValue = theme;
+      if (systemTheme === theme) return;
+      systemTheme = theme;
+      apply(get());
+    };
+
+    // A browser flipping the OS setting while the page is open.
+    media.addEventListener('change', () => { if (get() === 'auto') apply('auto'); });
+
     apply(get());
     if (btn) btn.addEventListener('click', () => apply(CYCLE[get()]));
   })();

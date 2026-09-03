@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The adaptive icon's background layer. audioreap's brand blue, so the API 26+ icon
+     matches the legacy PNG: blue ground, darker panel, white bars. -->
+<resources>
+    <color name="ic_launcher_background">#2563EB</color>
+</resources>

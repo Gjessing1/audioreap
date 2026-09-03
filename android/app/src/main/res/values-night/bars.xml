@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="systemBarBackground">#0A0C12</color>
+    <bool name="lightSystemBars">false</bool>
+</resources>

@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">audioreap</string>
+    <string name="title_activity_main">audioreap</string>
+    <string name="package_name">io.gjessing.audioreap</string>
+    <string name="custom_url_scheme">io.gjessing.audioreap</string>
+
+    <string name="server_setup_title">Connect to audioreap</string>
+    <string name="server_setup_help">Enter the public HTTPS address of your audioreap server. The address is stored only on this device and can be changed later from the connection error screen.</string>
+    <string name="server_url_hint">https://audioreap.example.com</string>
+    <string name="server_url_error">Enter the root HTTPS URL without a path, query, or fragment.</string>
+    <string name="connect">Connect</string>
+    <string name="server_unavailable_title">Server unavailable</string>
+    <string name="server_unavailable_message">audioreap could not load %1$s. Check the connection or choose a different server.</string>
+    <string name="retry">Retry</string>
+    <string name="change_server">Change server</string>
+</resources>

@@ -11,6 +11,20 @@ docker compose up -d
 
 `GET http://localhost:8000/health` → `{"status":"ok",...}`
 
+## Android app
+
+audioreap installs as an Android app: a Capacitor shell (`android/`) whose WebView loads
+this same UI from your own server. There is no bundled copy of the app, so a deploy
+updates it like a browser reload — the APK only changes when the shell itself does.
+
+Once a release has been published, **Settings → Android app** offers the download; an
+installed app finds its own update there too. Build and publish one with:
+
+```bash
+npm install
+npm run android:release   # needs the Android SDK and release signing; see scripts/
+```
+
 ## Dev
 
 ```bash

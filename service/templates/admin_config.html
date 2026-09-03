@@ -299,6 +299,102 @@
   </div>
 </section>
 
+{#
+  Android app. Hidden until static/native.js knows there is something to say — this
+  server has published an APK, or the page is running inside one. A self-hosted audioreap
+  that never built the app should not carry a dead row about it.
+#}
+<section class="set-group set-group--standalone" id="android-app" hidden>
+  <div class="set-group__head">
+    <h2 class="set-group__name">Android app</h2>
+    <p class="set-group__hint">
+      The app is a thin shell around this page, so a deploy updates it like any browser
+      reload. Only the shell itself — system bars, Back, the server address — ships as a new APK.
+    </p>
+  </div>
+
+  <div class="set-rows">
+    <div class="set-row">
+      <div class="set-row__text">
+        <span class="set-row__label" id="android-app-label">Android app</span>
+        <p class="set-row__desc" id="android-app-desc"></p>
+        <p class="set-row__meta set-row__meta--always" id="android-app-meta" hidden></p>
+      </div>
+      <div class="set-row__control set-row__control--stack">
+        <span class="set-state" id="android-app-state" hidden></span>
+        <code class="set-version" id="android-app-version" hidden></code>
+        <button type="button" class="btn btn-sm" id="android-app-download" hidden>Download APK</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  /* Paints the Android row from the two independent facts static/native.js gathers:
+     what this device runs (nothing, in a browser) and what the server publishes.
+
+     Deferred to DOMContentLoaded because this block is inside <main>, which the browser
+     parses before base.html's scripts at the end of <body> — audioreapAppRelease does
+     not exist yet at parse time. */
+  window.addEventListener('DOMContentLoaded', function () {
+    const section = document.getElementById('android-app');
+    if (!section || !window.audioreapAppRelease) return;
+
+    window.audioreapAppRelease().then(function (state) {
+      const { installed, release, native, updateAvailable, downloadUrl } = state;
+      if (!native && !release) return;   // nothing published, not in the app: stay hidden
+
+      const label = document.getElementById('android-app-label');
+      const desc = document.getElementById('android-app-desc');
+      const meta = document.getElementById('android-app-meta');
+      const badge = document.getElementById('android-app-state');
+      const version = document.getElementById('android-app-version');
+      const download = document.getElementById('android-app-download');
+
+      const show = (el, text) => { el.textContent = text; el.hidden = false; };
+
+      if (installed) {
+        label.textContent = 'Installed version';
+        show(version, installed.versionName);
+      }
+
+      if (!release) {
+        desc.textContent = 'This server has not published an APK, so there is no update to ' +
+          'offer. Publishing one is scripts/release-android.sh on the machine that builds it.';
+        show(badge, 'None published');
+        badge.classList.add('set-state--off');
+      } else if (updateAvailable) {
+        desc.textContent = 'A newer shell is available. Downloading opens it outside the app — ' +
+          'Android installs it over this one, and the server address is kept.';
+        show(badge, 'Update available');
+        badge.classList.add('set-state--ok');
+        show(meta, release.versionName + ' · ' + Math.round(release.bytes / 1024 / 1024 * 10) / 10 + ' MB');
+      } else if (installed) {
+        desc.textContent = 'This device is on the newest published shell. The UI itself updates ' +
+          'with the server, so this stays put for a long time.';
+        show(badge, 'Up to date');
+        badge.classList.add('set-state--ok');
+      } else {
+        label.textContent = 'Android app';
+        desc.textContent = 'Install audioreap as an app. It loads this same UI, but gets the ' +
+          'system bars, Back button and launcher icon of a real app.';
+        show(version, release.versionName);
+        show(meta, Math.round(release.bytes / 1024 / 1024 * 10) / 10 + ' MB · sha256 ' + release.sha256.slice(0, 12) + '…');
+      }
+
+      if (downloadUrl && (!installed || updateAvailable)) {
+        download.textContent = updateAvailable ? 'Download update' : 'Download APK';
+        download.hidden = false;
+        download.addEventListener('click', function () {
+          window.audioreapOpenExternal(downloadUrl);
+        });
+      }
+
+      section.hidden = false;
+    });
+  });
+</script>
+
 <p class="set-foot">
   Looking for queue and disk status? That's <a href="/health">System health</a>.
   Duplicates, splits and missing artwork live in <a href="/library/health">Library health</a>.

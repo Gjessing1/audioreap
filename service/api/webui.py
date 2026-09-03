@@ -17,10 +17,11 @@ from service.api.routes import (
     discography,
     playlists,
     admin,
+    app_release,
 )
 from service.api.shared import templates  # noqa: F401  (re-export)
 
 router = APIRouter()
 for _mod in (acquire, jobs, library, tracks, albums, artists, artwork, health,
-             discography, playlists, admin):
+             discography, playlists, admin, app_release):
     router.include_router(_mod.router)
