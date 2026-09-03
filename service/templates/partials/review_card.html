@@ -17,7 +17,13 @@
         {% elif meta.mb_match_source == 'acoustid' %}
         <span class="badge badge-done" title="Identified by AcoustID audio fingerprint — the audio itself was matched, not just the text metadata">✓ AcoustID confirmed{% if meta.acoustid_confidence %} · {{ "%.0f"|format(meta.acoustid_confidence * 100) }}%{% endif %}</span>
         {% elif meta.mb_match_source == 'locked_recording' %}
+        {# The fingerprint agreeing with the locked recording is the strongest
+           evidence available — say so instead of showing a bare "confirm this". #}
+        {% if meta.mb_from_acoustid %}
+        <span class="badge badge-done" title="The album batch chose this recording and the AcoustID audio fingerprint agreed — the audio itself was matched, not just the text metadata">✓ AcoustID confirmed{% if meta.acoustid_confidence %} · {{ "%.0f"|format(meta.acoustid_confidence * 100) }}%{% endif %}</span>
+        {% else %}
         <span class="badge badge-busy" title="Recording chosen by the album batch coordinator — confirm before approving">🔒 locked (album batch)</span>
+        {% endif %}
         {% elif meta.mb_match_source == 'text_search' %}
         <span class="badge {% if (meta.text_search_similarity or 0) >= 0.90 %}badge-done{% else %}badge-busy{% endif %}" title="Matched via MusicBrainz text search — confirm metadata before approving">≈ text search{% if meta.text_search_similarity %} · {{ "%.0f"|format(meta.text_search_similarity * 100) }}%{% endif %}</span>
         {% elif meta.mb_match_source == 'manual' %}

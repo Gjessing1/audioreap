@@ -223,3 +223,62 @@ def test_rejecting_enrichment_never_trashes_library_file(
     assert not can_restore
     assert library_file.read_bytes() == b"library audio"
     assert row.state == "failed"
+
+
+def _classify(tmp_path: Path, meta: dict[str, object]) -> tuple[str, str | None]:
+    from service.api.routes.jobs import _classify_review_confidence
+
+    staged = tmp_path / "staged.ogg"
+    staged.touch()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    row = _row("j", "needs_review", now, staging_path=staged, meta=meta)
+    return _classify_review_confidence(row, meta)
+
+
+def test_locked_recording_confirmed_by_fingerprint_is_verified(tmp_path: Path) -> None:
+    """A locked recording the fingerprint agreed with is the strongest evidence
+    the pipeline produces, and must grade "verified".
+
+    Regression: the classifier keyed off `mb_match_source == "acoustid"`, which
+    Path B sets only when the fingerprint *rescued* a text match scoring below
+    threshold. Path A keeps `mb_match_source == "locked_recording"` however well
+    the fingerprint confirmed it, so every album-batch track graded amber while
+    Path B's weakest rescues graded green — the signal read backwards.
+    """
+    confidence, flag_reason = _classify(tmp_path, {
+        "mb_match_source": "locked_recording",
+        "mb_from_acoustid": True,
+        "acoustid_confidence": 0.97,
+    })
+    assert confidence == "verified"
+    assert flag_reason is None
+
+
+def test_locked_recording_without_fingerprint_stays_probable(tmp_path: Path) -> None:
+    """No fingerprint agreement means the coordinator's pick is unconfirmed."""
+    confidence, _ = _classify(tmp_path, {
+        "mb_match_source": "locked_recording",
+        "mb_from_acoustid": False,
+    })
+    assert confidence == "probable"
+
+
+def test_flag_still_wins_over_fingerprint_confirmation(tmp_path: Path) -> None:
+    """A wrong-track gate outranks the fingerprint — the review gate is not
+    something a confirmation signal may talk its way past."""
+    confidence, flag_reason = _classify(tmp_path, {
+        "mb_match_source": "locked_recording",
+        "mb_from_acoustid": True,
+        "force_staging_reason": "Title mismatch: expected “A”, got “B”",
+    })
+    assert confidence == "flagged"
+    assert flag_reason is not None
+
+
+def test_path_b_acoustid_rescue_still_verified(tmp_path: Path) -> None:
+    """The pre-existing Path B behaviour is unchanged."""
+    confidence, _ = _classify(tmp_path, {
+        "mb_match_source": "acoustid",
+        "mb_from_acoustid": True,
+    })
+    assert confidence == "verified"

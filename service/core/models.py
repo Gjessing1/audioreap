@@ -242,6 +242,11 @@ class ResolvedTrackMetadata(BaseModel):
     acoustid_confidence: float | None = None
     text_search_similarity: float | None = None
     mb_match_source: str | None = None
+    # The AcoustID fingerprint agreed with the recording that was settled on.
+    # Distinct from `mb_match_source == "acoustid"`, which is Path B's narrower
+    # "the fingerprint rescued a below-threshold text match" — a locked-recording
+    # (Path A) confirmation is the stronger signal and sets only this.
+    mb_from_acoustid: bool = False
     mb_genres: list[str] = []
     # Phase 1 observability: the ranked candidate pool with per-candidate component
     # scores (text_sim / query_sim / acoustid_match / combined), best-first. Empty

@@ -218,6 +218,13 @@ def _classify_review_confidence(row: AcquisitionJobRow, m: dict) -> tuple[str, s
       "verified" — AcoustID-confirmed or text_search_similarity ≥ 0.90 (green)
       "probable" — no flags, but below the verified threshold (amber)
     flag_reason is the human-readable reason when flagged, else None.
+
+    `mb_from_acoustid` is checked, not `mb_match_source == "acoustid"`: the latter
+    is set only on Path B, and only when the fingerprint *rescued* a text match
+    that scored below threshold. A Path A (locked-recording) job whose fingerprint
+    confirmed the exact recording — the strongest evidence the pipeline can
+    produce — keeps `mb_match_source == "locked_recording"`, so keying off the
+    label alone graded the best matches amber and the weakest ones green.
     """
     has_staging = bool(row.staging_path and Path(row.staging_path).exists())
     if not has_staging:
@@ -226,8 +233,10 @@ def _classify_review_confidence(row: AcquisitionJobRow, m: dict) -> tuple[str, s
         if m.get("force_staging_reason"):
             return "flagged", m["force_staging_reason"]
         source = m.get("mb_match_source")
-        if source == "acoustid" or (
-            source == "text_search" and (m.get("text_search_similarity") or 0) >= 0.90
+        if (
+            m.get("mb_from_acoustid")
+            or source == "acoustid"
+            or (source == "text_search" and (m.get("text_search_similarity") or 0) >= 0.90)
         ):
             return "verified", None
     return "probable", None
@@ -241,7 +250,7 @@ def _review_reason(confidence: str, flag_reason: str | None, meta: dict) -> str:
     if flag_reason:
         return flag_reason
     if confidence == "verified":
-        if meta.get("mb_match_source") == "acoustid":
+        if meta.get("mb_from_acoustid") or meta.get("mb_match_source") == "acoustid":
             return "Ready to approve — audio fingerprint confirmed the match"
         return "Ready to approve — title and artist are a strong match"
     return "Confirm the metadata — this match is below the verified threshold"

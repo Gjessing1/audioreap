@@ -344,6 +344,11 @@ class _IdentifyState:
     isrc: str | None = None
     acoustid_confidence: float | None = None
     mb_match_source: str | None = None
+    # The fingerprint agreed with the recording we settled on. Set on BOTH paths,
+    # unlike `mb_match_source == "acoustid"`, which Path B uses to mean something
+    # narrower: "AcoustID *rescued* a text match that scored below threshold".
+    # Path A's confirmation is the stronger signal and used to be discarded.
+    mb_from_acoustid: bool = False
     text_search_similarity: float | None = None
     candidate_scores: list[CandidateScore] = field(default_factory=list)
     force_staging_reason: str | None = None
@@ -827,6 +832,7 @@ async def _identify_recording(
                 state, audio_path, clean_query, session_factory, job_id
             )
 
+        state.mb_from_acoustid = mb_from_acoustid
         if mb is not None:
             _apply_mb_result(state, mb, mb_from_acoustid, candidate, source_modifiers, job_id)
 
@@ -1025,6 +1031,7 @@ async def _stage_for_review(
         acoustid_confidence=state.acoustid_confidence,
         text_search_similarity=state.text_search_similarity,
         mb_match_source=state.mb_match_source,
+        mb_from_acoustid=state.mb_from_acoustid,
         candidates=state.candidate_scores,
         is_compilation=is_compilation,
         force_staging_reason=state.force_staging_reason,
