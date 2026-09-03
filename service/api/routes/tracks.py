@@ -395,7 +395,8 @@ async def _edit_card_ctx(
         "genres": list(genres),
         "artist_names": list(artist_names),
         "album_names": list(album_names),
-        "provider_ref": row.file.provider_ref if row.file else None,
+        # Gates the "↑ Upgrade" action — either reference lets reacquire re-fetch.
+        "provider_ref": (row.file.source_url or row.file.provider_ref) if row.file else None,
         "bitrate_kbps": row.file.bitrate_kbps if row.file else None,
         "min_bitrate_kbps": settings.min_bitrate_kbps,
         "source_album_id": source_album_id,
@@ -825,16 +826,33 @@ async def reacquire_track(
     row = (await session.execute(stmt)).unique().scalar_one_or_none()
     if row is None:
         raise HTTPException(404)
-    if not row.file or not row.file.provider_ref:
+    # Prefer the canonical media URL over the stored provider_ref: an album batch
+    # was fetched with a `ytsearch1:` expression, and re-running that search can
+    # land on a different video than the one this file actually came from.
+    ref = (row.file.source_url or row.file.provider_ref) if row.file else None
+    if not ref:
         raise HTTPException(400, "Track has no provider reference — search and re-acquire manually")
+
+    # A file that is still on disk makes this a replacement (the "↑ Upgrade"
+    # action): the dedup check would otherwise match the very track being
+    # re-acquired and report the job done without downloading anything. A file
+    # that is gone is a plain re-acquisition and goes through the review gate.
+    current_path = Path(row.file.path) if row.file else None
+    is_replacement = current_path is not None and current_path.exists()
 
     candidate = TrackCandidate(
         provider=row.file.provider or "ytdlp",
-        provider_ref=row.file.provider_ref,
+        provider_ref=ref,
         title=row.title,
         artist=row.artist.name,
         album=row.album.title if row.album else None,
+        year=row.album.year if row.album else None,
+        track_number=row.track_number,
         duration_seconds=row.duration_seconds,
+        mb_recording_id=row.musicbrainz_recording_id,
+        mb_release_id=row.album.musicbrainz_release_id if row.album else None,
+        skip_dedup=is_replacement,
+        replace_path=str(current_path) if is_replacement else None,
     )
 
     job_id = await create_job(

@@ -418,7 +418,9 @@ async def library_health_missing_files(
             "title": t.title,
             "artist": t.artist.name if t.artist else "",
             "album": t.album.title if t.album else None,
-            "provider_ref": t.file.provider_ref if t.file else None,
+            # Either reference is enough for one-click re-acquire; the route
+            # prefers source_url when both are present.
+            "provider_ref": (t.file.source_url or t.file.provider_ref) if t.file else None,
         }
         for t in missing
     ]

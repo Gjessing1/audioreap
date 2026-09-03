@@ -26,7 +26,7 @@ from service.core.identity import make_id
 from service.core.models import CandidateScore, ResolvedTrackMetadata, TrackCandidate
 from service.core.normalize import clean_for_search, normalize
 from service.db.schema import AcquisitionJobRow
-from service.index.scanner import index_file
+from service.index.scanner import SourceProvenance, index_file
 from service.library.layout import track_path
 from service.library.tagger import has_cover_art, read_tags, write_cover_jpg, write_tags
 from service.library.writer import atomic_place
@@ -127,7 +127,15 @@ async def _find_local_match(
     session: AsyncSession,
     candidate: TrackCandidate,
 ) -> str | None:
-    """Return the internal_id of a local track that confidently matches candidate."""
+    """Return the internal_id of a local track that confidently matches candidate.
+
+    A match only counts when its audio file is still on disk. An index row whose
+    file was deleted or lost to a disk failure is exactly the case a user is
+    trying to repair, and treating it as a hit made `run_acquisition` report the
+    job done in a fraction of a second having downloaded nothing — a repair
+    action that claimed success and did nothing. Stale rows are skipped here so
+    the download proceeds; the scanner sweeps the rows themselves.
+    """
     from sqlalchemy import select
     from sqlalchemy.orm import joinedload
 
@@ -145,11 +153,18 @@ async def _find_local_match(
     rows = (await session.execute(stmt)).unique().scalars().all()
 
     for row in rows:
-        if is_confident_match(
+        if not is_confident_match(
             candidate.title, candidate.artist, candidate.duration_seconds,
             row.title, row.artist.name, row.duration_seconds,
         ):
-            return row.id
+            continue
+        if row.file is None or not await asyncio.to_thread(Path(row.file.path).exists):
+            logger.info(
+                "Dedup: ignoring %s — indexed file is missing from disk (%s)",
+                row.id, row.file.path if row.file else "no file row",
+            )
+            continue
+        return row.id
     return None
 
 
@@ -995,6 +1010,8 @@ async def _stage_for_review(
         source_codec=fetch_result.codec,
         source_bitrate_kbps=fetch_result.bitrate_kbps,
         source_url=fetch_result.source_url,
+        source_provider=fetch_result.provider,
+        source_provider_ref=fetch_result.provider_ref,
         source_title=src.raw_title,
         source_channel=src.channel,
         source_duration_seconds=src.duration_seconds,
@@ -1400,6 +1417,7 @@ async def _index_placed_track(
     mb_release_group_id: str | None,
     mb_artist_id: str | None,
     is_enrichment: bool,
+    provenance: SourceProvenance | None = None,
 ) -> tuple[str, str | None]:
     """Index the placed file and propagate MB IDs to the Track/Artist/Album rows.
 
@@ -1429,7 +1447,7 @@ async def _index_placed_track(
                     await session.delete(tombstone)
                     await session.flush()
 
-            indexed_track_id = await index_file(session, dest)
+            indexed_track_id = await index_file(session, dest, provenance)
             if indexed_track_id:
                 track_id = indexed_track_id
             hca = await asyncio.to_thread(has_cover_art, dest)
@@ -1694,6 +1712,16 @@ async def place_approved_track(
     # hit this routinely because their candidate duration is the MB tracklist
     # value, not the download.
     hash_track_id = make_id(artist=artist, title=title, duration_seconds=meta.duration_seconds)
+    # Acquisition provenance. Enrichment only retags a file that was already in
+    # /music — this job did not fetch it, so it has nothing to say about where it
+    # came from and must not overwrite what the row already holds. The row's own
+    # provider_ref is the fallback for pre-provenance jobs, whose resolved
+    # metadata predates these fields but whose job row still records the ref.
+    provenance = None if is_enrichment else SourceProvenance(
+        provider=meta.source_provider or row.provider or None,
+        provider_ref=meta.source_provider_ref or row.provider_ref or None,
+        source_url=meta.source_url or None,
+    )
     hash_track_id, album_id_for_rg = await _index_placed_track(
         session, dest,
         fallback_track_id=hash_track_id,
@@ -1708,6 +1736,7 @@ async def place_approved_track(
         mb_release_group_id=mb_release_group_id,
         mb_artist_id=mb_artist_id,
         is_enrichment=is_enrichment,
+        provenance=provenance,
     )
 
     # ── Album ReplayGain (debounced) + Navidrome scan ──────────────────────────

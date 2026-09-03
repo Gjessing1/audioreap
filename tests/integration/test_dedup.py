@@ -161,3 +161,66 @@ async def test_dedup_does_not_skip_different_track(
     # music_dir still only has the seeded track (new track is in staging, not music)
     wav_files = list(music_dir.rglob("*.wav"))
     assert len(wav_files) == 1
+
+
+async def test_dedup_does_not_skip_when_indexed_file_is_gone(
+    tmp_path: Path, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """A stale index row must not win the dedup check.
+
+    Regression: `_find_local_match` matched on title/artist/duration against the
+    `tracks` table alone and never stat'd the file, so re-acquiring a track whose
+    audio was lost to a disk failure marked the job `done` in ~0.2s having
+    downloaded nothing — a repair action that reported success and did nothing.
+    """
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+
+    existing = music_dir / "daft_punk.wav"
+    _make_wav(existing)
+    _tag_wav(existing, "Around the World", "Daft Punk")
+    await _scan_file(db, music_dir, existing)
+
+    # The disk failure: the row survives, the audio does not.
+    existing.unlink()
+
+    candidate = TrackCandidate(
+        provider="fake",
+        provider_ref="fake-001",
+        title="Around the World",
+        artist="Daft Punk",
+        duration_seconds=None,
+    )
+
+    provider = FakeProvider(FIXTURE_AUDIO)
+    fetch_mock = AsyncMock(wraps=provider.fetch)
+
+    async with db() as session, session.begin():
+        job_id = await create_job(
+            session,
+            provider_name="fake",
+            provider_ref="fake-001",
+            candidate=candidate,
+            query="Around the World Daft Punk [re-acquire]",
+        )
+    with patch.object(provider, "fetch", fetch_mock):
+        await run_acquisition(
+            job_id=job_id,
+            provider=provider,
+            provider_ref="fake-001",
+            candidate=candidate,
+            tmp_acquire_dir=tmp_path / "tmp",
+            session_factory=db,
+            scan_trigger=AsyncMock(),
+        )
+
+    fetch_mock.assert_called_once()
+
+    async with db() as session:
+        row = await session.get(AcquisitionJobRow, job_id)
+    assert row is not None
+    # Goes through the review gate like any other download — the user picked no
+    # source here, so the replacement auto-approve bypass must not apply.
+    assert row.state == "needs_review", f"Expected needs_review, got {row.state}"
+    assert row.staging_path is not None
+    assert Path(row.staging_path).exists()

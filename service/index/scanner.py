@@ -34,6 +34,23 @@ from service.metadata.quality import compute_quality_score
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class SourceProvenance:
+    """Where a file came from, for the ``track_files`` provenance columns.
+
+    Only the acquisition pipeline can know this — it holds the FetchResult that
+    produced the file. The scanner's own walk finds files cold and passes None,
+    which correctly leaves the columns NULL rather than inventing a source.
+    """
+
+    provider: str | None = None
+    provider_ref: str | None = None
+    source_url: str | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.provider or self.provider_ref or self.source_url)
+
+
 @dataclass
 class ScanResult:
     added: int = 0
@@ -155,11 +172,32 @@ async def upsert_album(
     return alid
 
 
+async def _drop_stale_files(session: AsyncSession, track_id: str, keep_path: str) -> None:
+    """Delete this track's other TrackFile rows whose file is gone from disk.
+
+    ``Track.file`` is uselist=False, so a second row for the same track makes the
+    relationship ambiguous and the UI reads whichever one SQLAlchemy happens to
+    pick. That happens whenever a re-acquired file lands at a different path than
+    the one it replaces (.mp3 -> .ogg). Only rows we can *verify* are gone are
+    removed — a present file is never touched here; the full scan owns that sweep.
+    """
+    rows = (await session.execute(
+        select(TrackFile).where(
+            TrackFile.track_id == track_id, TrackFile.path != keep_path
+        )
+    )).scalars().all()
+    for row in rows:
+        if not Path(row.path).exists():
+            await session.delete(row)
+            logger.info("Dropped stale file row for %s: %s", track_id, row.path)
+
+
 async def _upsert_track_file(
     session: AsyncSession,
     tagged: TaggedFile,
     track_id: str,
     file_mtime: float,
+    provenance: SourceProvenance | None = None,
 ) -> bool:
     """Return True if this was a new/updated record."""
     path_str = str(tagged.path)
@@ -167,8 +205,14 @@ async def _upsert_track_file(
     row = result.scalar_one_or_none()
 
     if row is not None:
+        # Provenance is applied before the mtime short-circuit: a re-approval that
+        # rewrote nothing on disk still knows something the row does not.
+        if provenance:
+            row.provider = provenance.provider
+            row.provider_ref = provenance.provider_ref
+            row.source_url = provenance.source_url
         if row.file_mtime == file_mtime:
-            return False  # unchanged
+            return bool(provenance)  # otherwise unchanged
         row.codec = tagged.codec
         row.container = tagged.container
         row.bitrate_kbps = tagged.bitrate_kbps
@@ -184,15 +228,23 @@ async def _upsert_track_file(
         container=tagged.container,
         bitrate_kbps=tagged.bitrate_kbps,
         sample_rate_hz=tagged.sample_rate_hz,
+        provider=provenance.provider if provenance else None,
+        provider_ref=provenance.provider_ref if provenance else None,
+        source_url=provenance.source_url if provenance else None,
         has_cover_art=tagged.has_cover_art,
         file_mtime=file_mtime,
         created_at=_now(),
     )
     session.add(new_file)
+    await _drop_stale_files(session, track_id, path_str)
     return True
 
 
-async def index_file(session: AsyncSession, path: Path) -> str:
+async def index_file(
+    session: AsyncSession,
+    path: Path,
+    provenance: SourceProvenance | None = None,
+) -> str:
     """Index a single newly-placed file and return its track ID.
 
     Convenience wrapper for the pipeline. The returned ID is the *actual* row
@@ -200,8 +252,14 @@ async def index_file(session: AsyncSession, path: Path) -> str:
     the track up rather than recomputing make_id() with candidate-side values,
     which can diverge (e.g. a duration that crosses the bucket boundary) and
     leave the row unreachable. Returns "" if the file could not be indexed.
+
+    ``provenance`` records which provider/ref/URL fetched this file. Pass it from
+    the acquisition pipeline, which is the only caller that knows; omit it for a
+    file discovered on disk, where NULL is the honest answer.
     """
-    _status, track_id = await _process_file(session, path, incremental=False)
+    _status, track_id = await _process_file(
+        session, path, incremental=False, provenance=provenance
+    )
     return track_id
 
 
@@ -209,6 +267,7 @@ async def _process_file(
     session: AsyncSession,
     path: Path,
     incremental: bool,
+    provenance: SourceProvenance | None = None,
 ) -> tuple[str, str]:
     """Process a single audio file.
 
@@ -327,7 +386,9 @@ async def _process_file(
         track_row.tag_quality_score = quality_score
         track_row.updated_at = _now()
 
-    is_new_or_updated = await _upsert_track_file(session, tagged, track_id, file_mtime)
+    is_new_or_updated = await _upsert_track_file(
+        session, tagged, track_id, file_mtime, provenance
+    )
     if not is_new_or_updated:
         return ("skipped", track_id)
     return ("added" if track_is_new else "updated", track_id)

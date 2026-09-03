@@ -119,7 +119,7 @@ class FakeProvider(Provider):
             file_path=dest_path,
             provider=self.name,
             provider_ref=provider_ref,
-            source_url=None,
+            source_url=f"fake://media/{safe_ref}",
             codec="pcm_s16le",
             container="wav",
             bitrate_kbps=None,

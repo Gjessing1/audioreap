@@ -214,6 +214,13 @@ class ResolvedTrackMetadata(BaseModel):
     # resolved YouTube watch URL, not the `ytsearch1:` query). Surfaced in the
     # review card so the user can open the source and validate the pick fast.
     source_url: str | None = None
+    # The provider and the reference it actually fetched from — post-download, so
+    # this is the substituted video on an age-gate retry, not the `ytsearch1:`
+    # expression the job was created with. Persisted onto the TrackFile row at
+    # approval so "where did this file come from?" survives the job's deletion and
+    # one-click re-acquire has something to re-fetch.
+    source_provider: str | None = None
+    source_provider_ref: str | None = None
     # Human-readable description of that media: the raw video title (with all
     # its "(Live)" / "(Clean)" decorations intact), the uploading channel, and
     # the media length. Lets the review UI show WHAT was downloaded without a
