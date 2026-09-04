@@ -115,7 +115,11 @@ async def basic_auth_middleware(request: Request, call_next: object) -> Response
         return await call_next_fn(request)
 
     path = request.url.path
-    if (path == "/health"
+    # /healthz, not /health: the exemption was written for the unauthenticated
+    # JSON liveness probe, and /health is now the web UI's System-health page
+    # (disk, queue depth, service status) — which should sit behind auth with
+    # the rest of the UI. The container healthcheck sends no credentials.
+    if (path == "/healthz"
             or path.startswith("/static/")
             or path.endswith(".webmanifest")
             or path.endswith("sw.js")
@@ -166,10 +170,16 @@ from service.api.webui import router as webui_router  # noqa: E402
 app.include_router(webui_router)
 
 
-# ── Health ────────────────────────────────────────────────────────────────
+# ── Liveness probe ────────────────────────────────────────────────────────
+# Deliberately /healthz, not /health: the web UI's System-health page owns
+# /health (service/api/routes/admin.py), and webui_router is included above,
+# so anything registered here as /health is shadowed and never reached. That
+# shadowing is what silently put the admin page — a full template render that
+# round-trips Navidrome, Redis and the DB — behind the container healthcheck,
+# once every 10s. Keep this endpoint free of I/O so it stays cheap to poll.
 
-@app.get("/health")
-async def health() -> dict[str, object]:
+@app.get("/healthz")
+async def healthz() -> dict[str, object]:
     return {
         "status": "ok",
         "version": "0.1.0",

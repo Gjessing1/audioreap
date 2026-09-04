@@ -37,7 +37,17 @@ async def health_page(
         async with httpx.AsyncClient(timeout=5.0) as c:
             r = await c.get(
                 f"{settings.navidrome_url}/rest/ping.view",
-                params={"u": "x", "p": "x", "v": "1.16.1", "c": "audioreap", "f": "json"},
+                params={
+                    # Real credentials, not placeholders. Navidrome answers 200
+                    # with a Subsonic error body for a bad login, so the "did it
+                    # respond" check worked either way — but every call logged an
+                    # "Invalid login" warning pair on the Navidrome side.
+                    "u": settings.navidrome_user,
+                    "p": settings.navidrome_password,
+                    "v": "1.16.1",
+                    "c": "audioreap",
+                    "f": "json",
+                },
             )
             navidrome_ok = r.status_code < 500
     except Exception as exc:
