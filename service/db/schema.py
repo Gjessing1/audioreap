@@ -208,3 +208,28 @@ class DeletedTrack(Base):
     track_artist: Mapped[str | None] = mapped_column(String, nullable=True)
     prevent_reimport: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)
     deleted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class PushDevice(Base):
+    """A phone that asks this server what it has missed while audioreap was closed.
+
+    The APK's background check runs in a broadcast receiver woken by an alarm — outside
+    the WebView, so it carries none of the browser's session. It presents a credential of
+    its own instead: a secret minted by the already-authenticated web UI and handed to
+    the shell over the Capacitor bridge (see service/push/devices.py).
+
+    Only the SHA-256 is kept. The plaintext is returned exactly once and is
+    unrecoverable afterwards, so a leaked database backup leaks no live credential.
+    """
+    __tablename__ = "push_devices"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    # "android" today; a column rather than an assumption so a second shell needs no
+    # new table.
+    platform: Mapped[str] = mapped_column(String, nullable=False, default="android")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The cursor: the newest event this device has already been handed. Everything
+    # after it is what it is still owed a notification for.
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

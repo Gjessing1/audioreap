@@ -1,5 +1,6 @@
 package io.gjessing.audioreap;
 
+import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
 import android.os.Bundle;
@@ -49,6 +50,30 @@ public class MainActivity extends BridgeActivity {
         // BridgeActivity does not consume Android's system Back action, so without a
         // callback Back finishes the activity from anywhere in the app.
         getOnBackPressedDispatcher().addCallback(this, new AudioreapBackNavigation(this));
+
+        // Launched by tapping a notification: the WebView has loaded nothing yet, so the
+        // page it points at is simply the URL to start on.
+        String path = AudioreapNotificationLink.pathFrom(getIntent());
+        if (path != null && serverUrl != null && bridge != null) {
+            String url = AudioreapNotificationLink.urlFor(serverUrl, path);
+            if (url != null) bridge.getWebView().post(() -> bridge.getWebView().loadUrl(url));
+        }
+    }
+
+    /**
+     * A notification tapped while audioreap is already open. `launchMode="singleTask"`
+     * routes it here instead of recreating the activity, so the running WebView is asked
+     * to navigate — the same full page load tapping a nav link would do, and one that
+     * keeps the session (and, behind SSO, avoids re-running the handshake).
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String path = AudioreapNotificationLink.pathFrom(intent);
+        if (path == null || bridge == null) return;
+        String url = AudioreapNotificationLink.urlFor(AudioreapPreferences.getServerUrl(this), path);
+        if (url != null) bridge.getWebView().post(() -> bridge.getWebView().loadUrl(url));
     }
 
     /**

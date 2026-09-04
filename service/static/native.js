@@ -12,6 +12,9 @@
  *   2. Back. The shell asks the page before it exits — see window.audioreapBack below.
  *   3. Updates. A deploy updates the app, because the app is served. The APK itself
  *      changes rarely, and when it does the phone finds out from /api/app/version.
+ *   4. Notifications. A download is the thing you walk away from, so the shell asks the
+ *      server what finished while the app was closed. This side only turns that on and
+ *      off — the asking happens in the APK, on an alarm, with the app not running.
  *
  * Every native call is optional and failure is swallowed: this UI is served from the
  * server, so it is routinely NEWER than the installed APK and must keep working on a
@@ -165,6 +168,79 @@
         downloadUrl: release ? new URL(release.apkUrl, window.location.origin).href : null,
       };
     });
+  };
+
+  /* ── Background notifications ─────────────────────────────────────────────
+   * Only the shell can post a notification while audioreap is closed, and only the
+   * page can mint the credential it needs — the poll runs in a broadcast receiver,
+   * outside the session this document is holding. So enabling is a handshake: the
+   * page asks the server for a device token, hands it across the bridge, and the
+   * shell asks Android for permission and arms its alarm.
+   */
+  function pushPlugin() {
+    var plugin = nativePlugin();
+    return plugin && plugin.pushStatus && plugin.enablePush && plugin.disablePush
+      ? plugin : null;   // an APK older than this page: no notifications, no error
+  }
+
+  function unregister(token) {
+    if (!token) return Promise.resolve();
+    return fetch('/api/push/device/unregister', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token }),
+    }).catch(function () { /* the device already stopped polling; the row is stale, not harmful */ });
+  }
+
+  /** What this device does today: {supported, enabled, granted}. Never rejects. */
+  window.audioreapPushState = function () {
+    var plugin = pushPlugin();
+    if (!plugin) return Promise.resolve({ supported: false, enabled: false, granted: false });
+    return plugin.pushStatus()
+      .then(function (status) {
+        return { supported: true, enabled: !!status.enabled, granted: !!status.granted };
+      })
+      .catch(function () { return { supported: false, enabled: false, granted: false }; });
+  };
+
+  /**
+   * Turn them on. Resolves {enabled, granted} — `granted: false` is the user declining
+   * Android's permission prompt, which is an outcome to explain, not an error.
+   */
+  window.audioreapEnablePush = function () {
+    var plugin = pushPlugin();
+    if (!plugin) return Promise.resolve({ enabled: false, granted: false });
+    return fetch('/api/push/device', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'android' }),
+    })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (payload) {
+        if (!payload || typeof payload.token !== 'string') {
+          return { enabled: false, granted: false };
+        }
+        return plugin.enablePush({ token: payload.token }).then(function (status) {
+          // A credential the shell did not keep would poll from nowhere for ever.
+          // Hand it straight back rather than leaving a row that can never be used.
+          if (!status || !status.enabled) {
+            return unregister(payload.token).then(function () {
+              return { enabled: false, granted: !!(status && status.granted) };
+            });
+          }
+          return { enabled: true, granted: true };
+        });
+      })
+      .catch(function () { return { enabled: false, granted: false }; });
+  };
+
+  /** Turn them off, and revoke the credential rather than orphaning it on the server. */
+  window.audioreapDisablePush = function () {
+    var plugin = pushPlugin();
+    if (!plugin) return Promise.resolve();
+    return plugin.disablePush()
+      .then(function (result) { return unregister(result && result.token); })
+      .catch(function () { /* nothing stored to drop */ });
   };
 
   /**

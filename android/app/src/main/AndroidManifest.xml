@@ -41,14 +41,50 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!--
+          The download check, and the two events that silently cancel it: BOOT_COMPLETED,
+          because a reboot clears every alarm on the device, and MY_PACKAGE_REPLACED,
+          because an in-place update does the same without a boot broadcast following it.
+          Inert unless notifications were turned on (AudioreapPushAlarm#enable checks for
+          a stored credential first).
+        -->
+        <receiver
+            android:name=".AudioreapPushReceiver"
+            android:exported="false"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions -->
 
     <!--
-      INTERNET is the whole list. Everything audioreap does happens on the server; the APK
-      downloads nothing itself (an app update is handed to the system download manager),
-      stores nothing but the server address, and posts no notifications.
+      A short list, and it stays short. Everything audioreap does happens on the server;
+      the APK downloads nothing itself (an app update is handed to the system download
+      manager) and stores nothing but the server address and, once notifications are on,
+      the credential it checks in with.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 13+ gates notifications behind a runtime grant (the plugin asks, once,
+         when the user turns them on in Settings). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Re-arm the download check after a reboot, which cancels every alarm the app set. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+      Hold the CPU awake for the few seconds the check takes. AlarmManager's own wake lock
+      lasts only as long as onReceive, and the work continues past it
+      (AudioreapPushReceiver), so an idle phone would otherwise suspend mid-request.
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      Deliberately absent: FOREGROUND_SERVICE, because nothing runs indefinitely, and
+      REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, because the check uses setAndAllowWhileIdle
+      and therefore fires through Doze without an exemption. No exact-alarm permission
+      either: a finished download has no appointed time, so the inexact alarm is the
+      honest declaration as well as the cheaper one.
+    -->
 </manifest>

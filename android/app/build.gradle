@@ -21,8 +21,8 @@ android {
         // Bump both for every published APK: versionCode is what Android compares when
         // installing over an existing app, and what /api/app/version offers an update
         // against. scripts/release-android.sh reads them straight out of this file.
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 2
+        versionName "0.2.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

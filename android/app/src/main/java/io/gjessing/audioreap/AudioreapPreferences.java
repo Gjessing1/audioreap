@@ -5,7 +5,8 @@ import android.content.SharedPreferences;
 import java.net.URI;
 
 /**
- * The one thing this shell has to remember: which audioreap server it is a front end for.
+ * The two things this shell has to remember: which audioreap server it is a front end
+ * for, and — once the user turns notifications on — the credential it checks in with.
  *
  * The APK ships with no address baked in — audioreap is self-hosted, so the server is the
  * user's own — and the web app itself is served from there. Everything else the app knows
@@ -14,6 +15,7 @@ import java.net.URI;
 final class AudioreapPreferences {
     private static final String PREFS = "audioreap_native";
     private static final String SERVER_URL = "server_url";
+    private static final String PUSH_TOKEN = "push_token";
 
     private AudioreapPreferences() {}
 
@@ -25,6 +27,29 @@ final class AudioreapPreferences {
         String normalized = normalizeServerUrl(serverUrl);
         if (normalized == null) throw new IllegalArgumentException("Invalid audioreap server URL");
         prefs(context).edit().putString(SERVER_URL, normalized).apply();
+    }
+
+    /**
+     * The bearer token this device polls with, or null when notifications are off.
+     *
+     * Private app storage, which is the same place the WebView keeps the session cookie
+     * that could mint another one — so this stores nothing that was not already there,
+     * and it is a credential for exactly one read-only route (/api/push/pending).
+     */
+    static String getPushToken(Context context) {
+        String token = prefs(context).getString(PUSH_TOKEN, null);
+        return token == null || token.isBlank() ? null : token;
+    }
+
+    /** Store a freshly minted credential, or null to forget the one held. */
+    static void setPushToken(Context context, String token) {
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (token == null || token.isBlank()) {
+            editor.remove(PUSH_TOKEN);
+        } else {
+            editor.putString(PUSH_TOKEN, token.trim());
+        }
+        editor.apply();
     }
 
     /**

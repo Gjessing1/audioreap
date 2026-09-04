@@ -14,4 +14,8 @@
     <string name="server_unavailable_message">audioreap could not load %1$s. Check the connection or choose a different server.</string>
     <string name="retry">Retry</string>
     <string name="change_server">Change server</string>
+
+    <string name="downloads_notification_channel_id">downloads</string>
+    <string name="downloads_notification_channel_name">Downloads</string>
+    <string name="downloads_notification_channel_description">Tells you when a download has finished and is waiting at the review gate.</string>
 </resources>

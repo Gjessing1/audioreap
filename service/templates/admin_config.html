@@ -326,6 +326,32 @@
         <button type="button" class="btn btn-sm" id="android-app-download" hidden>Download APK</button>
       </div>
     </div>
+
+    {#
+      A device setting, not a server one — it lives outside #settings-form because it
+      takes effect on the phone the moment it is switched, and there is nothing to save.
+      Hidden unless this device is an app that can actually do it: a browser cannot post
+      a notification while it is closed, and an APK older than this page has no such
+      plugin method.
+    #}
+    <div class="set-row" id="android-push-row" hidden>
+      <div class="set-row__text">
+        <span class="set-row__label" id="android-push-label">Notify me when downloads finish</span>
+        <p class="set-row__desc" id="android-push-desc">
+          This phone checks in every few minutes and tells you when an album has finished
+          landing and is waiting at the review gate. Nothing runs in the background — no
+          permanent notice in the shade, no battery exemption.
+        </p>
+        <p class="set-row__meta set-row__meta--always" id="android-push-meta" hidden></p>
+      </div>
+      <div class="set-row__control">
+        <label class="switch">
+          <input type="checkbox" id="android-push" role="switch"
+                 aria-describedby="android-push-desc">
+          <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+        </label>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -391,6 +417,51 @@
       }
 
       section.hidden = false;
+    });
+
+    /* The notification switch. Every path re-reads the shell's own answer rather than
+       trusting the checkbox: the user can decline Android's permission prompt, and can
+       revoke the permission later from system settings, and in both cases the switch
+       has to end up showing what the device actually does. */
+    const pushRow = document.getElementById('android-push-row');
+    const pushToggle = document.getElementById('android-push');
+    const pushMeta = document.getElementById('android-push-meta');
+    if (!pushRow || !pushToggle || !window.audioreapPushState) return;
+
+    const paintPush = (push) => {
+      pushToggle.checked = push.enabled;
+      pushToggle.disabled = false;
+      if (push.enabled) {
+        pushMeta.textContent = 'On for this device. Other devices are unaffected.';
+        pushMeta.hidden = false;
+      } else if (push.asked && !push.granted) {
+        pushMeta.textContent = 'Android is blocking notifications for audioreap. ' +
+          'Turn them on in Settings → Apps → audioreap → Notifications, then try again.';
+        pushMeta.hidden = false;
+      } else {
+        pushMeta.hidden = true;
+      }
+    };
+
+    window.audioreapPushState().then(function (push) {
+      if (!push.supported) return;   // a browser, or an APK from before this feature
+      paintPush(push);
+      pushRow.hidden = false;
+      section.hidden = false;
+
+      pushToggle.addEventListener('change', function () {
+        const wanted = pushToggle.checked;
+        pushToggle.disabled = true;
+        if (wanted) {
+          window.audioreapEnablePush().then(function (result) {
+            paintPush({ enabled: result.enabled, granted: result.granted, asked: true });
+          });
+        } else {
+          window.audioreapDisablePush().then(function () {
+            paintPush({ enabled: false, granted: true });
+          });
+        }
+      });
     });
   });
 </script>

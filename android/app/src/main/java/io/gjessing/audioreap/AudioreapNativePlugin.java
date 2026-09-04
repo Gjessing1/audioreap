@@ -1,5 +1,6 @@
 package io.gjessing.audioreap;
 
+import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
@@ -12,7 +13,10 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 /**
  * The whole native surface of the audioreap app.
@@ -21,10 +25,17 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  * change ships as a page load and never as a new APK; the only things that must live in
  * the shell are the ones a WebView cannot do for itself — remember which server to load,
  * report the installed version so the app can offer its own update, hand a link to a real
- * browser, and paint what shows behind the system bars.
+ * browser, paint what shows behind the system bars, and keep asking about finished
+ * downloads while the app is closed.
  */
-@CapacitorPlugin(name = "AudioreapNative")
+@CapacitorPlugin(
+    name = "AudioreapNative",
+    permissions = {
+        @Permission(alias = AudioreapNativePlugin.NOTIFICATIONS, strings = { Manifest.permission.POST_NOTIFICATIONS })
+    }
+)
 public class AudioreapNativePlugin extends Plugin {
+    static final String NOTIFICATIONS = "notifications";
     private AudioreapNavigation navigation;
     private Integer systemBarsColor;
 
@@ -32,6 +43,12 @@ public class AudioreapNativePlugin extends Plugin {
     public void load() {
         String serverUrl = AudioreapPreferences.getServerUrl(getContext());
         if (serverUrl != null) navigation = new AudioreapNavigation(serverUrl);
+        // Opening audioreap is the reliable moment to re-arm the download check: the
+        // receiver covers reboots and updates, but nothing covers an alarm the system
+        // dropped — force-stopping the app cancels every alarm it had set, and only
+        // launching it again can restore them. A no-op unless this device holds a
+        // credential.
+        AudioreapPushAlarm.enable(getContext());
     }
 
     @Override
@@ -138,6 +155,89 @@ public class AudioreapNativePlugin extends Plugin {
                 window.setNavigationBarColor(color);
             }
         }
+    }
+
+    /**
+     * Turn background notifications on: store the credential the web app minted and arm
+     * the alarm that asks audioreap what has finished (AudioreapPushAlarm).
+     *
+     * A resolved *method call*, deliberately — not a Capacitor listener. audioreap is
+     * served from a remote origin, where plugin listener registration never takes hold
+     * (the same trap that once broke Android Back), so anything delivered as an event
+     * would never arrive. Asking and answering in one promise depends on nothing but the
+     * bridge call that is already working.
+     *
+     * Resolves the same {@link #pushStatus} shape, so the page can act on the outcome
+     * without a second round trip: `granted=false` when the user declined the Android 13+
+     * runtime permission, `enabled=false` when nothing was stored to run with. Never
+     * rejects for either — those are states the page explains, not errors.
+     */
+    @PluginMethod
+    public void enablePush(PluginCall call) {
+        String token = call.getString("token");
+        if (token == null || token.isBlank()) {
+            call.reject("A device credential is required");
+            return;
+        }
+        if (AudioreapPreferences.getServerUrl(getContext()) == null) {
+            call.reject("No audioreap server is configured on this device");
+            return;
+        }
+        AudioreapPreferences.setPushToken(getContext(), token);
+        if (getPermissionState(NOTIFICATIONS) == PermissionState.GRANTED) {
+            startPush(call);
+            return;
+        }
+        // Below Android 13 notifications need no runtime grant, so the state above is
+        // already GRANTED there and this only runs on 13+.
+        requestPermissionForAlias(NOTIFICATIONS, call, "pushPermissionCallback");
+    }
+
+    @PermissionCallback
+    private void pushPermissionCallback(PluginCall call) {
+        if (getPermissionState(NOTIFICATIONS) != PermissionState.GRANTED) {
+            // Keep nothing a declined permission would leave stranded: a stored
+            // credential here would make pushStatus claim notifications are on, and the
+            // phone would poll a server it can never tell the user about.
+            AudioreapPreferences.setPushToken(getContext(), null);
+            call.resolve(status());
+            return;
+        }
+        startPush(call);
+    }
+
+    private void startPush(PluginCall call) {
+        AudioreapPushNotifier.ensureChannels(getContext());
+        AudioreapPushAlarm.enable(getContext());
+        call.resolve(status());
+    }
+
+    /** Turn them off, resolving with the credential dropped so the server can revoke it. */
+    @PluginMethod
+    public void disablePush(PluginCall call) {
+        String token = AudioreapPreferences.getPushToken(getContext());
+        AudioreapPreferences.setPushToken(getContext(), null);
+        AudioreapPushAlarm.disable(getContext());
+        JSObject result = new JSObject();
+        result.put("token", token);
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void pushStatus(PluginCall call) {
+        call.resolve(status());
+    }
+
+    /**
+     * `enabled` is "this device holds a credential and is asking" — there is no live
+     * connection whose state could be reported, and the gap between two checks is not an
+     * off state.
+     */
+    private JSObject status() {
+        JSObject result = new JSObject();
+        result.put("enabled", AudioreapPreferences.getPushToken(getContext()) != null);
+        result.put("granted", getPermissionState(NOTIFICATIONS) == PermissionState.GRANTED);
+        return result;
     }
 
     /**

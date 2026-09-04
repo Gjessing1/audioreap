@@ -126,7 +126,13 @@ async def basic_auth_middleware(request: Request, call_next: object) -> Response
             # address is typed in on first launch — so the only thing exposed is
             # the shell itself.
             or path == "/api/app/version"
-            or path == "/api/app/download"):
+            or path == "/api/app/download"
+            # The Android app's background check is made by an alarm-woken broadcast
+            # receiver, which carries none of the WebView's credentials and cannot
+            # follow an SSO redirect. It presents a per-device bearer token instead,
+            # which the route checks itself — unconditionally, so this exemption
+            # widens nothing (service/api/routes/push.py).
+            or path == "/api/push/pending"):
         return await call_next_fn(request)
 
     auth = request.headers.get("authorization", "")
