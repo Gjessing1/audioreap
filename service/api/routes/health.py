@@ -144,12 +144,18 @@ async def nav_attention_count(
         total = sum(counts.values())
         _attention_cache = (now, total)
 
+    # One poll serves both Library badges: this span replaces the top nav's, and
+    # the bottom tab bar's copy is swapped out-of-band (base.html).
     poll = 'hx-get="/nav/attention-count" hx-trigger="every 120s" hx-swap="outerHTML"'
-    if total:
-        return HTMLResponse(
-            f'<span class="nav-badge nav-badge-attention" title="{total} library item(s) need attention — see Library Health" {poll}>{total}</span>'
-        )
-    return HTMLResponse(f"<span {poll}></span>")
+    badge = (
+        f' class="nav-badge nav-badge-attention" title="{total} library item(s) need attention — see Library Health"'
+        if total else ""
+    )
+    text = total or ""
+    return HTMLResponse(
+        f'<span id="nav-attention-badge"{badge} {poll}>{text}</span>'
+        f'<span id="tab-attention-badge"{badge} hx-swap-oob="true">{text}</span>'
+    )
 
 
 @router.get("/library/health", response_class=HTMLResponse)

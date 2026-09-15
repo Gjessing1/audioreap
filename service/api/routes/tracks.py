@@ -20,7 +20,7 @@ from service.providers.ytdlp import explicit_score as _explicit_score
 
 from service.api.routes.artwork import _fetch_user_art
 from service.acquisition.queue import arq_pool, enqueue_acquire_track
-from service.api.shared import _do_scans, _error_badge, _get_track_with_file, _mb_recording_search, _resize_cover, templates
+from service.api.shared import _do_scans, _error_badge, _etag_matches, _get_track_with_file, _mb_recording_search, _resize_cover, _thumb_etag, _thumb_headers, templates
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/library/tracks")
@@ -165,6 +165,7 @@ async def move_track_to_album(
 
 @router.get("/{internal_id}/cover-art")
 async def track_cover_art(
+    request: Request,
     internal_id: str,
     size: int | None = Query(None, ge=32, le=512),
     session: AsyncSession = Depends(get_session),
@@ -174,8 +175,10 @@ async def track_cover_art(
     ?size=N serves a disk-cached thumbnail (max-width N px) instead of the
     full embedded art — list rows and any future grid view must use it so a
     screenful of cells doesn't re-download full-size art per track. The cache
-    entry is regenerated whenever the audio file or sidecar is newer than it;
-    browsers revalidate after 10 min so replaced art propagates same-session.
+    entry is regenerated whenever the audio file or sidecar is newer than it.
+    After 10 min a browser paints its cached copy and revalidates behind it
+    (ETag → 304), so replaced art reaches the next view without every page
+    re-downloading every thumbnail.
     """
     from fastapi.responses import Response as Resp
     from service.library.tagger import read_cover_art_bytes
@@ -192,7 +195,6 @@ async def track_cover_art(
     if not path.exists():
         raise HTTPException(404)
 
-    thumb_headers = {"Cache-Control": "public, max-age=600"}
     thumb_path: Path | None = None
     if size is not None:
         thumb_path = settings.cache_dir / "thumbs" / f"{internal_id}_{size}.jpg"
@@ -201,8 +203,11 @@ async def track_cover_art(
         if cover_jpg.exists():
             src_mtime = max(src_mtime, cover_jpg.stat().st_mtime)
         if thumb_path.exists() and thumb_path.stat().st_mtime >= src_mtime:
+            etag = _thumb_etag(thumb_path)
+            if _etag_matches(request.headers.get("if-none-match"), etag):
+                return Resp(status_code=304, headers=_thumb_headers(etag))
             data = await asyncio.to_thread(thumb_path.read_bytes)
-            return Resp(content=data, media_type="image/jpeg", headers=thumb_headers)
+            return Resp(content=data, media_type="image/jpeg", headers=_thumb_headers(etag))
 
     art = await asyncio.to_thread(read_cover_art_bytes, path)
 
@@ -218,7 +223,7 @@ async def track_cover_art(
     if thumb_path is not None:
         data = await asyncio.to_thread(_resize_cover, art, size, thumb_path)
         if data:
-            return Resp(content=data, media_type="image/jpeg", headers=thumb_headers)
+            return Resp(content=data, media_type="image/jpeg", headers=_thumb_headers(_thumb_etag(thumb_path)))
         # resize failed — fall through to full-size art
 
     return Resp(content=art, media_type="image/jpeg",

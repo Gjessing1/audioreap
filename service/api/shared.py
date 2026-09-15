@@ -270,6 +270,36 @@ def _layout_view(request: Request, view: str, cookie: str) -> str:
     return "list" if request.cookies.get(cookie) == "list" else "grid"
 
 
+# Thumbnail responses. A library page shows ~100 thumbnails, so once max-age ran
+# out every view re-downloaded all of them. stale-while-revalidate paints the
+# cached copy at once and revalidates behind it, and the ETag turns that
+# revalidation into a body-less 304; replaced art still arrives, on the next view.
+_THUMB_CACHE_CONTROL = "public, max-age=600, stale-while-revalidate=604800"
+
+
+def _thumb_etag(path: Path) -> str | None:
+    """Validator for a cached thumbnail file — changes whenever it is regenerated."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+
+
+def _thumb_headers(etag: str | None) -> dict[str, str]:
+    headers = {"Cache-Control": _THUMB_CACHE_CONTROL}
+    if etag:
+        headers["ETag"] = etag
+    return headers
+
+
+def _etag_matches(if_none_match: str | None, etag: str | None) -> bool:
+    """True when the client's If-None-Match already names this ETag (weak or strong)."""
+    if not if_none_match or not etag:
+        return False
+    return any(tag.strip().removeprefix("W/") == etag for tag in if_none_match.split(","))
+
+
 def _resize_cover(art: bytes, size: int, dest: Path) -> bytes | None:
     """Downscale cover art to `size` px wide via ffmpeg and cache it at dest.
 

@@ -19,8 +19,11 @@ from service.api.shared import (
     _acquisition_batch_receipt,
     _do_scans,
     _error_badge,
+    _etag_matches,
     _layout_view,
     _resize_cover,
+    _thumb_etag,
+    _thumb_headers,
     templates,
 )
 from service.config import settings
@@ -82,20 +85,12 @@ async def artist_merge_candidates(
     return HTMLResponse('<div style="margin-top:4px">' + ''.join(lines) + '</div>')
 
 
-@router.get("/library/artists/{artist_id}", response_class=HTMLResponse)
-async def artist_page(
-    request: Request,
-    artist_id: str,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Artist page: owned tracks grouped by album + MB discography if MBID known."""
+async def _owned_album_groups(session: AsyncSession, artist_id: str) -> list[dict]:
+    """The artist's owned tracks (those with a file), grouped by album in page order."""
+    from collections import OrderedDict
+
     from sqlalchemy.orm import joinedload as _jl
 
-    artist = await session.get(Artist, artist_id)
-    if artist is None:
-        raise HTTPException(404)
-
-    # Owned tracks, grouped into albums
     tracks = (await session.execute(
         select(Track)
         .options(_jl(Track.album), _jl(Track.file))
@@ -105,26 +100,54 @@ async def artist_page(
         .join(Track.file)
     )).unique().scalars().all()
 
-    # Group tracks by album
-    from collections import OrderedDict
     albums_map: dict[str | None, list[Track]] = OrderedDict()
     for t in tracks:
-        key = t.album_id
-        if key not in albums_map:
-            albums_map[key] = []
-        albums_map[key].append(t)
+        albums_map.setdefault(t.album_id, []).append(t)
+    return [{"album": atracks[0].album, "tracks": atracks} for atracks in albums_map.values()]
 
-    albums_list = []
-    for album_id_key, atracks in albums_map.items():
-        album_obj = atracks[0].album if atracks else None
-        albums_list.append({
-            "album": album_obj,
-            "tracks": atracks,
-        })
 
-    # MB discography (if MBID known)
+@router.get("/library/artists/{artist_id}", response_class=HTMLResponse)
+async def artist_page(
+    request: Request,
+    artist_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Artist page: owned tracks grouped by album.
+
+    The MusicBrainz discography loads after the page (artist_discography): cold,
+    it is one rate-limited MB call per 100 release groups — 4.5 s for a large
+    catalogue — and the page used to send nothing until that had finished.
+    """
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+
+    albums_list = await _owned_album_groups(session, artist_id)
+    return templates.TemplateResponse(
+        request, "artist_page.html",
+        {
+            "active": "library",
+            "artist": artist,
+            "albums_list": albums_list,
+            "total_tracks": sum(len(a["tracks"]) for a in albums_list),
+        },
+    )
+
+
+@router.get("/library/artists/{artist_id}/discography", response_class=HTMLResponse)
+async def artist_discography(
+    request: Request,
+    artist_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX partial: the artist page's MusicBrainz discography, owned releases marked."""
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+
     mb_release_groups: list[dict] = []
     if artist.musicbrainz_artist_id:
+        albums_list = await _owned_album_groups(session, artist_id)
         try:
             from service.core.normalize import normalize as _norm
             from service.metadata.musicbrainz import get_artist_release_groups
@@ -157,14 +180,8 @@ async def artist_page(
             logger.debug("Artist page MB lookup failed: %s", exc)
 
     return templates.TemplateResponse(
-        request, "artist_page.html",
-        {
-            "active": "library",
-            "artist": artist,
-            "albums_list": albums_list,
-            "mb_release_groups": mb_release_groups,
-            "total_tracks": len(tracks),
-        },
+        request, "partials/artist_discography.html",
+        {"artist": artist, "mb_release_groups": mb_release_groups},
     )
 
 
@@ -374,6 +391,7 @@ async def _auto_artist_image(name: str) -> Path | None:
 
 @router.get("/library/artists/{artist_id}/image", response_class=HTMLResponse)
 async def artist_image(
+    request: Request,
     artist_id: str,
     size: int | None = Query(None, ge=32, le=512),
     session: AsyncSession = Depends(get_session),
@@ -398,15 +416,17 @@ async def artist_image(
     if src is None:
         return Response(status_code=204)
     if size is not None:
-        thumb_headers = {"Cache-Control": "public, max-age=600"}
         thumb_path = settings.cache_dir / "thumbs" / f"artist_{artist_id}_{size}.jpg"
         if thumb_path.exists() and thumb_path.stat().st_mtime >= src.stat().st_mtime:
+            etag = _thumb_etag(thumb_path)
+            if _etag_matches(request.headers.get("if-none-match"), etag):
+                return Response(status_code=304, headers=_thumb_headers(etag))
             data = await asyncio.to_thread(thumb_path.read_bytes)
-            return Response(content=data, media_type="image/jpeg", headers=thumb_headers)
+            return Response(content=data, media_type="image/jpeg", headers=_thumb_headers(etag))
         art = await asyncio.to_thread(src.read_bytes)
         data = await asyncio.to_thread(_resize_cover, art, size, thumb_path)
         if data:
-            return Response(content=data, media_type="image/jpeg", headers=thumb_headers)
+            return Response(content=data, media_type="image/jpeg", headers=_thumb_headers(_thumb_etag(thumb_path)))
         # resize failed — fall through to full-size art
     return FileResponse(str(src), media_type="image/jpeg")
 

@@ -857,9 +857,14 @@ async def nav_review_count(
             .where(AcquisitionJobRow.state == "needs_review")
         )
     ).scalar_one()
-    if count:
-        return HTMLResponse(f'<span class="nav-badge" hx-get="/nav/review-count" hx-trigger="every 30s" hx-swap="outerHTML">{count}</span>')
-    return HTMLResponse('<span hx-get="/nav/review-count" hx-trigger="every 30s" hx-swap="outerHTML"></span>')
+    # One poll serves both Jobs badges: this span replaces the top nav's, and the
+    # bottom tab bar's copy is swapped out-of-band (base.html) — no second poll.
+    badge = ' class="nav-badge"' if count else ""
+    text = count or ""
+    return HTMLResponse(
+        f'<span id="nav-review-badge"{badge} hx-get="/nav/review-count" hx-trigger="every 30s" hx-swap="outerHTML">{text}</span>'
+        f'<span id="tab-review-badge"{badge} hx-swap-oob="true">{text}</span>'
+    )
 
 
 @router.get("/jobs/{job_id}/review-card", response_class=HTMLResponse)

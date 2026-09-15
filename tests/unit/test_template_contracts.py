@@ -652,3 +652,27 @@ def test_health_artist_credits_empty_all_good() -> None:
     html = _render("partials/health_artist_credits.html",
                    {"tracks": [], "credits_populated": 42})
     assert "No mismatched artist credits" in html
+
+
+def test_artist_discography_marks_owned_and_missing() -> None:
+    html = _render("partials/artist_discography.html", {
+        "artist": _Obj({"id": "artist:1", "name": "Disco Artist", "musicbrainz_artist_id": "mb-artist-1"}),
+        "mb_release_groups": [
+            {"release_group_id": "rg-1", "title": "Owned LP", "year": 2001, "release_type": "Album",
+             "owned": True, "owned_track_count": 9, "cover_track_id": "track:1"},
+            {"release_group_id": "rg-2", "title": "Missing EP", "year": 2003, "release_type": "EP",
+             "owned": False, "owned_track_count": 0, "cover_track_id": None},
+        ],
+    })
+    assert "Acquire all missing (1)" in html
+    assert "/discography/mb-artist-1/rg-2/acquire" in html
+    assert "/discography/mb-artist-1/rg-1/acquire" not in html
+    assert "cover-art?size=96" in html
+
+
+def test_artist_discography_lookup_failure_says_so() -> None:
+    html = _render("partials/artist_discography.html", {
+        "artist": _Obj({"id": "artist:1", "name": "Disco Artist", "musicbrainz_artist_id": "mb-artist-1"}),
+        "mb_release_groups": [],
+    })
+    assert "Couldn't load the MusicBrainz discography" in html
