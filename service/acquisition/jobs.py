@@ -418,6 +418,8 @@ async def acquire_album_from_mb(
     # yt_search_best takes seconds per track; running it inside the transaction
     # below used to hold SQLite's write lock open for a minute+ on a full album,
     # starving every other writer.
+    from service.providers.ytdlp import is_compound_title as _is_compound
+    from service.providers.ytdlp import normalize_search_title as _search_title
     from service.providers.ytdlp import yt_search_best as _yt_search_best
     prefer_explicit: bool = getattr(_settings, "prefer_explicit", True)
 
@@ -428,19 +430,26 @@ async def acquire_album_from_mb(
         # Search for the track's own PERFORMER. On a compilation the album artist
         # is "Various Artists", which as a search term matches nothing.
         track_artist = t.artist or album_artist
+        # MB's title is catalogue text, not a search term: it carries the work a
+        # cue came from ("… (The English Surgeon)") and packs multi-work CD tracks
+        # into one entry. Both stay in the tags and go for the query.
+        search_title = _search_title(t.title)
+        # A compound entry's length covers every work in it, so it describes
+        # nothing findable — better no duration signal than a wrong one.
+        search_duration = None if _is_compound(t.title) else t.duration_seconds
         # Score top YouTube Music candidates instead of taking yt-dlp's #1 blindly
         yt_url, yt_score = await _asyncio.to_thread(
             _yt_search_best,
             track_artist,
-            t.title,
-            t.duration_seconds,
+            search_title,
+            search_duration,
             10,
             True,
             prefer_explicit,
         )
         # Fall back to unscored search when no result scored high enough
         if yt_score < 0.35:
-            search_ref = f"ytsearch1:{track_artist} {t.title}"
+            search_ref = f"ytsearch1:{track_artist} {search_title}"
         else:
             search_ref = yt_url
         planned.append((t, search_ref))

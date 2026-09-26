@@ -607,6 +607,58 @@ def _debracketed(title: str) -> str:
     return _BRACKETED_RE.sub("", title).strip()
 
 
+# Words that make a trailing parenthetical *version* information rather than
+# catalogue annotation. These change which upload we want, so they stay in the
+# query; anything else in that position is MusicBrainz telling us which work the
+# track came from, which no uploader has ever put in a video title.
+_VERSION_QUALIFIER_WORDS = frozenset({
+    "feat", "ft", "featuring", "with", "remaster", "remastered", "remasters",
+    "mono", "stereo", "live", "demo", "take", "session", "sessions",
+    "mix", "remix", "edit", "version", "acoustic", "instrumental", "a", "capella",
+    "single", "album", "radio", "reprise", "part", "pt", "bonus", "extended",
+    "original", "deluxe", "unplugged", "cover", "intro", "outro",
+})
+_TRAILING_PAREN_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
+
+
+def normalize_search_title(title: str) -> str:
+    """MB track title reduced to the part a YouTube uploader would actually type.
+
+    Two MusicBrainz habits make a title unsearchable verbatim:
+
+    * A trailing parenthetical naming the *work* the cue belongs to — "Rat's Tooth
+      Forceps (The English Surgeon)", "Song for Jesse (The Assassination of Jesse
+      James by the Coward Robert Ford)". Catalogue metadata, not part of the song
+      name, and searching for it finds nothing.
+    * Compound entries for a CD track holding several works — "Sorya Market (The
+      Girls of Phnom Penh) / [silence] / [unknown]". Only the first is a song.
+
+    Version qualifiers ("(2009 Remaster)", "(feat. …)", "(5.1 mix)") are kept:
+    those genuinely pick one upload over another. Only the *trailing* group is
+    considered, so a parenthetical that is part of the name survives — "Black Silk
+    (Suture) (The English Surgeon)" → "Black Silk (Suture)".
+
+    Search-side only. The canonical MB title is what gets written to tags.
+    """
+    head = title.split(" / ")[0].strip() or title.strip()
+    match = _TRAILING_PAREN_RE.search(head)
+    if match:
+        words = set(re.findall(r"[a-z]+", match.group(1).lower()))
+        if not words & _VERSION_QUALIFIER_WORDS:
+            head = head[: match.start()].strip() or head
+    return head or title.strip()
+
+
+def is_compound_title(title: str) -> bool:
+    """True when an MB title packs several works into one track entry.
+
+    Such an entry's length covers everything in it — 1170 s for a three-minute song
+    plus silence plus a hidden track — so it must not be used as the expected
+    duration for the one work we go looking for.
+    """
+    return " / " in title
+
+
 def _channel_artist(channel: str) -> str:
     """Channel name with official-channel branding suffixes stripped.
 
@@ -853,6 +905,10 @@ def yt_search_best(
     is searched as a rescue pool — its top "song" results are usually the canonical
     studio audio even when plain search drowns in reuploads.
     """
+    # MB annotations ("… (The English Surgeon)") and compound entries match no
+    # upload, and they drag title similarity down for the candidates that *are*
+    # right — so scoring gets the same cleaned title the query was built from.
+    title = normalize_search_title(title)
     query = f"{artist} {title}"
     entries = _yt_search_entries(query, n_candidates)
     excluded = exclude_ids or set()
