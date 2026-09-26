@@ -15,8 +15,16 @@ services:
     env_file:
       - .env
     volumes:
-      - /mnt/data/media/music:/music
-      - /mnt/data/media/tmp-acquire:/tmp-acquire
+      - type: bind
+        source: /mnt/data/media/music
+        target: /music
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/data/media/tmp-acquire
+        target: /tmp-acquire
+        bind:
+          create_host_path: false
       - audioreap-data:/data
       - audioreap-cache:/cache
     depends_on:
@@ -38,8 +46,16 @@ services:
     env_file:
       - .env
     volumes:
-      - /mnt/data/media/music:/music
-      - /mnt/data/media/tmp-acquire:/tmp-acquire
+      - type: bind
+        source: /mnt/data/media/music
+        target: /music
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/data/media/tmp-acquire
+        target: /tmp-acquire
+        bind:
+          create_host_path: false
       - audioreap-data:/data
       - audioreap-cache:/cache
     depends_on:
@@ -66,8 +82,17 @@ services:
     environment:
       ND_LOGLEVEL: info
     volumes:
-      - /mnt/data/navidrome:/data
-      - /mnt/data/media/music:/music:ro
+      - type: bind
+        source: /mnt/data/navidrome
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/data/media/music
+        target: /music
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       - audioreap
 
