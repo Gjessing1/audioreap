@@ -262,6 +262,10 @@ class ResolvedTrackMetadata(BaseModel):
     is_enrichment: bool = False
     # Original library file path being replaced (see TrackCandidate.replace_path).
     replace_path: str | None = None
+    # The review card's "Visible to" choice: "private" / "shared", or None to
+    # follow the artist's existing folder. An album batch stores it on every
+    # track, so the album decides once. See `library.visibility.resolve_placement`.
+    visibility: str | None = None
 
     # Metadata provenance (which source contributed each field)
     prov_title: str | None = None

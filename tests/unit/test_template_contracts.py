@@ -12,6 +12,7 @@ These tests fail loudly when a context key is renamed or removed.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -440,6 +441,12 @@ def test_dest_preview() -> None:
         "joins_existing": True,
         "canonical_album": "OK Computer",
         "normalised_aa": None,
+        "job_id": "job-1",
+        "visibility_on": False,
+        "is_private": False,
+        "visibility_reason": "off",
+        "visibility_locked": False,
+        "in_album_batch": False,
         "is_single": False,
     })
     assert "Paranoid Android" in html
@@ -579,9 +586,48 @@ def test_dest_preview_single() -> None:
         "joins_existing": False,
         "canonical_album": None,
         "normalised_aa": None,
+        "job_id": "job-1",
+        "visibility_on": False,
+        "is_private": False,
+        "visibility_reason": "off",
+        "visibility_locked": False,
+        "in_album_batch": False,
         "is_single": True,
     })
     assert "single" in html.lower()
+
+
+def _dest_vis_ctx(**over: Any) -> dict:
+    ctx: dict[str, Any] = {
+        "job_id": "job-1",
+        "dest": "/music/_private/Eminem/Recovery (2010)/01 - Cold Wind Blows.ogg",
+        "joins_existing": False,
+        "canonical_album": None,
+        "normalised_aa": None,
+        "is_single": False,
+        "visibility_on": True,
+        "is_private": True,
+        "visibility_reason": "artist_folder",
+        "visibility_locked": False,
+        "in_album_batch": True,
+    }
+    ctx.update(over)
+    return ctx
+
+
+def test_dest_preview_visibility_choice() -> None:
+    html = _render("partials/dest_preview.html", _dest_vis_ctx())
+    assert 'hx-post="/jobs/job-1/visibility"' in html
+    assert re.search(r'aria-pressed="true"[^>]*>Only me<', html)
+    assert re.search(r'aria-pressed="false"[^>]*>Everyone<', html)
+
+
+def test_dest_preview_visibility_locked() -> None:
+    html = _render("partials/dest_preview.html", _dest_vis_ctx(
+        is_private=False, visibility_reason="compilation", visibility_locked=True,
+    ))
+    assert "/visibility" not in html
+    assert "compilations stay in the shared library" in html
 
 
 # ── Lyrics panel ─────────────────────────────────────────────────────────────

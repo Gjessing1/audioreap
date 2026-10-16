@@ -52,6 +52,37 @@
       </form>
       {% endif %}
     </div>
+    {% if visibility_on and artist_location != 'none' %}
+    {# Shared vs private library — moves the artist's folders between the two
+       roots (service/library/visibility.py). New acquisitions follow. #}
+    <div class="artist-vis">
+      <span class="rv-vis-label">Visible to</span>
+      <span class="rv-vis-fixed">
+        {%- if artist_location == 'private' %}Only me
+        {%- elif artist_location == 'both' %}Split across both libraries
+        {%- else %}Everyone{% endif -%}
+      </span>
+      {% if artist_location != 'private' %}
+      <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px"
+              hx-post="/library/artists/{{ artist.id }}/visibility"
+              hx-vals='{"visibility": "private"}'
+              hx-target="#artist-vis-result"
+              hx-confirm="Move {{ artist.name }} to the private library? Other Navidrome users stop seeing them; new downloads by this artist land there too.">
+        {{ 'Move all to private' if artist_location == 'both' else 'Make private' }}
+      </button>
+      {% endif %}
+      {% if artist_location != 'shared' %}
+      <button type="button" class="btn btn-sm btn-ghost" style="font-size:11px"
+              hx-post="/library/artists/{{ artist.id }}/visibility"
+              hx-vals='{"visibility": "shared"}'
+              hx-target="#artist-vis-result"
+              hx-confirm="Move {{ artist.name }} to the shared library? Every Navidrome user will see them.">
+        {{ 'Move all to shared' if artist_location == 'both' else 'Make shared' }}
+      </button>
+      {% endif %}
+      <span id="artist-vis-result" style="font-size:12px"></span>
+    </div>
+    {% endif %}
   </div>
 </div>
 

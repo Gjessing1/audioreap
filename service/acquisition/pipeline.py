@@ -1670,8 +1670,17 @@ async def place_approved_track(
         # File is already in /music — no move needed
         dest = staging_path
     else:
+        from service.library import visibility
+        if meta.is_replacement and meta.replace_path:
+            # A new version of a file already in the library stays in its library.
+            root = visibility.root_of(Path(meta.replace_path))
+        else:
+            private, _ = await visibility.resolve_placement(
+                session, album=album, albumartist=albumartist, override=meta.visibility,
+            )
+            root = visibility.library_root(private)
         dest = track_path(
-            settings.music_dir,
+            root,
             artist=artist,
             album=album,
             year=year,

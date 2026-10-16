@@ -1134,8 +1134,19 @@ async def job_dest_preview(
                 eff_year = c_year
             eff_album = canonical_album
 
+    # Shared vs private library — the same decision place_approved_track makes.
+    from service.library import visibility
+    if meta.get("is_replacement") and meta.get("replace_path"):
+        private = visibility.is_private_path(Path(meta["replace_path"]))
+        visibility_reason = "replacement"
+    else:
+        private, visibility_reason = await visibility.resolve_placement(
+            session, album=eff_album, albumartist=albumartist,
+            override=meta.get("visibility"),
+        )
+
     dest = track_path(
-        settings.music_dir,
+        visibility.library_root(private),
         artist=eff_artist,
         album=eff_album,
         year=eff_year,
@@ -1149,13 +1160,78 @@ async def job_dest_preview(
     return templates.TemplateResponse(
         request, "partials/dest_preview.html",
         {
+            "job_id": job_id,
             "dest": str(dest),
             "joins_existing": joins_existing,
             "canonical_album": canonical_album,
             "normalised_aa": normalised_aa,
             "is_single": eff_album is None,
+            "visibility_on": visibility_reason != "off",
+            "is_private": private,
+            "visibility_reason": visibility_reason,
+            "visibility_locked": visibility_reason in ("compilation", "existing_album", "replacement"),
+            "in_album_batch": bool(row.album_job_id),
         },
     )
+
+
+@router.post("/jobs/{job_id}/visibility", response_class=HTMLResponse)
+async def job_set_visibility(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Review card "Visible to": store the shared/private choice for this job.
+
+    An album batch decides once for the whole album — the choice is stored on
+    every sibling still awaiting review, so approving them one by one (or in a
+    batch) can never split the album across the two libraries. Answers with the
+    refreshed preview, and tells sibling cards to refresh theirs.
+    """
+    from service.library.visibility import PRIVATE, SHARED
+
+    form = await request.form()
+    choice = str(form.get("visibility") or "")
+    if choice not in (PRIVATE, SHARED):
+        raise HTTPException(400, "visibility must be 'private' or 'shared'")
+    row = await session.get(AcquisitionJobRow, job_id)
+    if row is None or not row.resolved_metadata_json:
+        raise HTTPException(404)
+
+    rows = [row]
+    if row.album_job_id:
+        rows = list((await session.execute(
+            select(AcquisitionJobRow).where(
+                AcquisitionJobRow.album_job_id == row.album_job_id,
+                AcquisitionJobRow.state == "needs_review",
+            )
+        )).scalars().all())
+        if row not in rows:
+            rows.append(row)
+    for r in rows:
+        try:
+            m = json.loads(r.resolved_metadata_json or "")
+        except ValueError:
+            continue
+        if not isinstance(m, dict):
+            continue
+        m["visibility"] = choice
+        r.resolved_metadata_json = json.dumps(m)
+    await session.commit()
+
+    def _field(name: str) -> str | None:
+        v = form.get(name)
+        return None if v is None else str(v)
+
+    response = await job_dest_preview(
+        request, job_id,
+        title=_field("title"), artist=_field("artist"), album=_field("album"),
+        year=_field("year"), track_number=_field("track_number"),
+        session=session,
+    )
+    if len(rows) > 1:
+        response.headers["HX-Trigger"] = "audioreap-visibility"
+    return response
 
 
 @asynccontextmanager

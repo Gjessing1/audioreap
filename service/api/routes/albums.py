@@ -637,6 +637,7 @@ async def _apply_disc_numbers(
     rows but does not commit — the caller owns the session."""
     from service.library.layout import track_path as _tp
     from service.library.tagger import write_tags as _wt
+    from service.library.visibility import root_of
     from service.library.writer import atomic_place as _ap
 
     albumartist = album.artist.name if album.artist else "Unknown"
@@ -659,7 +660,7 @@ async def _apply_disc_numbers(
         track.disc_number = new_disc
         track.track_number = new_num
         dst = _tp(
-            settings.music_dir,
+            root_of(fp),
             artist=(track.artist.name if track.artist else albumartist),
             album=album.title,
             year=album.year,

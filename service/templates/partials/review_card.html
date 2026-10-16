@@ -368,7 +368,7 @@
   {% if staging_exists and not is_enrichment %}
   <div id="dest-preview-{{ job_id }}"
        hx-get="/jobs/{{ job_id }}/dest-preview"
-       hx-trigger="load, change from:#job-{{ job_id }} delay:400ms"
+       hx-trigger="load, change from:#job-{{ job_id }} delay:400ms, audioreap-visibility from:body"
        hx-include="#job-{{ job_id }} .rv-form"
        hx-swap="innerHTML"></div>
   {% endif %}

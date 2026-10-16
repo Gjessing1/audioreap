@@ -265,8 +265,10 @@ async def merge_albums(
             canonical_dir = Path(t.file.path).parent
             break
     if canonical_dir is None:
+        from service.library.visibility import artist_is_private, library_root
+        canonical_name = canonical.artist.name if canonical.artist else None
         canonical_dir = track_path(
-            music_dir,
+            library_root(artist_is_private(canonical_name, music_dir), music_dir),
             artist=canonical.artist.name if canonical.artist else "Unknown",
             album=canonical.title,
             year=canonical.year,
@@ -415,6 +417,16 @@ async def merge_artists(
     # check on /music/<source_name>/ would strand singles & comps (e.g. a duet
     # single left in /music/Singles/<collab>/ surfacing as "[Unknown Album]").
     albums_by_id = {alb.id: alb for alb in source.albums}
+    # Shared vs private library: wherever the canonical artist's folders already
+    # are; with none (or some in each), every file stays in the library it is in.
+    from service.library.visibility import (
+        PRIVATE, SHARED, artist_location, library_root, private_root, root_of,
+    )
+    _loc = artist_location(canonical_name, music_dir)
+    canonical_root = (
+        library_root(_loc == PRIVATE, music_dir) if _loc in (PRIVATE, SHARED) else None
+    )
+    _stop_dirs = {music_dir, private_root(music_dir)}
     files_to_retag: list[Path] = []
     planned_moves: list[tuple[Path, Path, "TrackFile"]] = []  # (old, new, orm_row)
     for track in source.tracks:
@@ -427,7 +439,7 @@ async def merge_artists(
         files_to_retag.append(fp)
         alb = albums_by_id.get(track.album_id) if track.album_id else None
         new_fp = track_path(
-            music_dir,
+            canonical_root or root_of(fp, music_dir),
             artist=canonical_name,
             album=(alb.title if alb else None),
             year=(alb.year if alb else None),
@@ -486,7 +498,7 @@ async def merge_artists(
                         if not dest_item.exists():
                             shutil.move(str(item), str(dest_item))
             d = old_dir
-            while d != music_dir and d.exists() and not any(d.iterdir()):
+            while d not in _stop_dirs and d.exists() and not any(d.iterdir()):
                 d.rmdir()
                 d = d.parent
         except Exception as exc:

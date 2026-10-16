@@ -29,6 +29,7 @@ from service.api.shared import (
 from service.config import settings
 from service.db.schema import Album, Artist, Track, TrackFile
 from service.db.session import get_session
+from service.library.visibility import artist_dir as _artist_dir
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -122,6 +123,8 @@ async def artist_page(
     if artist is None:
         raise HTTPException(404)
 
+    from service.library import visibility
+
     albums_list = await _owned_album_groups(session, artist_id)
     return templates.TemplateResponse(
         request, "artist_page.html",
@@ -130,8 +133,56 @@ async def artist_page(
             "artist": artist,
             "albums_list": albums_list,
             "total_tracks": sum(len(a["tracks"]) for a in albums_list),
+            "visibility_on": visibility.enabled()
+            and not visibility.is_compilation_artist(artist.name),
+            "artist_location": visibility.artist_location(artist.name),
         },
     )
+
+
+@router.post("/library/artists/{artist_id}/visibility", response_class=HTMLResponse)
+async def set_artist_visibility(
+    request: Request,
+    artist_id: str,
+    visibility_choice: str = Form("", alias="visibility"),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Move an artist's folders to the private or shared library.
+
+    Thin route over :func:`service.library.visibility.move_artist`. Navidrome
+    sees the files as moved and keeps their plays, stars and playlist entries;
+    new acquisitions follow the folder from now on.
+    """
+    from service.library import visibility
+
+    if visibility_choice not in (visibility.PRIVATE, visibility.SHARED):
+        raise HTTPException(400, "visibility must be 'private' or 'shared'")
+    artist = await session.get(Artist, artist_id)
+    if artist is None:
+        raise HTTPException(404)
+    if not visibility.enabled():
+        return _error_badge("No private library is configured", level="fail")
+    if visibility.is_compilation_artist(artist.name):
+        return _error_badge("Compilations stay in the shared library", level="fail")
+
+    private = visibility_choice == visibility.PRIVATE
+    try:
+        result = await visibility.move_artist(session, artist.name, private=private)
+        await session.commit()
+    except Exception as exc:
+        logger.error("Visibility move failed for %s: %s", artist.name, exc)
+        await session.rollback()
+        return _error_badge(f"Move failed: {exc}", level="fail")
+
+    await _do_scans()
+
+    if result["collisions"]:
+        return _error_badge(
+            f"Moved {result['moved']} files; {result['collisions']} already existed in the "
+            f"{'private' if private else 'shared'} library and were left where they are",
+            level="warn",
+        )
+    return HTMLResponse("", headers={"HX-Redirect": f"/library/artists/{artist_id}"})
 
 
 @router.get("/library/artists/{artist_id}/discography", response_class=HTMLResponse)
@@ -411,7 +462,7 @@ async def artist_image(
     artist = await session.get(Artist, artist_id)
     if artist is None:
         return Response(status_code=204)
-    img_path = settings.music_dir / artist.name / "artist.jpg"
+    img_path = _artist_dir(artist.name) / "artist.jpg"
     src = img_path if img_path.exists() else await _auto_artist_image(artist.name)
     if src is None:
         return Response(status_code=204)
@@ -532,7 +583,7 @@ async def save_artist_image(
     if artist is None:
         raise HTTPException(404)
 
-    artist_dir = settings.music_dir / artist.name
+    artist_dir = _artist_dir(artist.name)
     artist_dir.mkdir(parents=True, exist_ok=True)
     img_path = artist_dir / "artist.jpg"
 
@@ -578,7 +629,7 @@ async def upload_artist_image(
     if artist is None:
         raise HTTPException(404)
 
-    artist_dir = settings.music_dir / artist.name
+    artist_dir = _artist_dir(artist.name)
     artist_dir.mkdir(parents=True, exist_ok=True)
     try:
         await asyncio.to_thread((artist_dir / "artist.jpg").write_bytes, art)

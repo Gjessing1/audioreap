@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     # reversible from the file alone.
     compilation_artist_mode: str = "append_to_title"
 
+    # Private library — a folder inside /music that Navidrome mounts as a second
+    # library granted only to its owner (the main library skips it via
+    # /music/.ndignore). Empty = off: everything lands in the shared library.
+    # One plain folder name that does not start with "." (the scanner skips
+    # dot-directories). See service/library/visibility.py.
+    private_subdir: str = ""
+
     # Lyrics — fetch synced/plain lyrics from LRCLIB (free, no key) and write a
     # .lrc sidecar next to each track on approval. Navidrome reads these natively.
     lyrics_enabled: bool = True

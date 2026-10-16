@@ -115,8 +115,14 @@ async def move_track_to_album(
 
     artist_name = target_album.artist.name if target_album.artist else "Unknown"
     ext = src.suffix.lstrip(".")
+    # The track joins the album in whichever library (shared/private) it lives.
+    from service.library.visibility import artist_is_private, library_root, root_of
+    album_file = next(
+        (Path(t.file.path) for t in target_album.tracks if t.file and Path(t.file.path).exists()),
+        None,
+    )
     dst = _tp(
-        settings.music_dir,
+        root_of(album_file) if album_file else library_root(artist_is_private(artist_name)),
         artist=artist_name,
         album=target_album.title,
         year=target_album.year,

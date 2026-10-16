@@ -16,4 +16,45 @@
     <span class="rv-dest-note rv-dest-note--ok">↳ Album artist normalised to “{{ normalised_aa }}”</span>
     {% endif %}
   </div>
+  {% if visibility_on %}
+  {# Shared vs private library. A choice in an album batch applies to the whole
+     album (job_set_visibility stores it on every sibling still in review). #}
+  <div class="rv-vis">
+    <span class="rv-vis-label" id="rv-vis-label-{{ job_id }}">Visible to</span>
+    {% if visibility_locked %}
+    <span class="rv-vis-fixed">{{ 'Only me' if is_private else 'Everyone' }}</span>
+    <span class="rv-dest-note">
+      {%- if visibility_reason == 'compilation' -%}
+        compilations stay in the shared library
+      {%- elif visibility_reason == 'replacement' -%}
+        a replacement stays where the original is
+      {%- else -%}
+        the album is already in the {{ 'private' if is_private else 'shared' }} library — move the artist from its page to change this
+      {%- endif -%}
+    </span>
+    {% else %}
+    <div class="rv-vis-seg" role="group" aria-labelledby="rv-vis-label-{{ job_id }}">
+      {% for value, label in [('shared', 'Everyone'), ('private', 'Only me')] %}
+      {% set on = (value == 'private') == is_private %}
+      <button type="button" class="rv-vis-opt{% if on %} is-on{% endif %}"
+              aria-pressed="{{ 'true' if on else 'false' }}"
+              hx-post="/jobs/{{ job_id }}/visibility"
+              hx-vals='{"visibility": "{{ value }}"}'
+              hx-include="#job-{{ job_id }} .rv-form"
+              hx-target="#dest-preview-{{ job_id }}"
+              hx-swap="innerHTML">{{ label }}</button>
+      {% endfor %}
+    </div>
+    <span class="rv-dest-note">
+      {%- if visibility_reason == 'artist_folder' -%}
+        the artist is already in the private library
+      {%- elif visibility_reason == 'chosen' and in_album_batch -%}
+        applies to the whole album
+      {%- elif visibility_reason == 'default' and in_album_batch -%}
+        decides for the whole album
+      {%- endif -%}
+    </span>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>

@@ -944,6 +944,24 @@ input::placeholder { color: var(--t4); }
 .rv-dest-notes { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .rv-dest-note { font-size: 11px; color: var(--t4); }
 .rv-dest-note--ok { color: var(--success); }
+.rv-vis { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 2px; }
+.rv-vis-label { font-size: 11px; color: var(--t3); }
+.rv-vis-fixed { font-size: 11px; color: var(--t2); font-weight: 600; }
+.rv-vis-seg { display: inline-flex; border: 1px solid var(--b2); border-radius: 5px; overflow: hidden; }
+.rv-vis-opt {
+  font: inherit;
+  font-size: 11px;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--t3);
+  cursor: pointer;
+}
+.rv-vis-opt + .rv-vis-opt { border-left: 1px solid var(--b2); }
+.rv-vis-opt:hover { color: var(--t1); background: var(--s3); }
+.rv-vis-opt.is-on { background: var(--s3); color: var(--t1); font-weight: 600; }
+.rv-vis-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ── MB search panel ─────────────────────────────────────────────────────── */
 .mb-panel {
@@ -2282,3 +2300,6 @@ body:has(#player-bar:not(.hidden)) .set-savebar { bottom: calc(var(--player-h) +
   .set-row, .set-savebar, .set-savebar__mark,
   .switch__track, .switch__thumb, .set-details > summary::before { transition: none; }
 }
+
+/* ── Artist page: shared/private library ─────────────────────────────────── */
+.artist-vis { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 10px; }
