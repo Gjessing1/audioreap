@@ -59,3 +59,35 @@ def test_identical_tracks_score_one() -> None:
 def test_completely_different_score_near_zero() -> None:
     score = track_similarity("Alpha", "Artist X", 100, "Zeta", "Artist Y", 500)
     assert score < 0.3
+
+
+@pytest.mark.parametrize(
+    "a, b, same",
+    [
+        # MB's short title for the same recording
+        ("The Losing End (When You're On)", "The Losing End", True),
+        # Identical title plus a mix qualifier
+        ("Words (Between the Lines of Age)", "Words (Between the Lines of Age) (5.1 mix)", True),
+        ("Help!", "Help! - Remastered 2009", True),
+        ("Help!", "Help! (2009 Remaster)", True),
+        ("Song (Mono)", "Song (Stereo)", True),
+        ("Song (Single Version)", "Song", True),
+        ("Live and Let Die", "Live and Let Die (2018 Remaster)", True),
+        # A different recording, not a different version note
+        ("Song (Live)", "Song", False),
+        ("Song (Remix)", "Song", False),
+        ("Song (Radio Edit)", "Song (Club Mix)", False),
+        # A different track of the same name
+        ("Song (Part 2)", "Song", False),
+        ("Song (Reprise)", "Song", False),
+        ("Song (A)", "Song (B)", False),
+        # Containment is not a prefix match on words
+        ("Love", "Love Me Do", False),
+        ("Song A", "Song B", False),
+    ],
+)
+def test_same_song_title(a: str, b: str, same: bool) -> None:
+    from service.search.matcher import same_song_title
+
+    assert same_song_title(a, b) is same
+    assert same_song_title(b, a) is same

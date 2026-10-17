@@ -319,6 +319,9 @@ class _IdentifyState:
     prov_year: str
     prov_recording: str
     album_locked: bool
+    # The decoded file's own length — `duration` falls back to the candidate's,
+    # which is the very thing the duration gate compares this against.
+    file_duration: int | None = None
     mb_recording_id: str | None = None
     mb_release_id: str | None = None
     # Seeded from candidate so discography/album jobs always carry the RG ID
@@ -367,9 +370,7 @@ def _merge_source_metadata(
     """Merge embedded tags, provider metadata, and the candidate into the
     initial identification state. Provenance: "tagged" > "provider" > "candidate".
 
-    Album-locked candidates (album coordinator) override album/year/track/disc,
-    and a large duration delta versus the locked candidate flags the job as a
-    possible wrong track.
+    Album-locked candidates (album coordinator) override album/year/track/disc.
     """
     t = tagged
     state = _IdentifyState(
@@ -380,6 +381,7 @@ def _merge_source_metadata(
         track_number=(t.track_number if t else None),
         disc_number=(t.disc_number if t else None),
         duration=(t.duration_seconds if t else None) or candidate.duration_seconds,
+        file_duration=(t.duration_seconds if t else None) or src.duration_seconds,
         prov_title="tagged" if (t and t.title) else ("provider" if src.title else "candidate"),
         prov_artist="tagged" if (t and t.artist) else ("provider" if src.artist else "candidate"),
         prov_album="tagged" if (t and t.album) else ("provider" if src.album else "candidate"),
@@ -399,18 +401,6 @@ def _merge_source_metadata(
         # credit handled instead of silently losing it.
         artist_credit=candidate.artist_credit,
     )
-
-    # Wrong-track detection: duration delta versus the locked candidate
-    got_dur = t.duration_seconds if t else None
-    if state.album_locked and candidate.duration_seconds and got_dur:
-        delta = abs(got_dur - candidate.duration_seconds)
-        tol = max(30, int(candidate.duration_seconds * 0.2))
-        if delta > tol:
-            state.flag_for_review(
-                f"Duration mismatch: expected ~{candidate.duration_seconds}s, "
-                f"got {got_dur}s — may be wrong track"
-            )
-            logger.warning("Job %s %r: %s", job_id, candidate.title, state.force_staging_reason)
 
     # Candidate's pre-resolved fields (from the album coordinator) are authoritative
     if candidate.album:
@@ -447,6 +437,45 @@ async def _fetch_user_query(
     return None
 
 
+# Duration is the corroborating signal for a locked recording. In the 2026-09-03
+# re-acquire run it caught both genuinely wrong versions (150 s for 224 s, 252 s
+# for 222 s) with no false positives, while the fingerprint raised three false
+# flags and caught neither. Agreement this close outweighs a fingerprint
+# disagreement; a gap past the mismatch tolerance flags on its own.
+_DURATION_AGREE_SECONDS = 3
+_DURATION_MISMATCH_SECONDS = 10
+_DURATION_MISMATCH_FRACTION = 0.05
+
+
+def _fmt_duration(seconds: int) -> str:
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _check_duration(
+    state: _IdentifyState, expected: int | None, job_id: str
+) -> str | None:
+    """Compare the file's length with the expected recording length.
+
+    Returns "agree" (within a few seconds), "mismatch" (flagged for review,
+    naming both lengths), "close" (neither), or None when either side is unknown.
+    """
+    got = state.file_duration
+    if not expected or not got:
+        return None
+    delta = abs(got - expected)
+    if delta <= _DURATION_AGREE_SECONDS:
+        return "agree"
+    if delta > max(_DURATION_MISMATCH_SECONDS, expected * _DURATION_MISMATCH_FRACTION):
+        note = (
+            f"Duration mismatch: expected {_fmt_duration(expected)}, "
+            f"got {_fmt_duration(got)} — may be a different version"
+        )
+        state.flag_for_review(note)
+        logger.warning("Job %s %r: %s", job_id, state.title, note)
+        return "mismatch"
+    return "close"
+
+
 async def _identify_locked_recording(
     state: _IdentifyState,
     candidate: TrackCandidate,
@@ -456,14 +485,15 @@ async def _identify_locked_recording(
     """Path A — locked recording ID (album batch jobs).
 
     Look up the locked recording directly and run AcoustID in parallel to
-    verify the downloaded file matches the locked choice. Returns
+    verify the downloaded file matches the locked choice; the file's length is
+    checked against the expected one either way. Returns
     (mb_recording_or_None, mb_from_acoustid).
     """
     from service.metadata.acoustid import acoustid_to_mbid
     from service.metadata.musicbrainz import get_recording_by_id
     from service.search.matcher import (
         artist_similarity as _artist_sim,
-        title_similarity as _title_sim,
+        same_song_title as _same_song_title,
     )
 
     mb_coro = asyncio.to_thread(
@@ -477,6 +507,11 @@ async def _identify_locked_recording(
     mb_from_acoustid = False
     if mb is not None:
         state.mb_match_source = "locked_recording"
+    duration_verdict = _check_duration(
+        state,
+        candidate.duration_seconds or (mb.duration_seconds if mb else None),
+        job_id,
+    )
     if aq_result and isinstance(aq_result, tuple):
         acoustid_mbid, state.acoustid_confidence = aq_result
         if acoustid_mbid != candidate.mb_recording_id:
@@ -496,9 +531,9 @@ async def _identify_locked_recording(
             _got_a = got_rec.artist if got_rec else None
             _same_song = (
                 _got_t is not None
-                and _title_sim(
+                and _same_song_title(
                     clean_for_search(_exp_t), clean_for_search(_got_t)
-                ) >= 0.85
+                )
                 and (
                     not _exp_a or not _got_a
                     or _artist_sim(_exp_a, _got_a) >= 0.55
@@ -522,15 +557,27 @@ async def _identify_locked_recording(
                     got_label = f"{_got_t} — {_got_a}" if _got_a else _got_t
                 else:
                     got_label = f"recording {acoustid_mbid[:8]}…"
-                state.flag_for_review(
-                    f"Fingerprint mismatch: expected “{expected_label}”, "
-                    f"got “{got_label}”"
-                )
-                logger.warning(
-                    "Job %s %r: AcoustID mismatch (expected %s [%s], got %s [%s])",
-                    job_id, state.title, candidate.mb_recording_id, expected_label,
-                    acoustid_mbid, got_label,
-                )
+                if duration_verdict == "agree":
+                    # The fingerprint→MBID association comes from user
+                    # submissions and is wrong often enough, at any score, that
+                    # a file matching the expected length to within seconds is
+                    # the better evidence. Not a confirmation either:
+                    # mb_from_acoustid stays off.
+                    logger.info(
+                        "Job %s %r: AcoustID suggested “%s” but the duration "
+                        "agrees with the locked recording — not flagging",
+                        job_id, state.title, got_label,
+                    )
+                else:
+                    state.flag_for_review(
+                        f"Fingerprint mismatch: expected “{expected_label}”, "
+                        f"got “{got_label}”"
+                    )
+                    logger.warning(
+                        "Job %s %r: AcoustID mismatch (expected %s [%s], got %s [%s])",
+                        job_id, state.title, candidate.mb_recording_id,
+                        expected_label, acoustid_mbid, got_label,
+                    )
         else:
             mb_from_acoustid = True  # AcoustID confirmed the locked recording
     return mb, mb_from_acoustid
@@ -786,9 +833,13 @@ def _check_title_mismatch(
     candidate's expected title — the wrong track was likely downloaded."""
     if not (candidate.title and state.title):
         return
-    from service.search.matcher import title_similarity as _title_sim
-    t_sim = _title_sim(clean_for_search(candidate.title), clean_for_search(state.title))
-    if t_sim < 0.55:
+    from service.search.matcher import (
+        same_song_title as _same_song_title,
+        title_similarity as _title_sim,
+    )
+    exp_t, got_t = clean_for_search(candidate.title), clean_for_search(state.title)
+    t_sim = _title_sim(exp_t, got_t)
+    if t_sim < 0.55 and not _same_song_title(exp_t, got_t):
         mismatch_note = (
             f"Title mismatch: expected \"{candidate.title}\", "
             f"got \"{state.title}\" (similarity {t_sim:.2f}) — may be wrong track"
@@ -828,6 +879,10 @@ async def _identify_recording(
                 state, candidate, audio_path, job_id
             )
         else:
+            if state.album_locked:
+                # An album-locked candidate without a recording ID still knows
+                # the tracklist length; Path A checks this itself.
+                _check_duration(state, candidate.duration_seconds, job_id)
             mb, mb_from_acoustid = await _identify_by_ranking(
                 state, audio_path, clean_query, session_factory, job_id
             )
