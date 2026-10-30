@@ -35,7 +35,7 @@ jobs:
     runs-on: docker
     env:
       # Deploy project (compose file + .env), bind-mounted into the job by the runner.
-      DEPLOY_DIR: /home/gjessing/docker/Media/audioreap
+      DEPLOY_DIR: /home/gjessing/docker/media/audioreap
     steps:
       - uses: actions/checkout@v4
 
