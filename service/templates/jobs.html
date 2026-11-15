@@ -7,6 +7,7 @@
   <div class="jobs-page-actions">
     <a id="jobs-back-to-acquire" class="btn btn-ghost btn-sm hidden" href="/acquire">← Back to Acquire</a>
     <button class="btn btn-ghost btn-sm"
+            data-jobs-refresh
             hx-get="/jobs/list?view={{ jobs_view }}"
             hx-target="#job-list"
             hx-swap="innerHTML"

@@ -276,7 +276,7 @@ async def _artist_search_results(request: Request, q: str, template: str) -> HTM
 
         from service.metadata.musicbrainz import search_artists
 
-        artists = await asyncio.to_thread(search_artists, q, 5, settings.cache_dir)
+        artists = await asyncio.to_thread(search_artists, q, 8, settings.cache_dir)
         error = None
     except Exception as exc:
         logger.warning("Unified MusicBrainz search failed for %r: %s", q, exc)

@@ -15,23 +15,30 @@
   </form>
   {% endif %}
 {% else %}
-  <section class="acquire-artists" aria-label="Artist matches">
-    <div class="section-title">Artists <span class="muted">· browse albums and tracks</span></div>
+  <nav class="search-shortcuts" aria-label="Search result sections">
+    <a href="#search-artist-section">Artists</a>
+    <a href="#search-youtube-section">YouTube</a>
+    <a href="#search-library-section">Library</a>
+  </nav>
+  <section class="acquire-artists" id="search-artist-section" aria-label="Artist matches">
+    <div class="section-title">Artists <span class="muted">· MusicBrainz discographies</span></div>
     <div id="search-artists" hx-get="/search/artists?q={{ q|urlencode }}" hx-trigger="load" hx-swap="innerHTML">
       <p class="search-loading" role="status"><span class="spinner"></span> Finding artists…</p>
     </div>
   </section>
   <div class="search-columns">
-    <section class="search-col" aria-label="Library matches">
-      <div class="section-title">Library</div>
-      <div id="local-results" data-play-scope hx-get="/search/results?q={{ q|urlencode }}" hx-trigger="load" hx-swap="innerHTML">
-        <p class="search-loading" role="status"><span class="spinner"></span> Searching your library…</p>
-      </div>
-    </section>
-    <section class="search-col" aria-label="YouTube matches">
-      <div class="section-title">YouTube</div>
+    <section class="search-col" id="search-youtube-section" aria-label="YouTube matches">
+      <div class="section-title">YouTube <span class="muted">· find a source</span></div>
+      <p class="search-section-help">Preview a source, then Get to download. You’ll review its tags in Jobs before it enters your library.</p>
       <div id="cloud-results" data-play-scope hx-get="/search/cloud?q={{ q|urlencode }}" hx-trigger="load" hx-swap="innerHTML">
         <p class="search-loading" role="status"><span class="spinner"></span> Searching YouTube…</p>
+      </div>
+    </section>
+    <section class="search-col" id="search-library-section" aria-label="Library matches">
+      <div class="section-title">Library <span class="muted">· already acquired</span></div>
+      <p class="search-section-help">Music you already have. Play it here or browse your library.</p>
+      <div id="local-results" data-play-scope hx-get="/search/results?q={{ q|urlencode }}" hx-trigger="load" hx-swap="innerHTML">
+        <p class="search-loading" role="status"><span class="spinner"></span> Searching your library…</p>
       </div>
     </section>
   </div>

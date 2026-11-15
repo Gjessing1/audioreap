@@ -11,8 +11,8 @@
 </div>
 {% endif %}
 {% for c in candidates %}
-<div class="card" id="cloud-{{ (offset|default(0)) + loop.index }}">
-  <input type="checkbox" class="cloud-check" title="Select for batch Get"
+<div class="card search-track-card" id="cloud-{{ (offset|default(0)) + loop.index }}">
+  <input type="checkbox" class="cloud-check" title="Select for batch Get" aria-label="Select {{ c.title }} for download"
          style="align-self:center;width:15px;height:15px;flex:none;accent-color:var(--primary)">
   {% if c.thumbnail_url %}
   <img class="result-thumb" src="{{ c.thumbnail_url }}" alt="" loading="lazy">
@@ -41,8 +41,8 @@
   <div class="card-actions">
     <button class="play-btn" data-id="preview:{{ c.provider_ref|e }}"
             {% if c.thumbnail_url %}data-art="{{ c.thumbnail_url|e }}"{% endif %}
-            onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview">▶</button>
-    <a href="{{ c.provider_ref|e }}" target="_blank" class="btn btn-sm btn-ghost" title="Open on YouTube" style="font-size:11px">↗</a>
+            onclick="playPreview('{{ c.provider_ref|e }}','{{ c.title|e }}')" title="Preview" aria-label="Preview {{ c.title }}">▶</button>
+    <a href="{{ c.provider_ref|e }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-ghost" title="Open on YouTube">YouTube ↗</a>
     <form hx-post="/api/acquire"
           hx-target="#cloud-{{ (offset|default(0)) + loop.index }}"
           hx-swap="outerHTML"
@@ -52,7 +52,7 @@
       <input type="hidden" name="provider_ref" value="{{ c.provider_ref|e }}">
       <input type="hidden" name="candidate_json" value="{{ c.candidate_json|e }}">
       <input type="hidden" name="query" value="{{ q|e }}">
-      <button type="submit" class="btn btn-sm">Get</button>
+      <button type="submit" class="btn btn-sm" aria-label="Get {{ c.title }}">Get track</button>
     </form>
   </div>
 </div>
@@ -115,7 +115,7 @@ if (!window.__cloudBatchInit) {
         style="display:flex;gap:6px">
     <input class="rv-input" name="url" type="url"
            placeholder="YouTube or YouTube Music URL…"
-           style="flex:1;font-size:12px" autocomplete="off" required>
+           style="flex:1;min-width:0;font-size:16px" aria-label="Direct YouTube URL" autocomplete="off" required>
     <button type="submit" class="btn btn-sm">
       Get <span id="cloud-url-spin" class="htmx-indicator"><span class="spinner"></span></span>
     </button>

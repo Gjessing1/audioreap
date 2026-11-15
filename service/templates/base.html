@@ -108,6 +108,8 @@
    nav search button. Local results arrive first, then external providers. #}
 <div id="jump-palette" class="hidden">
   <div id="jump-panel" role="dialog" aria-modal="true" aria-label="Search music">
+    <div class="jump-header">
+    <label class="sr-only" for="jump-input">Search music or paste a URL</label>
     <input id="jump-input" name="q" type="search"
            placeholder="Search music or paste a playlist URL…"
            autocomplete="off" spellcheck="false"
@@ -116,6 +118,8 @@
            hx-sync="this:replace"
            hx-target="#jump-results"
            hx-swap="innerHTML">
+    <button type="button" class="jump-close" onclick="closeJumpPalette()" aria-label="Close search">✕</button>
+    </div>
     <div id="jump-results"></div>
   </div>
 </div>

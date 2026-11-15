@@ -1,5 +1,5 @@
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-  <div>
+<div class="disco-header">
+  <div class="disco-heading">
     <div style="font-weight:600;font-size:16px">{{ artist_name }}</div>
     <div class="card-sub">{{ owned_count }} / {{ total_count }} releases owned</div>
   </div>
@@ -62,7 +62,7 @@
 
 {% if releases %}
 {% for r in releases %}
-<div class="card" style="margin-bottom:6px" data-disco-title="{{ r.title|e }}">
+<div class="card disco-release-card" style="margin-bottom:6px" data-disco-title="{{ r.title|e }}">
   {# Cover thumb: local art for owned releases, else Cover Art Archive
      release-group front (hotlinked like art_search_results.html); the
      onerror chain falls from local → CAA → placeholder. #}

@@ -1,4 +1,4 @@
-<div class="card card-review" id="job-{{ job_id }}" data-job-id="{{ job_id }}" tabindex="-1">
+<div class="card card-review" id="job-{{ job_id }}" data-job-id="{{ job_id }}" data-confidence="{{ confidence|default('probable') }}" tabindex="-1">
 
   {# ── Header ─────────────────────────────────────────────────────────── #}
   <div class="rv-header">
@@ -111,7 +111,7 @@
       {% endif %}
     </section>
     <section class="rv-comparison-side{% if confidence|default('probable') != 'verified' %} rv-comparison-side--check{% endif %}">
-      <h3>Will be saved as</h3>
+      <h3>{% if is_enrichment %}Suggested metadata{% else %}Will be saved as{% endif %}</h3>
       <strong>{{ meta.artist or 'Unknown artist' }} — {{ meta.title or 'Unknown title' }}</strong>
       <span>
         {% if meta.album %}{{ meta.album }}{% if meta.track_number %} · track {{ meta.track_number }}{% endif %}{% else %}Singles{% endif %}
@@ -321,14 +321,14 @@
     <div class="rv-actions">
       {% if staging_exists %}
       <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}" title="Keyboard: a">
-        {% if is_enrichment %}✓ Apply suggestions{% else %}✓ Approve &amp; Place{% endif %}
+        {% if is_enrichment %}✓ Apply suggestions{% else %}✓ Save to library{% endif %}
         <kbd class="rv-kbd">a</kbd>
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
       <button type="submit" class="btn btn-sm btn-success rv-approve-next"
               name="advance" value="next"
               title="Approve this track and open the next review item">
-        Approve and open next
+        {% if is_enrichment %}Apply &amp; next{% else %}Save &amp; next{% endif %}
       </button>
       {% else %}
       <button type="button" class="btn btn-lg btn-ghost"

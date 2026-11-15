@@ -333,7 +333,7 @@ async def _build_review_groups(
     """Group review jobs: album batches together, solo jobs individually.
 
     Returns (review_groups, safe_ids) where safe_ids are jobs eligible for
-    one-click approval (AcoustID verified, no flags, staging file present).
+    one-click approval (fingerprint or strong text match, no flags, staging file present).
 
     Each review_group item is either:
       {"type": "single", "job": AcquisitionJob}
@@ -777,7 +777,10 @@ async def job_status_partial(
     ctx: dict[str, object] = {"job": _job_to_model(row)}
     if row.state == "needs_review":
         meta = _row_resolved_meta(row)
-        ctx["confidence"], _ = _classify_review_confidence(row, meta)
+        confidence, flag_reason = _classify_review_confidence(row, meta)
+        ctx["confidence"] = confidence
+        ctx["review_reason"] = _review_reason(confidence, flag_reason, meta)
+        ctx["enrich_changes"] = _enrichment_change_count(meta)
         ctx["src"] = _source_summary(row, meta)
     resp = templates.TemplateResponse(request, "partials/job_card.html", ctx)
     # Only active jobs self-poll this endpoint, so a non-active state here means the

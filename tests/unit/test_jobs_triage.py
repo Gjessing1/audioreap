@@ -17,6 +17,7 @@ from service.api.routes.jobs import (
     _source_summary,
 )
 from service.config import settings
+from service.core.job_model import job_row_to_model
 from service.core.models import TrackCandidate
 from service.db.schema import AcquisitionJobRow, Base
 
@@ -47,6 +48,34 @@ def _row(
         created_at=now,
         updated_at=now,
     )
+
+
+def test_review_and_completed_identity_uses_resolved_metadata() -> None:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    for state in ("needs_review", "done"):
+        job = job_row_to_model(_row("resolved", state, now, meta={
+            "title": "Matched recording", "artist": "Matched artist", "album": "Matched album",
+        }))
+        assert job.track_ref.title == "Matched recording"
+        assert job.track_ref.artist == "Matched artist"
+        assert job.track_ref.album == "Matched album"
+    # Until matching finishes, active work still describes the selected source.
+    active = job_row_to_model(_row("active", "queued", now, meta={"title": "Not resolved yet"}))
+    assert active.track_ref.title == "Title active"
+    row = _row("single", "needs_review", now, meta={"album": None})
+    candidate = TrackCandidate.model_validate_json(row.candidate_json)
+    row.candidate_json = candidate.model_copy(update={"album": "Original source album"}).model_dump_json()
+    assert job_row_to_model(row).track_ref.album is None
+
+
+def test_review_identity_falls_back_for_old_or_malformed_metadata() -> None:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    row = _row("legacy", "needs_review", now)
+    for raw in (None, "broken-json", "[]", '{"album": "Album only"}'):
+        row.resolved_metadata_json = raw
+        job = job_row_to_model(row)
+        assert job.track_ref.title == "Title legacy"
+        assert job.track_ref.artist == "Test Artist"
 
 
 async def test_default_queue_is_review_with_counts_and_risk_first_order(

@@ -231,7 +231,7 @@ def test_unified_musicbrainz_results() -> None:
     html = _render("partials/jump_musicbrainz_results.html", {
         "artists": [artist], "q": "Test Artist", "error": None,
     })
-    assert "/discography/mb-artist-id" in html
+    assert "/acquire?q=Test%20Artist&amp;artist=mb-artist-id" in html
     assert "96%" in html
 
 

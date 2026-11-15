@@ -25,6 +25,24 @@
 </form>
 {% endif %}
 
+{% if not playlist_url and not direct_url %}
+<a class="jump-item jump-all-results" href="/acquire?q={{ q|urlencode }}">See all results for “{{ q }}” <span aria-hidden="true">→</span></a>
+<div class="jump-provider-block jump-provider-loading"
+     hx-get="/nav/jump/musicbrainz?q={{ q|urlencode }}"
+     hx-trigger="load"
+     hx-swap="outerHTML">
+  <div class="jump-section">MusicBrainz discographies</div>
+  <div class="jump-hint"><span class="spinner"></span> Searching…</div>
+</div>
+<div class="jump-provider-block jump-provider-loading"
+     hx-get="/nav/jump/youtube?q={{ q|urlencode }}"
+     hx-trigger="load"
+     hx-swap="outerHTML">
+  <div class="jump-section">YouTube</div>
+  <div class="jump-hint"><span class="spinner"></span> Searching…</div>
+</div>
+{% endif %}
+
 {% if artists %}
 <div class="jump-section">Library · Artists</div>
 {% for a in artists %}
@@ -94,21 +112,6 @@
 {% endfor %}
 {% endif %}
 
-{% if not playlist_url and not direct_url %}
-<div class="jump-provider-block jump-provider-loading"
-     hx-get="/nav/jump/musicbrainz?q={{ q|urlencode }}"
-     hx-trigger="load"
-     hx-swap="outerHTML">
-  <div class="jump-section">MusicBrainz discographies</div>
-  <div class="jump-hint"><span class="spinner"></span> Searching…</div>
-</div>
-<div class="jump-provider-block jump-provider-loading"
-     hx-get="/nav/jump/youtube?q={{ q|urlencode }}"
-     hx-trigger="load"
-     hx-swap="outerHTML">
-  <div class="jump-section">YouTube</div>
-  <div class="jump-hint"><span class="spinner"></span> Searching…</div>
-</div>
-{% elif not artists and not albums and not tracks and not playlists and not review_jobs %}
+{% if (playlist_url or direct_url) and not artists and not albums and not tracks and not playlists and not review_jobs %}
 <div class="jump-hint">Choose the action above to continue.</div>
 {% endif %}

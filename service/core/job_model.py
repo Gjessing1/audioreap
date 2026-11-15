@@ -5,6 +5,8 @@ creating a circular dependency.
 """
 from __future__ import annotations
 
+import json
+
 from service.core.models import AcquisitionJob, TrackCandidate, TrackRef
 from service.db.schema import AcquisitionJobRow
 
@@ -17,13 +19,24 @@ def job_row_to_model(row: AcquisitionJobRow) -> AcquisitionJob:
             candidate = TrackCandidate.model_validate_json(row.candidate_json)
         except Exception:
             pass
+    # Review and completed cards describe the library identity. The original
+    # provider identity is shown separately by the downloaded-source panel.
+    meta: dict = {}
+    if row.resolved_metadata_json and row.state in ("needs_review", "done"):
+        try:
+            resolved = json.loads(row.resolved_metadata_json)
+            if isinstance(resolved, dict):
+                meta = resolved
+        except (ValueError, TypeError):
+            pass
     track_ref = TrackRef(
         internal_id=row.track_id or f"job:{row.id}",
         source="cloud",
         status="acquiring" if row.state not in ("done", "failed") else
                "available" if row.state == "done" else "failed",
-        title=candidate.title if candidate else label,
-        artist=candidate.artist if candidate else "Unknown",
+        title=meta.get("title") or (candidate.title if candidate else label),
+        artist=meta.get("artist") or (candidate.artist if candidate else "Unknown"),
+        album=meta.get("album", candidate.album if candidate else None),
         provider=row.provider,
         provider_ref=row.provider_ref,
     )

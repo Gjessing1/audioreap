@@ -1,9 +1,8 @@
-{% if tracks %}
-{% for t in tracks %}
-<div class="card" id="track-{{ t.internal_id }}" data-state="done">
+{% macro library_match(t) %}
+<div class="card search-library-card" id="track-{{ t.internal_id }}" data-state="done">
   <button class="play-btn"
           data-id="{{ t.internal_id }}"
-          onclick="playTrack('{{ t.internal_id }}','{{ t.title|e }}')"
+          onclick="playTrack('{{ t.internal_id }}','{{ t.title|e }}')" aria-label="Play {{ t.title }}"
           {% if t.status != 'available' %}disabled title="File missing"{% endif %}>▶</button>
   <div class="card-info">
     <div class="card-title">{{ t.title }}</div>
@@ -15,16 +14,18 @@
     </div>
   </div>
   <div class="card-actions">
-    <span class="badge badge-local">Local</span>
-    <button class="btn btn-sm btn-ghost"
-            hx-delete="/library/tracks/{{ t.internal_id }}"
-            hx-target="closest .card"
-            hx-swap="outerHTML swap:0.25s"
-            hx-confirm="Move this track to trash?"
-            style="color:var(--t4)">✕</button>
+    <span class="badge badge-local">In library</span>
   </div>
 </div>
-{% endfor %}
+{% endmacro %}
+{% if tracks %}
+{% for t in tracks[:5] %}{{ library_match(t) }}{% endfor %}
+{% if tracks|length > 5 %}
+<details class="search-more">
+  <summary>Show {{ tracks|length - 5 }} more library matches</summary>
+  {% for t in tracks[5:] %}{{ library_match(t) }}{% endfor %}
+</details>
+{% endif %}
 {% elif q %}
 <p class="empty" style="text-align:left;padding:20px 0">
   No local matches for "<strong>{{ q }}</strong>".

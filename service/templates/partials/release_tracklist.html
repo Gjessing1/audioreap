@@ -12,7 +12,7 @@
     <tr><td colspan="5" style="padding:{% if loop.first %}2px{% else %}10px{% endif %} 0 4px;font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Disc {{ t.disc }}</td></tr>
     {% endif %}
     {% set is_owned = (t.recording_id and t.recording_id in owned_recording_ids) or (t.title|lower|trim in owned_titles) %}
-    <tr id="disco-track-{{ t.recording_id or loop.index }}"
+    <tr class="disco-track-row" id="disco-track-{{ t.recording_id or loop.index }}"
         style="border-bottom:1px solid var(--border)">
       <td style="padding:4px 6px 4px 0;width:20px;text-align:center;font-weight:700;font-size:13px;color:{% if is_owned %}var(--success){% else %}var(--danger){% endif %}">
         {% if is_owned %}✓{% else %}✕{% endif %}
@@ -32,7 +32,7 @@
                 hx-target="#ytsrc-{{ t.recording_id }}"
                 hx-swap="outerHTML"
                 hx-indicator="#ytsrc-ind-{{ t.recording_id }}">
-          source?<span id="ytsrc-ind-{{ t.recording_id }}" class="htmx-indicator"><span class="spinner" style="width:9px;height:9px"></span></span>
+          Check source<span id="ytsrc-ind-{{ t.recording_id }}" class="htmx-indicator"><span class="spinner" style="width:9px;height:9px"></span></span>
         </button>
         <form style="display:inline"
               hx-post="/discography/{{ artist_mbid }}/{{ release_group_id }}/acquire-track"

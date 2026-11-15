@@ -138,9 +138,12 @@
         hx-post="/jobs/batch-approve?view={{ jobs_view }}"
         hx-target="#job-list"
         hx-swap="innerHTML"
-        hx-confirm="Approve {{ safe_review_count }} verified track(s)? These all matched via AcoustID fingerprint with no warnings.">
+        hx-confirm="Approve {{ safe_review_count }} strong match(es)? These have fingerprint confirmation or strong title and artist matches, with no warnings."
+        data-confirm-title="Save strong matches?"
+        data-confirm-consequence="The current metadata will be written and the files moved into your library."
+        data-confirm-action-label="Save to library">
     {% for jid in safe_review_ids %}<input type="hidden" name="job_id" value="{{ jid }}">{% endfor %}
-    <button type="submit" class="btn btn-sm btn-success" title="Approve all AcoustID-verified tracks with no warnings">✓ Approve {{ safe_review_count }} verified</button>
+    <button type="submit" class="btn btn-sm btn-success" title="Approve fingerprint-confirmed or strong text matches with no warnings">✓ Approve {{ safe_review_count }} strong matches</button>
   </form>
   {% endif %}
 </div>
@@ -168,9 +171,9 @@
             hx-post="/jobs/batch-approve?view={{ jobs_view }}"
             hx-target="#job-list"
             hx-swap="innerHTML"
-            hx-confirm="Approve {{ group.clean_count }} clean track(s) from &quot;{{ group.label }}&quot;?">
+            hx-confirm="Approve {{ group.clean_count }} unflagged track(s) from &quot;{{ group.label }}&quot; with their current metadata? Some may still need metadata confirmation.">
         {% for jid in group.clean_ids %}<input type="hidden" name="job_id" value="{{ jid }}">{% endfor %}
-        <button type="submit" class="btn btn-sm btn-success">✓ Approve {{ group.clean_count }}{% if group.flagged_count %} clean{% endif %}</button>
+        <button type="submit" class="btn btn-sm btn-success" title="No detected warnings; metadata may still need confirmation">✓ Approve {{ group.clean_count }} unflagged</button>
       </form>
       {% endif %}
     </div>

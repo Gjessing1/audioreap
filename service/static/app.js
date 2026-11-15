@@ -145,7 +145,10 @@ if (playerProgress) {
 function updatePlayBtns() {
   document.querySelectorAll(".play-btn[data-id]").forEach((btn) => {
     btn.classList.toggle("playing", btn.dataset.id === currentId);
-    btn.textContent = (btn.dataset.id === currentId && !audio.paused) ? "⏸" : "▶";
+    const playing = btn.dataset.id === currentId && !audio.paused;
+    btn.textContent = playing ? "⏸" : "▶";
+    if (btn.dataset.playLabel) btn.textContent += ' ' + (playing ? 'Pause' : btn.dataset.playLabel);
+    btn.setAttribute('aria-pressed', String(playing));
   });
 }
 
@@ -290,6 +293,9 @@ function _updateBatchCount() {
   if (label) label.textContent = checked + ' selected in ' + view.charAt(0).toUpperCase() + view.slice(1);
   queue.querySelectorAll('[data-requires-job-selection]').forEach(function (button) {
     button.disabled = checked === 0;
+  });
+  queue.querySelectorAll('.job-card').forEach(function (card) {
+    card.classList.toggle('job-card--selected', Boolean(card.querySelector('.job-check:checked')));
   });
 }
 
@@ -512,6 +518,7 @@ window.openJumpPalette = function () {
   var pal = document.getElementById('jump-palette');
   var inp = document.getElementById('jump-input');
   if (!pal || !inp) return;
+  pal._returnFocus = document.activeElement;
   pal.classList.remove('hidden');
   inp.value = '';
   document.getElementById('jump-results').innerHTML = '';
@@ -520,12 +527,16 @@ window.openJumpPalette = function () {
 
 window.closeJumpPalette = function () {
   var pal = document.getElementById('jump-palette');
-  if (pal) pal.classList.add('hidden');
+  if (pal) {
+    pal.classList.add('hidden');
+    if (pal._returnFocus && pal._returnFocus.isConnected) pal._returnFocus.focus({ preventScroll: true });
+  }
 };
 
 (function () {
   function items() {
-    return Array.from(document.querySelectorAll('#jump-results .jump-item:not(.jump-item-disabled)'));
+    return Array.from(document.querySelectorAll('#jump-results .jump-item:not(.jump-item-disabled)'))
+      .filter(function (el) { return el.getClientRects().length > 0; });
   }
   function moveActive(dir) {
     var list = items();
@@ -548,7 +559,14 @@ window.closeJumpPalette = function () {
       return;
     }
     if (!open) return;
-    if (e.key === 'Escape') {
+    if (e.key === 'Tab') {
+      var focusable = Array.from(pal.querySelectorAll('input, button, a[href], summary'))
+        .filter(function (el) { return !el.disabled && el.getClientRects().length > 0; });
+      var first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
       closeJumpPalette();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -556,7 +574,7 @@ window.closeJumpPalette = function () {
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       moveActive(-1);
-    } else if (e.key === 'Enter') {
+    } else if (e.key === 'Enter' && e.target.id === 'jump-input') {
       var target = document.querySelector('#jump-results .jump-active') ||
                    document.querySelector('#jump-results .jump-item:not(.jump-item-disabled)');
       if (target) {
@@ -789,8 +807,8 @@ document.addEventListener("keydown", function(e) {
  * #job-list refreshes every 12s with an innerHTML swap. If a review card is
  * expanded (or the user is typing in a field inside the list), that swap wipes
  * the card and discards in-progress edits. Cancel the *poll* (only the request
- * originating from #job-list itself) in those cases; the manual Refresh button
- * and per-card status polls have a different originating element and still run.
+ * originating from #job-list itself) in those cases. The swap guard below
+ * also protects an open review from an earlier poll or manual refresh response.
  * Active jobs keep updating because each active card self-polls /jobs/status.
  */
 document.body.addEventListener('htmx:beforeRequest', function(e) {
@@ -803,6 +821,19 @@ document.body.addEventListener('htmx:beforeRequest', function(e) {
   const editing = active && list.contains(active) &&
     /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
   if (reviewing || editing) e.preventDefault();
+});
+
+// A poll can start before Review opens and finish after the user starts editing.
+// Check again at swap time so that late responses cannot discard those edits.
+document.body.addEventListener('htmx:beforeSwap', function(e) {
+  const detail = e.detail || {};
+  const source = detail.requestConfig && detail.requestConfig.elt;
+  if (!detail.target || detail.target.id !== 'job-list' || !source) return;
+  if (source.id !== 'job-list' && !source.hasAttribute('data-jobs-refresh')) return;
+  const list = detail.target;
+  const active = document.activeElement;
+  if (list.querySelector('.card-review') || (active && list.contains(active) &&
+      /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))) e.preventDefault();
 });
 
 /* ── HTMX global error handler ───────────────────────────────────────────── */

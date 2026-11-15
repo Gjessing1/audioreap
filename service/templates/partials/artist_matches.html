@@ -1,0 +1,37 @@
+{# Search and Discover share artist identity, relevance and browse controls. #}
+{% macro artist_match(a) %}
+<a class="acquire-artist{% if artist_search_mode == 'palette' %} jump-item{% endif %}"
+   aria-label="Browse albums by {{ a.name }}{% if a.disambiguation %}, {{ a.disambiguation }}{% endif %}"
+   {% if artist_search_mode == 'unified' %}
+   href="/acquire?q={{ q|urlencode }}&amp;artist={{ a.artist_id|urlencode }}"
+   hx-get="/discography/{{ a.artist_id }}?search_q={{ q|urlencode }}"
+   hx-target="#acquire-results" hx-push-url="/acquire?q={{ q|urlencode }}&amp;artist={{ a.artist_id|urlencode }}"
+   {% elif artist_search_mode == 'palette' %}
+   href="/acquire?q={{ q|urlencode }}&amp;artist={{ a.artist_id|urlencode }}"
+   {% else %}
+   href="/discography/{{ a.artist_id }}"
+   hx-get="/discography/{{ a.artist_id }}" hx-target="#disco-detail" hx-push-url="true"
+   {% endif %}
+   hx-swap="innerHTML">
+  <span class="acquire-artist-icon" aria-hidden="true">◎</span>
+  <span class="acquire-artist-info">
+    <strong>{{ a.name }}</strong>
+    <span>{{ a.disambiguation or 'MusicBrainz artist' }}</span>
+  </span>
+  <span class="acquire-artist-aside">
+    <span class="artist-relevance" title="Name search relevance on MusicBrainz">{{ "%.0f"|format(a.score * 100) }}% match</span>
+    <span class="acquire-artist-action">Browse albums →</span>
+  </span>
+</a>
+{% endmacro %}
+<div class="acquire-artist-grid">
+  {% for a in artists[:3] %}{{ artist_match(a) }}{% endfor %}
+</div>
+{% if artists|length > 3 %}
+<details class="search-more">
+  <summary>Show {{ artists|length - 3 }} more artist matches</summary>
+  <div class="acquire-artist-grid">
+    {% for a in artists[3:] %}{{ artist_match(a) }}{% endfor %}
+  </div>
+</details>
+{% endif %}

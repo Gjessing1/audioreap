@@ -31,20 +31,28 @@
   {% endif %}
 
   <div class="card-info">
+    {% if job.state == 'needs_review' %}
+    <div class="job-verdict job-verdict--{{ confidence|default('probable') }}">
+      <span class="job-verdict-label">{% if confidence|default('probable') == 'flagged' %}⚠ Check source{% elif confidence|default('probable') == 'verified' %}✓ Strong match{% else %}≈ Check metadata{% endif %}</span>
+      <span>{{ review_reason|default('Confirm the metadata before approving') }}</span>
+    </div>
+    {% endif %}
+    <div class="job-identities">
+    <div class="job-destination">
+    {% if job.state == 'needs_review' %}
+    <div class="job-source-label job-destination-label">{% if enrich_changes is defined and enrich_changes is not none %}Suggested metadata{% else %}Will be saved as{% endif %}</div>
+    {% endif %}
     <div class="card-title">{{ job.track_ref.title }}</div>
     <div class="card-sub">{{ job.track_ref.artist }}{% if job.track_ref.album %}<span class="muted"> · {{ job.track_ref.album }}</span>{% endif %}</div>
+    </div>
     {# What was actually downloaded — raw video title, channel, length, and
        version hint chips — so a live/clean/remix pick is visible from the list
        before hitting Approve. #}
     {% if job.state == 'needs_review' and src is defined and src %}
     {% include "partials/job_source.html" %}
     {% endif %}
-    {% if job.state == 'needs_review' %}
-    <div class="card-reason card-reason--{{ confidence|default('probable') }}"
-         {% if review_reason is defined %}title="{{ review_reason }}"{% endif %}>
-      {{ review_reason|default('Confirm the metadata before approving') }}
     </div>
-    {% elif job.state not in ('failed',) %}
+    {% if job.state not in ('needs_review', 'failed') %}
     <div class="card-reason">
       {% if job.state == 'queued' %}Waiting for a worker
       {% elif job.state == 'waiting' %}Paused briefly to respect provider limits
@@ -55,14 +63,12 @@
       {% else %}{{ job.state.replace('_', ' ')|capitalize }}{% endif %}
     </div>
     {% endif %}
-    {# needs_review flag reasons are surfaced by the flag-detail row in job_list.html,
-       so suppress the card-error here for review jobs to avoid showing the same
-       fingerprint/artist mismatch twice. #}
+    {# Review warnings already appear in the verdict above. #}
     {% if job.error and job.state != 'needs_review' %}
     <div class="card-error {% if job.state == 'failed' %}card-error--danger{% endif %}"
          title="{{ job.error }}"
          style="cursor:help">
-      {{ job.error[:140] }}{% if job.error|length > 140 %}…{% endif %}
+      {{ job.error }}
     </div>
     {% endif %}
   </div>
@@ -74,13 +80,6 @@
     {% if enrich_changes is defined and enrich_changes is not none %}
     <span class="badge badge-warn"
           title="This enrichment suggestion changes {{ enrich_changes }} metadata field{{ 's' if enrich_changes != 1 }}">{{ enrich_changes }} field{{ 's' if enrich_changes != 1 }}</span>
-    {% endif %}
-    {% if confidence == 'verified' %}
-    <span class="badge badge-done" title="High-confidence match (AcoustID-confirmed or strong text match) — no warnings">✓ verified</span>
-    {% elif confidence == 'flagged' %}
-    <span class="badge badge-fail" title="Flagged — review this match carefully before approving">⚠ flagged</span>
-    {% else %}
-    <span class="badge badge-review" title="Probable match — below the verified threshold, confirm metadata">≈ probable</span>
     {% endif %}
     {% elif job.state == 'waiting' %}
     <span class="badge badge-queued" title="{{ job.error or 'Pacing downloads to avoid YouTube rate limits' }}"><span class="spinner" style="width:10px;height:10px;margin-right:4px"></span>waiting</span>
@@ -98,8 +97,9 @@
     {% if job.state == 'needs_review' %}
     <button class="play-btn"
             data-id="staged:{{ job.id }}"
+            data-play-label="Listen"
             onclick="playJobStaged('{{ job.id }}','{{ job.track_ref.title|e }}')"
-            title="Preview staged file" aria-label="Preview {{ job.track_ref.title }}">▶</button>
+            title="Preview staged file" aria-label="Preview {{ job.track_ref.title }}">▶ <span>Listen</span></button>
     <button class="btn btn-sm"
             hx-get="/jobs/{{ job.id }}/review-card"
             hx-target="#job-{{ job.id }}"
