@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
 from service.api.routes.library import _classify_search_url, nav_jump
+from service.api.routes.acquire import acquire_artist_results, acquire_search_results
 from service.api.routes.playlists import playlists_page
 from service.db.schema import Artist, Base, PlaylistImport, Track, TrackFile
 
@@ -101,3 +102,67 @@ async def test_playlist_url_handoff_prefills_and_auto_previews() -> None:
     await engine.dispose()
     assert f'value="{url}"' in body
     assert 'hx-trigger="load"' in body
+
+
+async def test_acquire_search_fans_out_and_preserves_query() -> None:
+    response = await acquire_search_results(_request("/search/unified"), "Björk & friends")
+    body = response.body.decode()
+    assert '/search/artists?q=' in body
+    assert '/search/results?q=' in body
+    assert '/search/cloud?q=' in body
+    assert response.headers["HX-Replace-Url"] == "/acquire?q=Bj%C3%B6rk+%26+friends"
+
+
+async def test_acquire_url_skips_provider_searches() -> None:
+    for url, action in [
+        ("https://youtu.be/test", "Get track"),
+        ("https://open.spotify.com/playlist/test", "Preview playlist"),
+    ]:
+        response = await acquire_search_results(_request("/search/unified"), url)
+        body = response.body.decode()
+        assert action in body
+        assert '/search/artists' not in body
+        assert '/search/cloud' not in body
+
+
+async def test_acquire_artist_result_opens_inline_discography(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from service.metadata import musicbrainz
+
+    monkeypatch.setattr(musicbrainz, "search_artists", lambda *args: [SimpleNamespace(
+        artist_id="artist-id", name="Björk", disambiguation="Icelandic musician", score=1.0,
+    )])
+    response = await acquire_artist_results(_request("/search/artists"), "Björk")
+    body = response.body.decode()
+    assert "Björk" in body
+    assert '/discography/artist-id?search_q=Bj%C3%B6rk' in body
+    assert 'hx-target="#acquire-results"' in body
+    assert '/acquire?q=Bj%C3%B6rk&amp;artist=artist-id' in body
+
+
+async def test_acquire_artist_lookup_failure_has_retry(monkeypatch) -> None:
+    from service.metadata import musicbrainz
+
+    def unavailable(*args):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(musicbrainz, "search_artists", unavailable)
+    response = await acquire_artist_results(_request("/search/artists"), "Björk")
+    body = response.body.decode()
+    assert "unavailable" in body
+    assert "Try again" in body
+
+
+async def test_inline_discography_keeps_related_artists_in_search(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from service.api.routes.discography import discography_related_artists
+    from service.metadata import musicbrainz
+
+    monkeypatch.setattr(musicbrainz, "get_related_artists", lambda *args: [SimpleNamespace(
+        artist_id="related-id", name="Related Artist", relation="member", disambiguation="",
+    )])
+    response = await discography_related_artists(_request("/discography/id/related"), "id", "Björk")
+    body = response.body.decode()
+    assert '/discography/related-id?search_q=Bj%C3%B6rk' in body
+    assert 'hx-target="#acquire-results"' in body
+    assert '/acquire?q=Bj%C3%B6rk&amp;artist=related-id' in body

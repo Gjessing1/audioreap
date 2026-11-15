@@ -273,6 +273,22 @@ def test_review_card_minimal() -> None:
     assert "approve-btn-abc12345" in html
 
 
+def test_review_and_queue_show_original_title_and_direct_source_link() -> None:
+    src = {"title": "Artist — Original Upload (Official Video)",
+           "url": "https://www.youtube.com/watch?v=original", "channel": "Channel",
+           "duration": "3:21", "hints": []}
+    for template, ctx in [
+        ("partials/review_card.html", _review_ctx(src=src)),
+        ("partials/job_card.html", {"job": _job(), "src": src}),
+    ]:
+        html = _render(template, ctx)
+        assert "Artist — Original Upload (Official Video)" in html
+        assert 'href="https://www.youtube.com/watch?v=original"' in html
+        assert "Open source ↗" in html
+        assert 'target="_blank" rel="noopener noreferrer"' in html
+        assert "3:21" in html
+
+
 def test_jobs_batch_result_names_failures_and_offers_reject_undo() -> None:
     html = _render("partials/jobs_batch_result.html", {
         "jobs_view": "review",

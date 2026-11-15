@@ -37,17 +37,7 @@
        version hint chips — so a live/clean/remix pick is visible from the list
        before hitting Approve. #}
     {% if job.state == 'needs_review' and src is defined and src %}
-    <div class="card-source">
-      {% if src.url %}
-      <a href="{{ src.url }}" target="_blank" rel="noopener"
-         title="Open the source this audio was downloaded from">▶ {{ src.title or src.url }}</a>
-      {% else %}
-      <span>▶ {{ src.title }}</span>
-      {% endif %}
-      {% if src.channel %}<span class="card-source-meta">· {{ src.channel }}</span>{% endif %}
-      {% if src.duration %}<span class="card-source-meta">· {{ src.duration }}</span>{% endif %}
-      {% for h in src.hints %}<span class="src-hint src-hint--{{ h.kind }}">{{ h.label }}</span>{% endfor %}
-    </div>
+    {% include "partials/job_source.html" %}
     {% endif %}
     {% if job.state == 'needs_review' %}
     <div class="card-reason card-reason--{{ confidence|default('probable') }}"
@@ -101,6 +91,7 @@
     {% if job.state == 'done' and job.track_ref.status == 'available' %}
     <button class="play-btn"
             data-id="{{ job.track_ref.internal_id }}"
+            aria-label="Play {{ job.track_ref.title }}"
             onclick="playTrack('{{ job.track_ref.internal_id }}','{{ job.track_ref.title|e }}')">▶</button>
     {% endif %}
 
@@ -152,6 +143,7 @@
             hx-delete="/jobs/dismiss/{{ job.id }}"
             hx-target="#job-{{ job.id }}"
             hx-swap="outerHTML swap:0.25s"
+            aria-label="Dismiss {{ job.track_ref.title }}"
             style="color:var(--t4)">✕</button>
     {% endif %}
   </div>

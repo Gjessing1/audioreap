@@ -1,0 +1,16 @@
+<div class="job-source">
+  <div class="job-source-label">Downloaded source</div>
+  <div class="job-source-title">{{ src.title or 'Original title unavailable' }}</div>
+  {% if src.channel or src.duration or src.hints %}
+  <div class="job-source-meta">
+    {% if src.channel %}<span>{{ src.channel }}</span>{% endif %}
+    {% if src.duration %}<span>{{ src.duration }}</span>{% endif %}
+    {% for h in src.hints %}<span class="src-hint src-hint--{{ h.kind }}">{{ h.label }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if src.url %}
+  <a class="job-source-link" href="{{ src.url }}" target="_blank" rel="noopener noreferrer">
+    <span class="job-source-open">Open source ↗</span><span class="job-source-url">{{ src.url }}</span>
+  </a>
+  {% endif %}
+</div>

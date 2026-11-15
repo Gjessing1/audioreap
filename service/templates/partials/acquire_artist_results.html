@@ -1,0 +1,17 @@
+{% if error %}
+<p class="search-loading" role="status">{{ error }} <button class="btn btn-sm btn-ghost" hx-get="/search/artists?q={{ q|urlencode }}" hx-target="#search-artists">Try again</button></p>
+{% elif artists %}
+<div class="acquire-artist-grid">
+  {% for a in artists %}
+  <a class="acquire-artist" href="/acquire?q={{ q|urlencode }}&amp;artist={{ a.artist_id|urlencode }}"
+     hx-get="/discography/{{ a.artist_id }}?search_q={{ q|urlencode }}"
+     hx-target="#acquire-results" hx-swap="innerHTML" hx-push-url="/acquire?q={{ q|urlencode }}&amp;artist={{ a.artist_id|urlencode }}">
+    <span class="acquire-artist-icon" aria-hidden="true">◎</span>
+    <span class="acquire-artist-info"><strong>{{ a.name }}</strong><span>{{ a.disambiguation or 'Artist discography' }}</span></span>
+    <span class="acquire-artist-action">Albums →</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="search-loading">No artist matches for “{{ q }}”. Track results are below.</p>
+{% endif %}

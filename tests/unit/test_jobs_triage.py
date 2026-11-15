@@ -14,6 +14,7 @@ from service.api.routes.jobs import (
     _jobs_view,
     _reject_row,
     _restore_rejected_row,
+    _source_summary,
 )
 from service.config import settings
 from service.core.models import TrackCandidate
@@ -282,3 +283,32 @@ def test_path_b_acoustid_rescue_still_verified(tmp_path: Path) -> None:
         "mb_from_acoustid": True,
     })
     assert confidence == "verified"
+
+
+def test_source_summary_uses_raw_video_title_for_legacy_jobs() -> None:
+    row = _row("source", "needs_review", datetime.now(UTC))
+    candidate = json.loads(row.candidate_json)
+    candidate["raw_metadata"] = {
+        "title": "Test Artist - The Original Upload (Live)",
+        "channel": "Official Channel", "duration": 201,
+    }
+    row.candidate_json = json.dumps(candidate)
+    src = _source_summary(row, {})
+    assert src["title"] == "Test Artist - The Original Upload (Live)"
+    assert src["url"] == row.provider_ref
+    assert src["channel"] == "Official Channel"
+    assert src["duration"] == "3:21"
+
+    # A replacement must never inherit the old video's identity.
+    src = _source_summary(row, {"source_url": "https://youtu.be/replacement"})
+    assert src["title"] == ""
+    assert src["channel"] == ""
+
+
+def test_source_summary_does_not_invent_original_title_or_link() -> None:
+    row = _row("source", "needs_review", datetime.now(UTC))
+    row.provider_ref = "ytsearch1:Artist Desired Track"
+    assert _source_summary(row, {}) is None
+    src = _source_summary(row, {"source_url": "javascript:alert(1)", "source_title": "Upload"})
+    assert src["url"] == ""
+    assert src["title"] == "Upload"

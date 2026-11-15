@@ -166,6 +166,17 @@ def video_id_from_url(url: str) -> str | None:
     return tail if re.fullmatch(r"[A-Za-z0-9_-]{11}", tail) else None
 
 
+def _downloaded_media_info(info: object) -> dict:
+    """Unwrap search/playlist results to the video that was actually fetched."""
+    node = info if isinstance(info, dict) else {}
+    while node.get("entries"):
+        entry = next((e for e in node["entries"] if isinstance(e, dict) and e), None)
+        if entry is None:
+            break
+        node = entry
+    return node
+
+
 def _canonical_source_url(info: object, provider_ref: str) -> str | None:
     """Best canonical media URL for the thing yt-dlp actually downloaded.
 
@@ -174,10 +185,7 @@ def _canonical_source_url(info: object, provider_ref: str) -> str | None:
     first real entry so album tracks get a clickable watch URL instead of the bare
     search expression. Returns None if nothing usable is found.
     """
-    node = info if isinstance(info, dict) else {}
-    entries = node.get("entries") if isinstance(node, dict) else None
-    if entries:
-        node = next((e for e in entries if e), node)
+    node = _downloaded_media_info(info)
     if isinstance(node, dict):
         url = node.get("webpage_url") or node.get("original_url") or node.get("url")
         if url:
@@ -277,9 +285,12 @@ class YtdlpProvider(Provider):
         }
         url = f"{_SEARCH_PREFIX}{query.limit}:{query.q}"
 
-        try:
+        def _run_search() -> dict | None:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                return ydl.extract_info(url, download=False)
+
+        try:
+            info = await asyncio.to_thread(_run_search)
         except Exception as exc:
             logger.warning("yt-dlp search failed for %r: %s", query.q, exc)
             return
@@ -368,6 +379,10 @@ class YtdlpProvider(Provider):
 
         if not info:
             raise RuntimeError(f"yt-dlp returned no info for {provider_ref!r}")
+
+        # Search refs return a wrapper whose title describes the query. Preserve
+        # the fetched video's title/channel/duration and format details instead.
+        info = _downloaded_media_info(info)
 
         # Prefer the hook path; fall back to reconstructing from info
         if downloaded_path:

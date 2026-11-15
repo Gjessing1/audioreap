@@ -7,11 +7,17 @@
 <div style="display:flex;gap:6px;flex-wrap:wrap">
   {% for r in related[:16] %}
   <button type="button"
+          {% if search_q is defined and search_q is not none %}
+          hx-get="/discography/{{ r.artist_id }}?search_q={{ search_q|urlencode }}"
+          hx-target="#acquire-results"
+          hx-push-url="/acquire?q={{ search_q|urlencode }}&amp;artist={{ r.artist_id|urlencode }}"
+          {% else %}
           hx-get="/discography/{{ r.artist_id }}"
           hx-target="#disco-detail"
-          hx-swap="innerHTML"
           hx-push-url="true"
           hx-indicator="#disco-detail"
+          {% endif %}
+          hx-swap="innerHTML"
           title="{{ r.relation }}{% if r.disambiguation %} — {{ r.disambiguation }}{% endif %}"
           style="border:1px solid var(--b2);background:var(--s2);color:var(--t1);border-radius:16px;padding:5px 12px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">
     {{ r.name }}

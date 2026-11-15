@@ -2,9 +2,9 @@
 {% block title %}Jobs — audioreap{% endblock %}
 
 {% block content %}
-<div class="page-toolbar">
+<div class="page-toolbar jobs-page-toolbar">
   <h2 class="page-title">Jobs</h2>
-  <div style="display:flex;gap:8px">
+  <div class="jobs-page-actions">
     <a id="jobs-back-to-acquire" class="btn btn-ghost btn-sm hidden" href="/acquire">← Back to Acquire</a>
     <button class="btn btn-ghost btn-sm"
             hx-get="/jobs/list?view={{ jobs_view }}"

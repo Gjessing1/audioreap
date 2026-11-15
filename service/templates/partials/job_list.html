@@ -168,7 +168,7 @@
             hx-post="/jobs/batch-approve?view={{ jobs_view }}"
             hx-target="#job-list"
             hx-swap="innerHTML"
-            hx-confirm="Approve {{ group.clean_count }} clean track(s) from "{{ group.label }}"?">
+            hx-confirm="Approve {{ group.clean_count }} clean track(s) from &quot;{{ group.label }}&quot;?">
         {% for jid in group.clean_ids %}<input type="hidden" name="job_id" value="{{ jid }}">{% endfor %}
         <button type="submit" class="btn btn-sm btn-success">✓ Approve {{ group.clean_count }}{% if group.flagged_count %} clean{% endif %}</button>
       </form>

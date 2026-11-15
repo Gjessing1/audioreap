@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -29,9 +30,10 @@ async def root() -> RedirectResponse:
 
 @router.get("/acquire", response_class=HTMLResponse)
 async def acquire_page(
-    request: Request, q: str = "", session: AsyncSession = Depends(get_session)
+    request: Request, q: str = "", session: AsyncSession = Depends(get_session), artist: str = ""
 ) -> HTMLResponse:
     ctx = await _acquire_ctx(request, q, "search", session)
+    ctx["search_artist"] = artist
     return templates.TemplateResponse(request, "acquire.html", ctx)
 
 
@@ -41,6 +43,21 @@ async def search_page(
 ) -> HTMLResponse:
     ctx = await _acquire_ctx(request, q, "search", session)
     return templates.TemplateResponse(request, "acquire.html", ctx)
+
+
+@router.get("/search/unified", response_class=HTMLResponse)
+async def acquire_search_results(request: Request, q: str = "") -> HTMLResponse:
+    """Fan out independently so an external provider never holds up other results."""
+    from service.api.routes.library import _classify_search_url
+
+    q = q.strip()
+    playlist_url, direct_url = _classify_search_url(q)
+    response = templates.TemplateResponse(
+        request, "partials/acquire_search_results.html",
+        {"q": q, "playlist_url": playlist_url, "direct_url": direct_url},
+    )
+    response.headers["HX-Replace-Url"] = "/acquire" + ("?" + urlencode({"q": q}) if q else "")
+    return response
 
 
 def _track_to_ref(row: Track) -> TrackRef:
@@ -241,6 +258,15 @@ async def unified_musicbrainz_results(
     q: str = "",
 ) -> HTMLResponse:
     """MusicBrainz branch of the global unified-search command bar."""
+    return await _artist_search_results(request, q, "partials/jump_musicbrainz_results.html")
+
+
+@router.get("/search/artists", response_class=HTMLResponse)
+async def acquire_artist_results(request: Request, q: str = "") -> HTMLResponse:
+    return await _artist_search_results(request, q, "partials/acquire_artist_results.html")
+
+
+async def _artist_search_results(request: Request, q: str, template: str) -> HTMLResponse:
     q = q.strip()
     if len(q) < 2:
         return HTMLResponse("")
@@ -259,7 +285,7 @@ async def unified_musicbrainz_results(
 
     return templates.TemplateResponse(
         request,
-        "partials/jump_musicbrainz_results.html",
+        template,
         {"artists": artists, "q": q, "error": error},
     )
 

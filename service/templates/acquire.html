@@ -3,16 +3,10 @@
 
 {% block content %}
 
-{# Unified search is the primary acquisition entry point. The focused views
-   remain for deeper jobs such as batch YouTube selection, genre discovery,
-   full discography browsing, and playlist track selection. #}
-<button type="button" class="unified-search-launch" onclick="openJumpPalette()">
-  <span class="unified-search-icon">⌕</span>
-  <span>Search library, YouTube, MusicBrainz, or paste a playlist URL…</span>
-  <kbd>Ctrl K</kbd>
-</button>
-
-<div class="acq-focused-label">Focused views</div>
+<div class="page-header">
+  <h1>Find music</h1>
+  <p>Search once to find artists, browse their albums, or get individual tracks.</p>
+</div>
 <div class="acq-tabs" id="acq-tabs" role="tablist">
   <a href="/acquire"      role="tab" data-tab="search"    class="acq-tab">Search</a>
   <a href="/discography"  role="tab" data-tab="discover"  class="acq-tab">Discover</a>
@@ -22,46 +16,35 @@
 {# ── Search ──────────────────────────────────────────────────────────────── #}
 <section class="acq-panel" id="acq-panel-search" hidden>
   <form id="search-form" class="search-bar"
-        hx-get="/search/results"
-        hx-trigger="input changed delay:350ms from:#q, submit"
-        hx-target="#local-results"
-        hx-include="#q">
+        action="/acquire" method="get"
+        hx-get="/search/unified"
+        hx-trigger="input changed delay:500ms from:#q, submit"
+        hx-sync="this:replace"
+        hx-target="#acquire-results"
+        hx-indicator="#search-spin">
+    <label class="sr-only" for="q">Search artists, tracks, or paste a URL</label>
     <input id="q" name="q" type="search"
-           placeholder="Search tracks, artists…"
+           placeholder="Artist, track, or playlist URL…"
            value="{{ q|default('') }}"
            inputmode="search" enterkeyhint="search" autocomplete="off">
-    <button type="submit"
-            hx-get="/search/cloud"
-            hx-include="#q"
-            hx-target="#cloud-results"
-            hx-swap="innerHTML"
-            hx-indicator="#search-spin">
+    <button type="submit">
       Search
       <span id="search-spin" class="htmx-indicator"><span class="spinner"></span></span>
     </button>
   </form>
 
-  <div class="search-columns">
-    <div class="search-col">
-      <div class="section-title">Library</div>
-      <div id="local-results" data-play-scope>
-        {% if q %}
-          {% include "partials/local_results.html" %}
-        {% else %}
-          <p class="empty" style="text-align:left;padding:12px 0">Your library matches appear here.</p>
-        {% endif %}
-      </div>
-    </div>
-    <div class="search-col">
-      <div class="section-title">YouTube</div>
-      <div id="cloud-results" data-play-scope>
-        {% if q %}
-          {% include "partials/cloud_results.html" %}
-        {% else %}
-          <p class="empty" style="text-align:left;padding:12px 0">Hit <strong>Search</strong> to find music on YouTube.</p>
-        {% endif %}
-      </div>
-    </div>
+  <div id="acquire-results"{% if search_artist|default('') %}
+       hx-get="/discography/{{ search_artist|urlencode }}?search_q={{ q|urlencode }}"
+       hx-trigger="load" hx-swap="innerHTML"{% elif q %}
+       hx-get="/search/unified?q={{ q|urlencode }}"
+       hx-trigger="load" hx-swap="innerHTML"{% endif %}>
+    {% if search_artist|default('') %}
+      <p class="search-loading" role="status"><span class="spinner"></span> Loading artist discography…</p>
+    {% elif q %}
+      <p class="search-loading" role="status"><span class="spinner"></span> Searching…</p>
+    {% else %}
+      {% include "partials/acquire_search_results.html" %}
+    {% endif %}
   </div>
 </section>
 
@@ -181,6 +164,18 @@
       if (panel) panel.hidden = !on;
     });
     try { localStorage.setItem(KEY, name); } catch (e) {}
+    // Search and Discover share release/track controls. Keep one expanded
+    // discography in the DOM so their targets always address the visible view.
+    var detail = document.getElementById('search-discography');
+    if (name === 'discover' && detail) detail.remove();
+    if (name === 'search') {
+      var browseDetail = document.getElementById('disco-detail');
+      if (browseDetail) browseDetail.replaceChildren();
+      var results = document.getElementById('acquire-results');
+      if (results && !results.children.length && window.htmx) {
+        htmx.trigger(document.getElementById('search-form'), 'submit');
+      }
+    }
     // First reveal of Discover kicks off the lazy "For you" rail. This inline
     // script runs before htmx.min.js (loaded at the end of base.html), so on
     // initial page load we defer the trigger to htmx's first processing pass.
@@ -228,7 +223,7 @@
   });
 
   var initial = 'search';
-  if (serverHint && serverHint !== 'search') initial = serverHint;
+  if (serverHint) initial = serverHint;
   else { try { initial = localStorage.getItem(KEY) || 'search'; } catch (e) {} }
   if (!document.getElementById('acq-panel-' + initial)) initial = 'search';
   {% if q %}initial = 'search';{% endif %}

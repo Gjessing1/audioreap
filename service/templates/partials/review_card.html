@@ -11,6 +11,7 @@
       <div id="rv-art-ph-{{ job_id }}" style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:var(--t4);font-size:22px">♪</div>
     </div>
     <div class="rv-info">
+      <div class="rv-title">{{ meta.artist or 'Unknown artist' }} — {{ meta.title or 'Unknown title' }}</div>
       <div class="rv-badges">
         {% if is_enrichment %}
         <span class="badge badge-busy">Metadata suggestion</span>
@@ -49,24 +50,7 @@
       {% if query %}
       <div class="rv-source">{{ query }}</div>
       {% endif %}
-      {% if src is defined and src and (src.title or src.url) %}
-      <div class="card-source">
-        {% if src.url %}
-        <a href="{{ src.url }}" target="_blank" rel="noopener"
-           title="Open the source this audio was fetched from — check it's the right artist/version">▶ {{ src.title or src.url }}</a>
-        {% else %}
-        <span>▶ {{ src.title }}</span>
-        {% endif %}
-        {% if src.channel %}<span class="card-source-meta">· {{ src.channel }}</span>{% endif %}
-        {% if src.duration %}<span class="card-source-meta">· {{ src.duration }}</span>{% endif %}
-        {% for h in src.hints %}<span class="src-hint src-hint--{{ h.kind }}">{{ h.label }}</span>{% endfor %}
-      </div>
-      {% elif source_url %}
-      <div class="card-source">
-        <a href="{{ source_url }}" target="_blank" rel="noopener"
-           title="Open the source this audio was fetched from — check it's the right artist/version">▶ Source</a>
-      </div>
-      {% endif %}
+
     </div>
   </div>
 
@@ -114,12 +98,17 @@
 
   <div class="rv-comparison" aria-label="Source and destination metadata comparison">
     <section class="rv-comparison-side">
-      <h3>Source</h3>
-      <strong>{{ (src.title if src is defined and src else query) or 'Downloaded audio' }}</strong>
-      <span>
-        {% if src is defined and src and src.channel %}{{ src.channel }}{% else %}{{ query or 'Provider metadata unavailable' }}{% endif %}
-        {% if src is defined and src and src.duration %} · {{ src.duration }}{% endif %}
-      </span>
+      {% if src is defined and src %}
+        {% include "partials/job_source.html" %}
+      {% else %}
+        <h3>Downloaded source</h3>
+        <strong>Original title unavailable</strong>
+        {% if source_url %}
+        <a class="job-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">Open source ↗ <span class="job-source-url">{{ source_url }}</span></a>
+        {% else %}
+        <span>Source details were not recorded for this item.</span>
+        {% endif %}
+      {% endif %}
     </section>
     <section class="rv-comparison-side{% if confidence|default('probable') != 'verified' %} rv-comparison-side--check{% endif %}">
       <h3>Will be saved as</h3>
@@ -296,18 +285,8 @@
     </details>
     {% endif %}
 
-    <div class="rv-actions">
+    <div class="rv-tools">
       {% if staging_exists %}
-      <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}" title="Keyboard: a">
-        {% if is_enrichment %}✓ Apply suggestions{% else %}✓ Approve &amp; Place{% endif %}
-        <kbd class="rv-kbd">a</kbd>
-        <span class="htmx-indicator"><span class="spinner"></span></span>
-      </button>
-      <button type="submit" class="btn btn-sm btn-success rv-approve-next"
-              name="advance" value="next"
-              title="Approve this track and open the next review item">
-        Approve and open next
-      </button>
       <button type="button" class="btn btn-sm btn-ghost"
               data-review-mb
               onclick="togglePanel('mb-panel-{{ job_id }}','src-panel-{{ job_id }}','art-panel-{{ job_id }}')"
@@ -330,6 +309,28 @@
       </button>
       {% endif %}
       {% else %}
+      {% if not is_enrichment %}
+      <button type="button" class="btn btn-sm btn-ghost"
+              onclick="document.getElementById('src-panel-{{ job_id }}').classList.remove('hidden')">
+        Different source
+      </button>
+      {% endif %}
+      {% endif %}
+    </div>
+
+    <div class="rv-actions">
+      {% if staging_exists %}
+      <button type="submit" class="btn btn-lg rv-approve" id="approve-btn-{{ job_id }}" title="Keyboard: a">
+        {% if is_enrichment %}✓ Apply suggestions{% else %}✓ Approve &amp; Place{% endif %}
+        <kbd class="rv-kbd">a</kbd>
+        <span class="htmx-indicator"><span class="spinner"></span></span>
+      </button>
+      <button type="submit" class="btn btn-sm btn-success rv-approve-next"
+              name="advance" value="next"
+              title="Approve this track and open the next review item">
+        Approve and open next
+      </button>
+      {% else %}
       <button type="button" class="btn btn-lg btn-ghost"
               hx-post="/jobs/{{ job_id }}/requeue"
               hx-target="#job-{{ job_id }}"
@@ -337,12 +338,7 @@
         Re-download
         <span class="htmx-indicator"><span class="spinner"></span></span>
       </button>
-      {% if not is_enrichment %}
-      <button type="button" class="btn btn-sm btn-ghost"
-              onclick="document.getElementById('src-panel-{{ job_id }}').classList.remove('hidden')">
-        Different source
-      </button>
-      {% endif %}
+
       {% endif %}
       <button type="button" class="btn btn-sm rv-reject"
               hx-post="/jobs/{{ job_id }}/reject"

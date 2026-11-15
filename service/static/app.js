@@ -349,7 +349,8 @@ window.selectAlbumChecks = function(groupId) {
       q: value('#q'),
       discoQ: value('#disco-q'),
       genreQ: value('#disco-genre-q'),
-      discoFilter: value('#disco-search'),
+      discoFilter: value('#search-disco-filter') || value('#disco-search'),
+      searchArtist: (document.getElementById('search-discography') || {}).dataset?.artistMbid || '',
       playlistUrl: value('#playlist-form input[name="url"]')
     };
     const genreButton = document.querySelector('#disco-modes [data-mode="genre"]');
@@ -361,6 +362,7 @@ window.selectAlbumChecks = function(groupId) {
     let path = location.pathname + location.search;
     if (tab === 'search') {
       path = '/acquire' + (values.q ? '?q=' + encodeURIComponent(values.q) : '');
+      if (values.searchArtist) path += (values.q ? '&' : '?') + 'artist=' + encodeURIComponent(values.searchArtist);
     } else if (tab === 'playlists') {
       path = '/playlists' + (values.playlistUrl ? '?url=' + encodeURIComponent(values.playlistUrl) : '');
     } else if (!/^\/discography\/[^/]+/.test(location.pathname)) {
@@ -404,7 +406,10 @@ window.selectAlbumChecks = function(groupId) {
   }
 
   const tabs = document.getElementById('acq-tabs');
-  if (!tabs || !state || location.pathname !== (state.path || '').split('?')[0]) return;
+  if (!tabs || !state) return;
+  const savedUrl = new URL(state.path || '/acquire', location.origin);
+  if (location.pathname !== savedUrl.pathname ||
+      new URLSearchParams(location.search).toString() !== savedUrl.searchParams.toString()) return;
 
   const setters = {
     '#q': state.values.q,
@@ -425,7 +430,7 @@ window.selectAlbumChecks = function(groupId) {
   }
 
   function restoreDynamicState() {
-    const filter = document.getElementById('disco-search');
+    const filter = document.getElementById('search-disco-filter') || document.getElementById('disco-search');
     if (filter && state.values.discoFilter != null) {
       filter.value = state.values.discoFilter;
       if (window.filterDiscoReleases) window.filterDiscoReleases(filter.value);
@@ -437,14 +442,7 @@ window.selectAlbumChecks = function(groupId) {
     window.scrollTo(0, state.scrollY || 0);
   }
 
-  if (state.tab === 'search' && state.values.q) {
-    htmx.ajax('GET', '/search/results?q=' + encodeURIComponent(state.values.q), {
-      target: '#local-results', swap: 'innerHTML'
-    });
-    htmx.ajax('GET', '/search/cloud?q=' + encodeURIComponent(state.values.q), {
-      target: '#cloud-results', swap: 'innerHTML'
-    });
-  } else if (state.tab === 'discover' && state.discoMode === 'genre' && state.values.genreQ) {
+  if (state.tab === 'discover' && state.discoMode === 'genre' && state.values.genreQ) {
     htmx.ajax('GET', '/discography/genre-search?q=' + encodeURIComponent(state.values.genreQ), {
       target: '#artist-candidates', swap: 'innerHTML'
     });
@@ -1060,8 +1058,14 @@ window.toggleDiscoType = function(artistMbid, type, currentTypes) {
   if (idx >= 0) { types.splice(idx, 1); } else { types.push(type); }
   var params = types.map(function(t){ return 'types=' + encodeURIComponent(t); }).join('&');
   var url = '/discography/' + artistMbid + (params ? '?' + params : '');
-  htmx.ajax('GET', url, {target: '#disco-detail', swap: 'innerHTML'});
-  try { history.replaceState(null, '', url); } catch (e) {}
+  var search = document.querySelector('#acq-panel-search:not([hidden]) #search-discography');
+  if (search) {
+    url += (params ? '&' : '?') + 'search_q=' + encodeURIComponent(search.dataset.searchQuery);
+    htmx.ajax('GET', url, {target: '#acquire-results', swap: 'innerHTML'});
+  } else {
+    htmx.ajax('GET', url, {target: '#disco-detail', swap: 'innerHTML'});
+    try { history.replaceState(null, '', url); } catch (e) {}
+  }
 };
 
 /* ── Discography text search (client-side filter within loaded releases) ─── */
@@ -1069,7 +1073,7 @@ var _discoFilter = '';
 window.filterDiscoReleases = function(q) {
   _discoFilter = q || '';
   var lower = _discoFilter.toLowerCase();
-  document.querySelectorAll('#disco-detail [data-disco-title]').forEach(function(el) {
+  document.querySelectorAll('.acq-panel:not([hidden]) [data-disco-title]').forEach(function(el) {
     var title = (el.getAttribute('data-disco-title') || '').toLowerCase();
     el.style.display = (!lower || title.indexOf(lower) !== -1) ? '' : 'none';
   });
@@ -1079,9 +1083,10 @@ window.filterDiscoReleases = function(q) {
  * "Filter releases…" box empty. Restore the in-flight text filter and re-apply
  * it once the new content settles so the user's filter survives the chip click. */
 document.body.addEventListener('htmx:afterSettle', function(e) {
+  if (e.target && e.target.id === 'acquire-results' && !e.target.querySelector('#search-discography')) _discoFilter = '';
   if (!_discoFilter) return;
-  if (!e.target || (e.target.id !== 'disco-detail' && !e.target.querySelector('#disco-search'))) return;
-  var box = document.getElementById('disco-search');
+  if (!e.target || (e.target.id !== 'disco-detail' && !e.target.querySelector('[data-disco-filter]'))) return;
+  var box = document.querySelector('.acq-panel:not([hidden]) [data-disco-filter]');
   if (box) box.value = _discoFilter;
   window.filterDiscoReleases(_discoFilter);
 });

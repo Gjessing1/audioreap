@@ -1,0 +1,44 @@
+{% if q %}
+{% if playlist_url or direct_url %}
+  {% if playlist_url %}
+  <div class="acquire-url-result">
+    <strong>Playlist ready to preview</strong>
+    <a class="btn" href="/playlists?url={{ playlist_url|urlencode }}">Preview playlist →</a>
+    <span class="muted">{{ playlist_url }}</span>
+  </div>
+  {% else %}
+  <form class="acquire-url-result" hx-post="/search/acquire-url" hx-target="this" hx-swap="outerHTML" hx-disabled-elt="find button">
+    <strong>Download from this source</strong>
+    <input type="hidden" name="url" value="{{ direct_url }}">
+    <button class="btn" type="submit">Get track</button>
+    <span class="muted">{{ direct_url }}</span>
+  </form>
+  {% endif %}
+{% else %}
+  <section class="acquire-artists" aria-label="Artist matches">
+    <div class="section-title">Artists <span class="muted">· browse albums and tracks</span></div>
+    <div id="search-artists" hx-get="/search/artists?q={{ q|urlencode }}" hx-trigger="load" hx-swap="innerHTML">
+      <p class="search-loading" role="status"><span class="spinner"></span> Finding artists…</p>
+    </div>
+  </section>
+  <div class="search-columns">
+    <section class="search-col" aria-label="Library matches">
+      <div class="section-title">Library</div>
+      <div id="local-results" data-play-scope hx-get="/search/results?q={{ q|urlencode }}" hx-trigger="load" hx-swap="innerHTML">
+        <p class="search-loading" role="status"><span class="spinner"></span> Searching your library…</p>
+      </div>
+    </section>
+    <section class="search-col" aria-label="YouTube matches">
+      <div class="section-title">YouTube</div>
+      <div id="cloud-results" data-play-scope hx-get="/search/cloud?q={{ q|urlencode }}" hx-trigger="load" hx-swap="innerHTML">
+        <p class="search-loading" role="status"><span class="spinner"></span> Searching YouTube…</p>
+      </div>
+    </section>
+  </div>
+{% endif %}
+{% else %}
+<div class="empty-state acquire-search-empty">
+  <p>Find an artist, album, or track.</p>
+  <span>Artist discographies, your library, and YouTube in one search. You can also paste a track or playlist URL.</span>
+</div>
+{% endif %}

@@ -293,13 +293,23 @@ def _source_summary(row: AcquisitionJobRow, m: dict) -> dict | None:
     version hint chips (live/clean/remix/…) so the user can spot a wrong-version
     pick from the list without opening the review card.
     """
-    url = (m.get("source_url") or "").strip()
-    if not url:
-        pr = (row.provider_ref or "").strip()
-        if pr.startswith(("http://", "https://")):
-            url = pr
+    url = _source_link(row, m)
     title = (m.get("source_title") or "").strip()
     channel = (m.get("source_channel") or "").strip()
+    duration = m.get("source_duration_seconds")
+    # Legacy jobs may have only the original search entry. Use its *raw* video
+    # title only when it refers to this source; candidate.title is normalized
+    # metadata and an album coordinator's candidate describes the desired track.
+    try:
+        candidate = json.loads(row.candidate_json or "{}")
+    except (ValueError, TypeError):
+        candidate = {}
+    if isinstance(candidate, dict) and candidate.get("provider_ref") == url:
+        raw = candidate.get("raw_metadata")
+        if isinstance(raw, dict):
+            title = title or str(raw.get("title") or "").strip()
+            channel = channel or str(raw.get("uploader") or raw.get("channel") or "").strip()
+            duration = duration or raw.get("duration")
     if not title and not url:
         return None
     hints: list[dict[str, str]] = []
@@ -310,7 +320,7 @@ def _source_summary(row: AcquisitionJobRow, m: dict) -> dict | None:
         "url": url,
         "title": title,
         "channel": channel,
-        "duration": _fmt_duration(m.get("source_duration_seconds")),
+        "duration": _fmt_duration(duration),
         "hints": hints,
     }
 
@@ -997,12 +1007,17 @@ def _source_link(row: AcquisitionJobRow, meta: dict) -> str:
     pick at a glance (catches wrong-artist auto-picks). Prefer the canonical URL
     captured at fetch time; fall back to provider_ref when it's already a real URL
     (ghost/legacy rows) but never expose a bare `ytsearch1:` query."""
-    source_url = (meta.get("source_url") or "").strip()
-    if not source_url:
-        pr = (row.provider_ref or "").strip()
-        if pr.startswith(("http://", "https://")):
-            source_url = pr
-    return source_url
+    from urllib.parse import urlsplit
+
+    for value in (meta.get("source_url"), row.provider_ref):
+        url = (value or "").strip()
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme in ("http", "https") and parsed.hostname:
+                return url
+        except ValueError:
+            continue
+    return ""
 
 
 async def _review_card_ctx(

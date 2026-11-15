@@ -3,10 +3,16 @@
     <div style="font-weight:600;font-size:16px">{{ artist_name }}</div>
     <div class="card-sub">{{ owned_count }} / {{ total_count }} releases owned</div>
   </div>
+  {% if search_q is defined and search_q is not none %}
+  <a class="btn btn-ghost btn-sm" href="/acquire?q={{ search_q|urlencode }}"
+     hx-get="/search/unified?q={{ search_q|urlencode }}" hx-target="#acquire-results"
+     hx-push-url="/acquire?q={{ search_q|urlencode }}">← Search results</a>
+  {% else %}
   <button class="btn btn-ghost btn-sm"
           onclick="document.getElementById('disco-detail').innerHTML='';document.getElementById('artist-candidates').innerHTML='';try{history.replaceState(null,'','/discography')}catch(e){}">
     ← Back
   </button>
+  {% endif %}
 </div>
 
 {% set unowned_count = total_count - owned_count %}
@@ -34,7 +40,7 @@
 </div>
 {% endif %}
 
-<input id="disco-search" type="search" placeholder="Filter releases…"
+<input id="{% if search_q is defined and search_q is not none %}search-disco-filter{% else %}disco-search{% endif %}" data-disco-filter type="search" placeholder="Filter releases…" aria-label="Filter releases"
        oninput="filterDiscoReleases(this.value)"
        autocomplete="off"
        style="width:100%;margin-bottom:10px;box-sizing:border-box">
@@ -115,6 +121,6 @@
 
 {# Related-artists rail — lazy so the discography itself never waits on the extra MB call #}
 <div id="disco-related"
-     hx-get="/discography/{{ artist_mbid }}/related"
+     hx-get="/discography/{{ artist_mbid }}/related{% if search_q is defined and search_q is not none %}?search_q={{ search_q|urlencode }}{% endif %}"
      hx-trigger="load"
      hx-swap="innerHTML"></div>

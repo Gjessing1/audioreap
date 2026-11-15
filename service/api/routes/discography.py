@@ -159,6 +159,7 @@ async def discography_for_you(
 async def discography_related_artists(
     request: Request,
     artist_mbid: str,
+    search_q: str | None = None,
 ) -> HTMLResponse:
     """Lazy-loaded rail of musically-related artists (MB artist relationships)."""
     from service.metadata.musicbrainz import get_related_artists
@@ -167,7 +168,7 @@ async def discography_related_artists(
         get_related_artists, artist_mbid, settings.cache_dir
     )
     return templates.TemplateResponse(
-        request, "partials/related_artists.html", {"related": related}
+        request, "partials/related_artists.html", {"related": related, "search_q": search_q}
     )
 
 
@@ -856,6 +857,7 @@ async def discography_view(
     # server-side no-op (every request sees an empty selection).
     types: list[str] = Query([]),
     session: AsyncSession = Depends(get_session),
+    search_q: str | None = None,
 ) -> HTMLResponse:
     selected_types = set(types)
     artist_name, release_entries, all_types = await _release_entries(
@@ -871,9 +873,11 @@ async def discography_view(
         "total_count": len(release_entries),
         "all_types": all_types,
         "selected_types": selected_types,
+        "search_q": search_q,
     }
     if request.headers.get("hx-request"):
-        return templates.TemplateResponse(request, "partials/discography_content.html", ctx)
+        template = "partials/acquire_discography.html" if search_q is not None else "partials/discography_content.html"
+        return templates.TemplateResponse(request, template, ctx)
     # Full-page load (bookmark / refresh / artist-page link): render the acquire
     # page on the Discover tab with this artist's discography preloaded, so the
     # standalone and tab UIs are one implementation.
