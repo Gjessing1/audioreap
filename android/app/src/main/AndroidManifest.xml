@@ -81,6 +81,12 @@
     -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!--
+      Let WebView hand the SSO page's own HTTPS origin to Credential Manager during a
+      passkey ceremony. Pocket ID verifies passkeys against that origin; without this the
+      only option is the APK's origin, which it rejects (MainActivity.enableWebAuthentication).
+    -->
+    <uses-permission android:name="android.permission.CREDENTIAL_MANAGER_SET_ORIGIN" />
+    <!--
       Deliberately absent: FOREGROUND_SERVICE, because nothing runs indefinitely, and
       REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, because the check uses setAndAllowWhileIdle
       and therefore fires through Doze without an exemption. No exact-alarm permission

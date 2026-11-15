@@ -13,11 +13,21 @@ version_code="${2:?Android versionCode (integer)}"
 version_name="${3:?version name, for example 0.1.0}"
 
 # The api container's AUDIOREAP_ANDROID_APP_DIR (/data/app) as seen from the host.
-# Publishing anywhere else succeeds silently and the phone never sees the update.
+# Publishing anywhere else succeeds silently and the phone never sees the update, so the
+# running container is asked where its /data is mounted rather than trusting a path
+# that moves whenever the deploy directory does.
+data_mount=""
+if command -v docker >/dev/null 2>&1; then
+  data_mount="$(docker inspect audioreap-api \
+    --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' \
+    2>/dev/null || true)"
+fi
 if [[ -n "${AUDIOREAP_ANDROID_APP_DIR:-}" ]]; then
   app_dir="$AUDIOREAP_ANDROID_APP_DIR"
-elif [[ -d /mnt/data/audioreap ]]; then
-  app_dir="/mnt/data/audioreap/app"
+elif [[ -n "$data_mount" ]]; then
+  app_dir="$data_mount/app"
+elif [[ -d "$HOME/docker/media/audioreap/data" ]]; then
+  app_dir="$HOME/docker/media/audioreap/data/app"
 else
   echo "No audioreap data directory found; set AUDIOREAP_ANDROID_APP_DIR explicitly" >&2
   exit 1

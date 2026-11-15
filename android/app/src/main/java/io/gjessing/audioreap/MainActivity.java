@@ -5,11 +5,14 @@ import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.text.InputType;
+import android.util.Log;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.appcompat.app.AlertDialog;
+import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewFeature;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.CapConfig;
 
@@ -23,6 +26,7 @@ import com.getcapacitor.CapConfig;
  * is known or reachable.
  */
 public class MainActivity extends BridgeActivity {
+    private static final String TAG = "Audioreap";
     private boolean connectionDialogVisible;
     private boolean setupDialogVisible;
 
@@ -40,6 +44,7 @@ public class MainActivity extends BridgeActivity {
         config = configBuilder.create();
         registerPlugin(AudioreapNativePlugin.class);
         super.onCreate(savedInstanceState);
+        enableWebAuthentication();
 
         if (bridge != null && serverUrl != null) {
             bridge.setWebViewClient(new AudioreapWebViewClient(bridge, this));
@@ -74,6 +79,33 @@ public class MainActivity extends BridgeActivity {
         if (path == null || bridge == null) return;
         String url = AudioreapNotificationLink.urlFor(AudioreapPreferences.getServerUrl(this), path);
         if (url != null) bridge.getWebView().post(() -> bridge.getWebView().loadUrl(url));
+    }
+
+    /**
+     * Passkey sign-in on the SSO detour (TinyAuth → Pocket ID). Android WebView keeps
+     * WebAuthn off until the host turns it on, so without this the ceremony fails before
+     * Credential Manager is ever asked.
+     *
+     * Browser mode, not app mode: Pocket ID verifies a passkey against its own HTTPS
+     * origin. App mode would present the APK's signing-certificate origin instead
+     * (android:apk-key-hash:…), which Pocket ID rejects unless its domain publishes
+     * Digital Asset Links for this app. Browser mode passes the page's real origin, which
+     * needs CREDENTIAL_MANAGER_SET_ORIGIN (see AndroidManifest.xml). That is safe here
+     * because navigation is confined to the server and its SSO chain
+     * (AudioreapNavigation). Same fix as torrential 66ded99.
+     */
+    private void enableWebAuthentication() {
+        if (bridge == null) return;
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
+            Log.w(TAG, "Android System WebView does not support WebAuthn");
+            return;
+        }
+        WebSettingsCompat.setWebAuthenticationSupport(
+            bridge.getWebView().getSettings(),
+            WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_BROWSER
+        );
+        Log.i(TAG, "WebAuthn support level: " +
+            WebSettingsCompat.getWebAuthenticationSupport(bridge.getWebView().getSettings()));
     }
 
     /**
