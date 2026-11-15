@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
 
-from service.api.routes.library import _classify_search_url, nav_jump
 from service.api.routes.acquire import acquire_artist_results, acquire_search_results
+from service.api.routes.library import _classify_search_url, nav_jump
 from service.api.routes.playlists import playlists_page
 from service.db.schema import Artist, Base, PlaylistImport, Track, TrackFile
 
@@ -48,6 +48,26 @@ def test_rejects_lookalike_and_non_http_urls() -> None:
 
 def test_plain_search_is_not_a_url_action() -> None:
     assert _classify_search_url("daft punk harder better") == (None, None)
+
+
+def test_artist_cache_keeps_compact_and_full_result_limits_separate(monkeypatch, tmp_path) -> None:
+    from service.metadata import musicbrainz
+
+    calls = []
+
+    def provider(**kwargs):
+        calls.append(kwargs["limit"])
+        return {"artist-list": [
+            {"id": f"artist-{i}", "name": f"Artist {i}", "ext:score": "100"}
+            for i in range(kwargs["limit"])
+        ]}
+
+    monkeypatch.setattr(musicbrainz.musicbrainzngs, "search_artists", provider)
+    monkeypatch.setattr(musicbrainz, "_mb_call", lambda label, fn: fn())
+    assert len(musicbrainz.search_artists("Daft Punk", 5, tmp_path)) == 5
+    assert len(musicbrainz.search_artists("Daft Punk", 8, tmp_path)) == 8
+    assert len(musicbrainz.search_artists("Daft Punk", 5, tmp_path)) == 5
+    assert calls == [5, 8]
 
 
 async def test_local_shell_searches_library_and_imported_playlists() -> None:
@@ -127,6 +147,7 @@ async def test_acquire_url_skips_provider_searches() -> None:
 
 async def test_acquire_artist_result_opens_inline_discography(monkeypatch) -> None:
     from types import SimpleNamespace
+
     from service.metadata import musicbrainz
 
     monkeypatch.setattr(musicbrainz, "search_artists", lambda *args: [SimpleNamespace(
@@ -155,6 +176,7 @@ async def test_acquire_artist_lookup_failure_has_retry(monkeypatch) -> None:
 
 async def test_inline_discography_keeps_related_artists_in_search(monkeypatch) -> None:
     from types import SimpleNamespace
+
     from service.api.routes.discography import discography_related_artists
     from service.metadata import musicbrainz
 

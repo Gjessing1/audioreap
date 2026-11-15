@@ -10,7 +10,7 @@ HTMX, JavaScript, routes and an isolated fixture database.
 | Finding | Change |
 | --- | --- |
 | The global search clipped track names and artist descriptions. Its local results pushed external matches below the visible area. | Artist and YouTube matches come first; identifying text wraps. A visible link opens the complete results. Mobile uses the available screen height, with a close button, focus containment, focus return and background scroll locking. |
-| Search showed five artist matches without the relevance information available in Discover. | Search, Discover and the global palette now use one artist component and the same eight-match lookup. Names, disambiguation, search relevance and the album action agree. Three matches show initially; the rest expand on demand. Relevance is explicitly a name-search score, separate from recording verification. |
+| Search showed five artist matches without the relevance information available in Discover. A live check also found that cached five-result searches capped subsequent eight-result requests. | Search, Discover and the global palette now use one artist component and the same eight-match lookup. Cache keys include the requested limit. Names, disambiguation, search relevance and the album action agree. Three matches show initially; the rest expand on demand. Relevance is explicitly a name-search score, separate from recording verification. |
 | Up to thirty local results preceded YouTube on mobile. | YouTube comes before the library, with direct section shortcuts. Five library matches show initially. More remain available without burying download choices. |
 | Narrow desktop columns and mobile rows clipped track and album names. | Acquire and Jobs use more desktop width. Track identities wrap, and download controls occupy their own row. Long release titles and mobile tracklist actions also get their own space. |
 | Compact review cards displayed the provider candidate even when the resolved metadata differed. | Review and completed cards use the resolved title, artist and album, with a fallback for legacy metadata. An intentionally empty album stays empty. The original downloaded identity remains separately labeled. |
@@ -19,6 +19,7 @@ HTMX, JavaScript, routes and an isolated fixture database.
 | The confirmation appeared at the top left on desktop. The CSS reset removed the native dialog's automatic margins. | Explicit inset and automatic margins center it on both axes. It is bounded by the viewport, scrolls when necessary, and has 44px action targets. Approval consequences use a neutral blue treatment; destructive consequences use red. |
 | A refresh response already in flight could replace an expanded review. | Queue refreshes check again before swapping their response, preserving open reviews and edits. Selected jobs remain highlighted after a completed refresh. |
 | Source previews had tiny controls, while approval wording was vague. | Album source previews have labeled, touch-sized Listen and YouTube controls. Review tools remain separate from **Save to library**, **Save & next**, and Reject. Receipt titles wrap and link directly to the job. |
+| Previously cached mobile CSS/JS could show the old layout on the first visit after deployment. | The changed assets use new versioned URLs so existing service-worker cache entries cannot supply the previous UI for the new page. |
 
 ## Screenshot evidence
 
@@ -43,7 +44,8 @@ expanded reviews, both themes, confirmation dialogs and intermediate widths.
 
 ## Verification and limits
 
-- **439 unit tests pass.** This includes resolved-vs-source identity, legacy
+- **440 unit tests pass**, plus **13 selected integration/contract tests** for streams,
+  push routes and the fake provider. This includes resolved-vs-source identity, legacy
   metadata fallback, source preservation, search fan-out and Jobs triage contracts.
 - Browser matrix: **320, 360, 390, 640, 768, 1024 and 1440px**, each in light and dark.
   Checks cover horizontal overflow and clipped identifying text, all eight artist

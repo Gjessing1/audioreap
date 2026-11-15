@@ -666,7 +666,8 @@ def search_artists(
     cache_dir: Path | None = None,
 ) -> list[MBArtist]:
     """Search MB for artists by name. Returns ranked candidates."""
-    key = f"artist_search:{_cache_key(name, '')}"
+    # A compact lookup must not cap later discography searches for the same name.
+    key = f"artist_search:{limit}:{_cache_key(name, '')}"
 
     raw: dict[str, object] | None = None
     if cache_dir is not None:
@@ -692,7 +693,7 @@ def search_artists(
             disambiguation=str(a.get("disambiguation") or "") or None,
             score=int(a.get("ext:score", 0)) / 100.0,
         ))
-    return artists
+    return artists[:limit]
 
 
 def _parse_artist_tags(a: dict[str, object], limit: int = 4) -> list[str]:
